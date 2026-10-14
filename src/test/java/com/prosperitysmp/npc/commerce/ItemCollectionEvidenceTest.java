@@ -17,7 +17,7 @@ class ItemCollectionEvidenceTest {
     private static ItemCollectionEvidence good() { return evidence(PLAYER, BEFORE, List.of(4, 0), "b".repeat(64), true, true); }
 
     @Test void confirmsOnlyWhenEveryConditionHolds() {
-        assertTrue(good().confirms(PLAYER, BEFORE, QUANTITIES), "positive control");
+        assertTrue(good().confirms(PLAYER, BEFORE, QUANTITIES), "every condition holds");
         assertFalse(evidence(new UUID(9, 9), BEFORE, List.of(4, 0), "b".repeat(64), true, true).confirms(PLAYER, BEFORE, QUANTITIES), "player");
         assertFalse(evidence(PLAYER, List.of(21, 8), List.of(5, 0), "b".repeat(64), true, true).confirms(PLAYER, BEFORE, QUANTITIES), "before units");
         assertFalse(evidence(PLAYER, BEFORE, List.of(5, 0), "b".repeat(64), true, true).confirms(PLAYER, BEFORE, QUANTITIES), "one line short");

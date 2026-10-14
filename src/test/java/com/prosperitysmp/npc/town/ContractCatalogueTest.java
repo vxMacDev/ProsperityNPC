@@ -43,7 +43,7 @@ class ContractCatalogueTest {
     @Test void theShippedConfigLoadsSixContractsAndThreeOffersAllOff() throws Exception {
         var config = shipped();
         var catalogue = ContractCatalogue.load(config::get, CAST, ITEMS);
-        // Positive control: the 6 shipped defaults and 3 offers load with nothing skipped.
+        // All 6 shipped contracts and 3 offers load, with nothing skipped.
         assertEquals(6, catalogue.definitions().size());
         assertEquals(3, catalogue.offersByResident().size());
         assertEquals(0, catalogue.skippedCount());
@@ -62,7 +62,7 @@ class ContractCatalogueTest {
         var defaults = load(Map.of());
         assertEquals(defaults.definitions(), catalogue.definitions());
         assertEquals(defaults.offersByResident(), catalogue.offersByResident());
-        // The defaults use the three cast UUIDs from the spec.
+        // The defaults use the three built-in cast UUIDs.
         assertEquals("f23586b0-11ff-320e-874e-3bb29065d402", MARA.toString());
         assertEquals("739e2063-a802-3e5a-8dc1-a9c03ed761a8", ELLIS.toString());
         assertEquals("716af3b1-66c6-3d62-b6fe-601e2b013ad9", NICO.toString());
@@ -84,7 +84,7 @@ class ContractCatalogueTest {
     }
 
     @Test void aDuplicateIdIsRejected() {
-        // Mutation guard: without the duplicate check both entries load.
+        // Without the duplicate check both entries would load.
         var catalogue = load(Map.of("town.contracts.definitions", List.of(entry("same", MARA), entry("same", ELLIS))));
         assertEquals(1, catalogue.definitions().size());
         assertEquals(MARA, catalogue.definitions().getFirst().giverId());

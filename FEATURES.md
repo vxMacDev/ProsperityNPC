@@ -1,6 +1,6 @@
 # ProsperityNPC features
 
-Everything the plugin does, grouped by who uses it. Every feature ships switched off, except eight
+Everything the plugin does, grouped by who uses it. Every feature ships switched off, except nine
 safety checks that ship on. Each safety check does nothing until the feature it guards is turned
 on. The "On" line says what turns each feature on. Config keys are in
 `src/main/resources/config.yml`. Staff route tools (`/npcnav`) are the one exception: they work
@@ -335,8 +335,8 @@ Common requirements, used below:
   or local linking. While contracts or partnerships are on it shows contracts loaded and skipped,
   handovers held for review, active partnerships and whether the rank bonus is live.
 - **Staff alerts.** With `alerts.enabled`: held payments, reserve-floor deferrals, the server cap
-  at 90 percent, failed daily phases, a missing ARM hook, held rent homes, held item repairs and
-  held contract handovers. Each fires once a day per home or subject. `skript/npc-alerts-prosperitysmp.sk` posts them through the server's
+  at 90 percent, failed daily phases, a missing ARM hook, held rent homes, held item repairs,
+  held contract handovers, held paid orders and paid orders whose save check keeps refusing. Each fires once a day per home or subject. `skript/npc-alerts-prosperitysmp.sk` posts them through the server's
   watch alerts: console, online staff and the watch Discord webhook (server-specific).
 - **ARM patch.** While ProsperityNPC is working on a plot (a payment, a move or a daily check),
   ARM refuses any owner change on it: buy, sell, transfer, offers, expiry, reset or delete.
@@ -345,7 +345,11 @@ Common requirements, used below:
 - **Offline recovery tools.** `RefundRecoveryTool`, `CommerceRecoveryTool` and
   `ItemRepairRecoveryTool` in the plugin jar, and `ChronicleReceiptOperator` in its own jar
   (`ProsperityNPC-ChronicleRecovery`). `/npcadmin itemrepair list` shows held item repairs and
-  items still to give back. It changes nothing.
+  items still to give back. It changes nothing. `CommerceRecoveryTool --inspect-delivery` reports
+  one held paid order: its state, the recorded counts, the stopped server's player file and the
+  order's save marker. It writes nothing, and there is no in-tool decision for held orders yet.
+- **dev.60.** Paid order deliveries prove the player save with a per-delivery marker
+  (`town.commerce.delivery-save-marker`, on by default, inert while commerce is off).
 - **Accounting bridge.** NPC money shows as its own sources; payments wait for its acknowledgement.
 
 ## Chronicle and publication

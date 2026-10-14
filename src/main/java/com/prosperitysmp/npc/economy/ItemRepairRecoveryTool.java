@@ -1,5 +1,6 @@
 package com.prosperitysmp.npc.economy;
 
+import com.prosperitysmp.npc.clock.EconomyClock;
 import com.prosperitysmp.npc.commerce.CustodyBytes;
 import com.prosperitysmp.npc.commerce.ItemCollectionEvidence;
 import com.prosperitysmp.npc.commerce.ItemCustody;
@@ -31,44 +32,35 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Root-only, server-stopped, manifest-bound decision for one held item hand-in; never Vault, never item delivery,
- * never migrations. Items owed back are delivered by the plugin on the player's next /property repair returns.
+ * Offline staff decision for one held item hand-in or one held return delivery. Runs as root with the server stopped,
+ * binds every write to a manifest, and never calls Vault, delivers items or runs migrations. Items owed back are
+ * delivered by the plugin on the player's next /property repair returns.
+ * <p>
+ * Usage: --inspect|--resolve|--inspect-return|--resolve-return &lt;profile&gt; &lt;manifest&gt;.
+ * Connects to MariaDB on 127.0.0.1:3306.
  * Profile: service, server_root, database, user, world_folder (relative to server_root), paper_jar and
  * libraries_dir (the installed server's own jar and library folder, for its player-file reader), clock_timezone,
  * daily_reset_hour. service and server_root must match {@link RecoveryServers#FILE}.
- * Manifest: the same service/server_root/database, collection_id, player_uuid, run_id, quote_sha256,
+ * Hand-in manifest: the same service/server_root/database, collection_id, player_uuid, run_id, quote_sha256,
  * resolution_id, operator, case_ref, notes, decision (VERIFIED_COLLECTED or VERIFIED_NOT_COLLECTED),
- * player_file_sha256 (from --inspect), and optional override_reason.
- * --inspect prints, per line, the units in inventory storage plus ender chest (what the recorded counts compare to) and
- * in the whole file (offhand, armor, ender chest and nested containers included), against the hand-in's before count
- * and the take counts the plugin recorded, if it got that far. It also says whether the file carries this hand-in's
- * before or after marker: the after marker is set just before the take's own save, so only a later file carries it. --resolve re-reads the same file (its hash must still match) and records the decision.
- * Every decision on both paths needs override_reason, which is kept with the evidence. The plugin records no hash of the
- * save a take or delivery made, so a stopped server's file can never be proven to be that save: after a failed save and a
- * crash restore, the player can move items until the file agrees with any recorded counts. The checks below still run
- * and their findings are printed with the refusal, so staff see what the file and the recorded counts say.
- * VERIFIED_COLLECTED fits when the recorded take counts show the whole recipe removed and the file holds exactly the
- * recorded after count. VERIFIED_NOT_COLLECTED fits when the recorded counts show nothing removed and the file holds
- * the before count. A file alone cannot tell a take from items the player moved into a chest.
+ * player_file_sha256 (from --inspect), and override_reason (required for every decision, see {@link #UNPROVEN_FILE}).
+ * Return manifest: the same service/server_root/database, request_nonce, player_uuid, then for --resolve-return also
+ * run_id, payload_sha256 (both printed by --inspect-return), resolution_id, operator, case_ref, notes, decision
+ * (VERIFIED_DELIVERED, VERIFIED_NOT_DELIVERED or RETURNED_BY_STAFF), player_file_sha256 and override_reason (required).
  * <p>
- * Both paths also compare the saved file's DataVersion with the one recorded on the items. A different one (after a
- * server upgrade) is refused unless override_reason says why. Items recorded with no DataVersion are not compared.
+ * The inspect modes print the saved counts (storage plus ender chest, and the whole file), the counts the plugin
+ * recorded, and whether the file carries the before or after marker. The resolve modes re-read the same file (its
+ * hash must still match) and record the decision. Every decision needs override_reason, kept with the evidence,
+ * because nothing recorded a hash of the plugin's own save (see {@link #UNPROVEN_FILE}): after a failed save and a
+ * crash restore, the player can move items until the file agrees with any recorded counts. The count checks in
+ * {@link #decisionProblem} and {@link #returnDecisionProblem} still run and their findings are printed, so staff see
+ * what the file and the recorded counts say. Both paths also compare the file's DataVersion with the one recorded on
+ * the items and print any mismatch; items recorded with no DataVersion are not compared.
  * <p>
- * Held returns: --inspect-return and --resolve-return settle one held REPAIR_RETURN delivery (the stack is AMBIGUOUS, or
- * DELIVERY_INTENT from a run that died). While it is held no item delivery of any kind starts for that player. Manifest:
- * the same service/server_root/database, request_nonce, player_uuid, then for --resolve-return also run_id,
- * payload_sha256 (both printed by --inspect-return), resolution_id, operator, case_ref, notes, decision
- * (VERIFIED_DELIVERED, VERIFIED_NOT_DELIVERED or RETURNED_BY_STAFF), player_file_sha256 and optional override_reason.
- * VERIFIED_DELIVERED fits when the counts the runtime recorded show the whole stack added and the file holds exactly
- * that count. VERIFIED_NOT_DELIVERED fits when the recorded counts show nothing added and the file holds the count
- * from before. Either way it needs override_reason, as above.
- * VERIFIED_NOT_DELIVERED issues the same stack again for /property repair returns, once. --inspect-return prints the
- * same two counts and whether the file carries this return's before or after marker.
- * A return held as PAYLOAD_UNREADABLE has stored items the server could not read, so the plugin never started it and
- * issuing the same bytes again cannot help. If staff gave the items back by hand, RETURNED_BY_STAFF closes it with
- * override_reason, records the reason and issues nothing. VERIFIED_DELIVERED is refused for it.
- * Usage: --inspect|--resolve|--inspect-return|--resolve-return &lt;profile&gt; &lt;manifest&gt;.
- * Connects to MariaDB on 127.0.0.1:3306.
+ * While a return is held, no item delivery of any kind starts for that player. VERIFIED_NOT_DELIVERED issues the same
+ * stack again, once. A PAYLOAD_UNREADABLE return has stored items the server could not read, so issuing the same
+ * bytes cannot help: RETURNED_BY_STAFF closes it after staff gave the items back by hand and issues nothing, and
+ * VERIFIED_DELIVERED is refused for it.
  */
 public final class ItemRepairRecoveryTool {
     private ItemRepairRecoveryTool() { }
@@ -87,7 +79,8 @@ public final class ItemRepairRecoveryTool {
         byte[] manifestBytes = privateBytes(manifest, 16384);
         Properties evidence = properties(manifestBytes);
         for (String key : new String[]{"service", "server_root", "database"})
-            if (!required(config, key).equals(required(evidence, key))) throw new IllegalArgumentException("Manifest profile binding conflicts: " + key);
+            if (!required(config, key).equals(required(evidence, key)))
+                throw new IllegalArgumentException("Manifest profile binding conflicts: " + key);
         for (String key : new String[]{"database", "user"})
             if (!required(config, key).matches("[A-Za-z0-9_]{1,64}")) throw new IllegalArgumentException("Invalid connection identifier");
         Path password = Path.of(root, "plugins/ProsperityNPC/db-password.txt");
@@ -111,9 +104,11 @@ public final class ItemRepairRecoveryTool {
                 return;
             }
             UUID collection = UUID.fromString(required(evidence, "collection_id"));
-            var stored = repository.find(collection, player).orElseThrow(() -> new IllegalStateException("Unknown item hand-in for this player"));
+            var stored = repository.find(collection, player)
+                    .orElseThrow(() -> new IllegalStateException("Unknown item hand-in for this player"));
             var quote = stored.quote();
-            if (!stored.runId().toString().equals(required(evidence, "run_id")) || !quote.quoteSha256().equals(required(evidence, "quote_sha256")))
+            if (!stored.runId().toString().equals(required(evidence, "run_id"))
+                    || !quote.quoteSha256().equals(required(evidence, "quote_sha256")))
                 throw new IllegalArgumentException("Manifest does not bind this hand-in's run and quote");
             Path file = proof.playerFile(Path.of(root, world), player).orElseThrow(() -> new IllegalStateException("No player file path"));
             byte[] saved = playerFile(file);
@@ -142,7 +137,7 @@ public final class ItemRepairRecoveryTool {
             }
             var resolution = new ItemRepairRepository.OperatorResolution(UUID.fromString(required(evidence, "resolution_id")),
                     operator, decision, new CustodyBytes(bytes.toByteArray()));
-            var days = new com.prosperitysmp.npc.clock.EconomyClock(Clock.systemUTC(), ZoneId.of(required(config, "clock_timezone")),
+            var days = new EconomyClock(Clock.systemUTC(), ZoneId.of(required(config, "clock_timezone")),
                     Integer.parseInt(required(config, "daily_reset_hour")));
             offline(service);
             Instant at = Instant.now();
@@ -199,7 +194,8 @@ public final class ItemRepairRecoveryTool {
         UUID nonce = UUID.fromString(required(evidence, "request_nonce"));
         // Read-only check first: find() may expire a plain commerce reservation, and this tool never touches those.
         var binding = repository.returnBinding(nonce)
-                .orElseThrow(() -> new IllegalStateException("This is not the current stack of any item hand-in. This tool settles only those."));
+                .orElseThrow(() -> new IllegalStateException("This is not the current stack of any item hand-in. This tool settles only "
+                        + "those."));
         var receipt = custody.find(player, nonce, Instant.now())
                 .orElseThrow(() -> new IllegalStateException("Unknown item delivery for this player"));
         ItemCustody request = receipt.request();
@@ -252,7 +248,7 @@ public final class ItemRepairRecoveryTool {
      * Null when the recorded counts and the saved file clearly support the decision. Saying delivered when it was not
      * loses the player's items; saying not delivered when it was gives them twice. So: DELIVERED needs the recorded
      * counts to show the whole stack added and the file to hold that count. NOT_DELIVERED needs the recorded counts to
-     * show nothing added and the file to hold the count from before. A stack that was added but is missing from the file
+     * show nothing added and the file to hold the before count. A stack that was added but is missing from the file
      * could be a lost save or items the player moved, and the counts cannot tell those apart, so it is refused.
      */
     static String returnDecisionProblem(ItemCustodyRepository.Decision decision, int saved, int quantity,
@@ -294,12 +290,12 @@ public final class ItemRepairRecoveryTool {
     }
 
     /**
-     * Null when the recorded take counts and the saved file clearly support the decision; the same rule as
+     * Null when the recorded take counts and the saved file clearly support the decision, by the same rule as
      * {@link #returnDecisionProblem}. Saying collected when nothing was taken gives a free repair; saying not collected
-     * when the items were taken loses them. A file alone cannot tell a take from items the player moved into a chest, so:
-     * COLLECTED needs the recorded counts to start at the hand-in's before counts and show every line's whole quantity
-     * removed, and the file to hold exactly the recorded after counts. NOT_COLLECTED needs the recorded counts to start at
-     * the before counts and show nothing removed, and the file to hold the before counts. No recorded counts is refused.
+     * when the items were taken loses them. A file alone cannot tell a take from items moved into a chest, so both need
+     * recorded counts that start at the hand-in's before counts. COLLECTED needs them to show every line's whole quantity
+     * removed and the file to hold exactly the recorded after counts. NOT_COLLECTED needs nothing removed and the file
+     * to hold the before counts.
      */
     static String decisionProblem(ItemRepairRepository.Decision decision, List<Integer> saved, List<Integer> before,
                                   List<Integer> quantities, ItemCollectionEvidence recorded) {
@@ -348,14 +344,17 @@ public final class ItemRepairRecoveryTool {
      * delivery's own save, so only a file saved after that carries it.
      */
     static String markerLine(String what, String act, UUID id, String found) {
-        if (found == null) return "Marker: none for this " + what + ". The file was saved before this " + what + " started, or the marker was removed.";
-        if (found.equals(ItemSaveProof.marker(id, true))) return "Marker: this " + what + "'s after marker. The file was saved after the " + act + ".";
+        if (found == null)
+            return "Marker: none for this " + what + ". The file was saved before this " + what + " started, or the marker was removed.";
+        if (found.equals(ItemSaveProof.marker(id, true)))
+            return "Marker: this " + what + "'s after marker. The file was saved after the " + act + ".";
         if (found.equals(ItemSaveProof.marker(id, false)))
             return "Marker: this " + what + "'s before marker. The file was saved before the " + act + ", so it does not show it.";
         return "Marker: " + found + ", which belongs to another " + what + ". This file is not this " + what + "'s save.";
     }
 
-    static String report(ItemRepairRepository.Stored stored, ItemSaveProof.SavedUnits read, ItemCollectionEvidence recorded, String fileHash) {
+    static String report(ItemRepairRepository.Stored stored, ItemSaveProof.SavedUnits read, ItemCollectionEvidence recorded,
+            String fileHash) {
         var out = new StringBuilder("Item hand-in ").append(stored.quote().collectionId()).append(" | state ").append(stored.state())
                 .append(stored.outcome() == null ? "" : " " + stored.outcome()).append(" | player file sha256 ").append(fileHash)
                 .append(recorded == null ? " | no take counts were recorded" : "");
@@ -365,7 +364,8 @@ public final class ItemRepairRecoveryTool {
             out.append('\n').append(line.material()).append(": ").append(counts(read, i)).append(" | before ").append(line.beforeUnits())
                     .append(" | after if taken ").append(line.beforeUnits() - line.quantity());
             if (recorded != null && i < recorded.beforeUnits().size())
-                out.append(" | recorded before ").append(recorded.beforeUnits().get(i)).append(" | recorded after ").append(recorded.afterUnits().get(i));
+                out.append(" | recorded before ").append(recorded.beforeUnits().get(i)).append(" | recorded after ")
+                        .append(recorded.afterUnits().get(i));
         }
         return out.toString();
     }
@@ -391,7 +391,10 @@ public final class ItemRepairRecoveryTool {
             return bytes;
         }
     }
-    private static void part(DataOutputStream stream, byte[] bytes) throws Exception { stream.writeInt(bytes.length); stream.write(bytes); }
+    private static void part(DataOutputStream stream, byte[] bytes) throws Exception {
+        stream.writeInt(bytes.length);
+        stream.write(bytes);
+    }
     private static String hash(byte[] bytes) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
@@ -410,7 +413,9 @@ public final class ItemRepairRecoveryTool {
                 .noneMatch(p -> p != PosixFilePermission.OWNER_READ && p != PosixFilePermission.OWNER_WRITE);
     }
     private static Properties properties(byte[] bytes) throws Exception {
-        Properties properties = new Properties(); properties.load(new ByteArrayInputStream(bytes)); return properties;
+        Properties properties = new Properties();
+        properties.load(new ByteArrayInputStream(bytes));
+        return properties;
     }
     private static void offline(String service) throws Exception {
         if (!command("systemctl", "show", service, "-p", "LoadState", "--value").equals("masked")
@@ -419,7 +424,10 @@ public final class ItemRepairRecoveryTool {
     }
     private static String command(String... args) throws Exception {
         Process process = new ProcessBuilder(args).start();
-        if (!process.waitFor(5, TimeUnit.SECONDS)) { process.destroyForcibly(); throw new IllegalStateException("Recovery environment check timed out"); }
+        if (!process.waitFor(5, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new IllegalStateException("Recovery environment check timed out");
+        }
         if (process.exitValue() != 0) throw new IllegalStateException("Recovery environment check failed");
         return new String(process.getInputStream().readNBytes(4096)).trim();
     }

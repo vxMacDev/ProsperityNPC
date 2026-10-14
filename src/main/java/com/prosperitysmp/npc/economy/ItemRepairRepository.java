@@ -7,11 +7,13 @@ import com.prosperitysmp.npc.commerce.ItemCustodyRepository;
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.formulas.IncidentType;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Savepoint;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -42,15 +44,24 @@ public final class ItemRepairRepository {
     }
     public record Stored(ItemRepairQuote quote, State state, UUID runId, String outcome,
                          Instant createdAt, Instant updatedAt) {
-        public Stored { Objects.requireNonNull(quote); Objects.requireNonNull(state); Objects.requireNonNull(runId); }
+        public Stored {
+            Objects.requireNonNull(quote);
+            Objects.requireNonNull(state);
+            Objects.requireNonNull(runId);
+        }
     }
     /** returns are the RESERVED REPAIR_RETURN custody rows of this hand-in, in stack order. */
     public record Settlement(State state, String outcome, List<ItemCustody> returns) {
-        public Settlement { Objects.requireNonNull(state); returns = List.copyOf(returns); }
+        public Settlement {
+            Objects.requireNonNull(state);
+            returns = List.copyOf(returns);
+        }
     }
     public record OperatorResolution(UUID resolutionId, String operatorRef, Decision decision, CustodyBytes evidence) {
         public OperatorResolution {
-            Objects.requireNonNull(resolutionId); Objects.requireNonNull(decision); Objects.requireNonNull(evidence);
+            Objects.requireNonNull(resolutionId);
+            Objects.requireNonNull(decision);
+            Objects.requireNonNull(evidence);
             if (operatorRef == null || !operatorRef.matches("[A-Za-z0-9_.:@-]{1,96}"))
                 throw new IllegalArgumentException("Invalid operator reference");
         }
@@ -72,7 +83,10 @@ public final class ItemRepairRepository {
      * owner, epoch and enabled flag are checked under the same locks the repair will use.
      */
     public Begin begin(ItemRepairQuote q, UUID runId, Instant at, LocalDate currentDay) throws SQLException {
-        Objects.requireNonNull(q); Objects.requireNonNull(runId); Objects.requireNonNull(at); Objects.requireNonNull(currentDay);
+        Objects.requireNonNull(q);
+        Objects.requireNonNull(runId);
+        Objects.requireNonNull(at);
+        Objects.requireNonNull(currentDay);
         ensurePlayer(q.playerId());
         return transaction(c -> {
             requirePlayer(c, q.playerId());
@@ -109,11 +123,15 @@ public final class ItemRepairRepository {
      */
     public Optional<RepairQuote> currentRepair(UUID propertyId, UUID playerId, int ownershipEpoch, long incidentId,
                                                Instant at, LocalDate currentDay, LocalDate quoteDay) throws SQLException {
-        Objects.requireNonNull(propertyId); Objects.requireNonNull(playerId); Objects.requireNonNull(at);
-        Objects.requireNonNull(currentDay); Objects.requireNonNull(quoteDay);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(playerId);
+        Objects.requireNonNull(at);
+        Objects.requireNonNull(currentDay);
+        Objects.requireNonNull(quoteDay);
         if (incidentId <= 0) return Optional.empty();
         return transaction(c -> {
-            try (PreparedStatement ps = prepare(c, "SELECT owner_uuid,ownership_epoch,enabled FROM npc_properties WHERE property_id=? FOR UPDATE")) {
+            try (PreparedStatement ps = prepare(c,
+                    "SELECT owner_uuid,ownership_epoch,enabled FROM npc_properties WHERE property_id=? FOR UPDATE")) {
                 id(ps, 1, propertyId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next() || !playerId.equals(uuid(rs, "owner_uuid")) || rs.getInt("ownership_epoch") != ownershipEpoch
@@ -137,7 +155,8 @@ public final class ItemRepairRepository {
                 SELECT incident_type FROM npc_incidents WHERE property_id=? AND incident_id=?
                 AND resolved_at IS NULL AND prevented=FALSE
                 """)) {
-            id(ps, 1, propertyId); ps.setLong(2, incidentId);
+            id(ps, 1, propertyId);
+            ps.setLong(2, incidentId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return Optional.empty();
                 try { return Optional.of(IncidentType.valueOf(rs.getString(1))); }
@@ -148,7 +167,8 @@ public final class ItemRepairRepository {
 
     /** INTENT to CANCELLED, only for its own run and only before any item was taken. */
     public Stored cancelBeforeTake(UUID collectionId, UUID playerId, UUID runId, String reason) throws SQLException {
-        Objects.requireNonNull(runId); code(reason);
+        Objects.requireNonNull(runId);
+        code(reason);
         return locked(collectionId, playerId, (c, stored) -> {
             runBinding(stored, runId);
             return stored.state() == State.INTENT ? transition(c, stored, State.CANCELLED, reason) : stored;
@@ -157,7 +177,8 @@ public final class ItemRepairRepository {
 
     /** INTENT to AMBIGUOUS for its own run. Never retried; only the offline tool resolves it. */
     public Stored markAmbiguous(UUID collectionId, UUID playerId, UUID runId, Uncertainty reason) throws SQLException {
-        Objects.requireNonNull(runId); Objects.requireNonNull(reason);
+        Objects.requireNonNull(runId);
+        Objects.requireNonNull(reason);
         return locked(collectionId, playerId, (c, stored) -> {
             runBinding(stored, runId);
             return stored.state() == State.INTENT ? transition(c, stored, State.AMBIGUOUS, reason.name()) : stored;
@@ -171,7 +192,10 @@ public final class ItemRepairRepository {
      */
     public Settlement settle(UUID collectionId, UUID playerId, UUID runId, ItemCollectionEvidence evidence,
                              boolean ownershipStillValid, Instant at, LocalDate completionDay) throws SQLException {
-        Objects.requireNonNull(runId); Objects.requireNonNull(evidence); Objects.requireNonNull(at); Objects.requireNonNull(completionDay);
+        Objects.requireNonNull(runId);
+        Objects.requireNonNull(evidence);
+        Objects.requireNonNull(at);
+        Objects.requireNonNull(completionDay);
         return lockedSettle(collectionId, playerId, (c, stored) -> {
             runBinding(stored, runId);
             ItemRepairQuote q = stored.quote();
@@ -202,8 +226,11 @@ public final class ItemRepairRepository {
                 SELECT collection_id,player_id FROM npc_item_repair_collections WHERE state='INTENT' AND run_id<>?
                 ORDER BY collection_id LIMIT ?
                 """)) {
-            id(ps, 1, currentRun); ps.setInt(2, Math.min(limit, MAX_SWEEP));
-            try (ResultSet rs = ps.executeQuery()) { while (rs.next()) keys.add(new Key(uuid(rs, "collection_id"), uuid(rs, "player_id"))); }
+            id(ps, 1, currentRun);
+            ps.setInt(2, Math.min(limit, MAX_SWEEP));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) keys.add(new Key(uuid(rs, "collection_id"), uuid(rs, "player_id")));
+            }
         }
         int changed = 0;
         for (Key key : keys) changed += locked(key.collectionId(), key.playerId(), (c, stored) -> {
@@ -220,7 +247,9 @@ public final class ItemRepairRepository {
      */
     public Settlement reconcile(UUID collectionId, UUID playerId, OperatorResolution resolution, Instant at,
                                 LocalDate completionDay) throws SQLException {
-        Objects.requireNonNull(resolution); Objects.requireNonNull(at); Objects.requireNonNull(completionDay);
+        Objects.requireNonNull(resolution);
+        Objects.requireNonNull(at);
+        Objects.requireNonNull(completionDay);
         return lockedSettle(collectionId, playerId, (c, stored) -> {
             Optional<OperatorResolution> old = resolution(c, collectionId);
             if (old.isPresent()) {
@@ -233,8 +262,11 @@ public final class ItemRepairRepository {
                     INSERT INTO npc_item_repair_resolutions(collection_id,resolution_id,operator_ref,decision,
                     evidence_bytes,evidence_sha256,original_outcome) VALUES(?,?,?,?,?,?,?)
                     """)) {
-                id(ps, 1, collectionId); id(ps, 2, resolution.resolutionId()); ps.setString(3, resolution.operatorRef());
-                ps.setString(4, resolution.decision().name()); ps.setBytes(5, resolution.evidence().bytes());
+                id(ps, 1, collectionId);
+                id(ps, 2, resolution.resolutionId());
+                ps.setString(3, resolution.operatorRef());
+                ps.setString(4, resolution.decision().name());
+                ps.setBytes(5, resolution.evidence().bytes());
                 ps.setString(6, resolution.evidence().sha256());
                 ps.setString(7, stored.outcome() == null ? Uncertainty.INTERRUPTED_RUN.name() : stored.outcome());
                 one(ps.executeUpdate());
@@ -255,7 +287,8 @@ public final class ItemRepairRepository {
     }
 
     public Optional<Stored> find(UUID collectionId, UUID playerId) throws SQLException {
-        Objects.requireNonNull(collectionId); Objects.requireNonNull(playerId);
+        Objects.requireNonNull(collectionId);
+        Objects.requireNonNull(playerId);
         try (Connection c = database.getConnection()) {
             return read(c, collectionId, false).filter(stored -> stored.quote().playerId().equals(playerId));
         }
@@ -375,16 +408,18 @@ public final class ItemRepairRepository {
 
     /**
      * Offline tool only, server stopped. Settles one held REPAIR_RETURN delivery (AMBIGUOUS, or DELIVERY_INTENT left by
-     * a run that died) with a staff decision read from the stopped server's player file, in one transaction.
-     * VERIFIED_DELIVERED closes it: the player has the items. VERIFIED_NOT_DELIVERED closes it and issues the same stack
-     * again as a fresh RESERVED return (new nonce, offer_id names the held row) that this hand-in now points at, so the
-     * items are never lost. The reissue is written once: offer_id is unique, and an exact replay issues nothing.
-     * RETURNED_BY_STAFF closes a return held because its items could not be read (PAYLOAD_UNREADABLE) after staff gave
-     * the items back by hand: it closes as DELIVERED and issues nothing, because the same unreadable bytes cannot help.
+     * a run that died) with a staff decision, in one transaction. VERIFIED_DELIVERED closes it. VERIFIED_NOT_DELIVERED
+     * closes it and issues the same stack again as a fresh RESERVED return that the hand-in points at, so the items are
+     * never lost. offer_id names the held row and is unique, so the reissue is written once and a replay issues nothing.
+     * RETURNED_BY_STAFF, for a PAYLOAD_UNREADABLE return that staff gave back by hand, closes as DELIVERED and issues
+     * nothing, because the same unreadable bytes cannot help.
      */
     public ReturnResolution resolveReturn(ItemCustody expected, UUID runId, ItemCustodyRepository.OperatorResolution resolution,
                                           Instant at) throws SQLException {
-        Objects.requireNonNull(expected); Objects.requireNonNull(runId); Objects.requireNonNull(resolution); Objects.requireNonNull(at);
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(runId);
+        Objects.requireNonNull(resolution);
+        Objects.requireNonNull(at);
         if (expected.source() != ItemCustody.Source.REPAIR_RETURN) throw new IllegalArgumentException("Only item repair returns");
         return transaction(c -> {
             requirePlayer(c, expected.playerId());
@@ -409,8 +444,11 @@ public final class ItemRepairRepository {
             try (PreparedStatement ps = prepare(c, """
                     UPDATE npc_item_repair_returns SET request_nonce=? WHERE request_nonce=? AND collection_id=? AND stack_no=?
                     """)) {
-                id(ps, 1, again.requestNonce()); id(ps, 2, expected.requestNonce()); id(ps, 3, binding.collectionId());
-                ps.setInt(4, binding.stackNo()); one(ps.executeUpdate());
+                id(ps, 1, again.requestNonce());
+                id(ps, 2, expected.requestNonce());
+                id(ps, 3, binding.collectionId());
+                ps.setInt(4, binding.stackNo());
+                one(ps.executeUpdate());
             }
             return new ReturnResolution(ItemCustodyRepository.State.RECONCILED_NOT_DELIVERED, again);
         });
@@ -418,14 +456,15 @@ public final class ItemRepairRepository {
 
     /** The reissue nonce is fixed by the staff decision, so the same decision can never mint two stacks. */
     static UUID reissueNonce(UUID resolutionId) {
-        return UUID.nameUUIDFromBytes(("prosperitynpc:repair-return-reissue:" + resolutionId).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes(("prosperitynpc:repair-return-reissue:" + resolutionId).getBytes(StandardCharsets.UTF_8));
     }
 
     private static Optional<ItemCustody> reissueOf(Connection c, ItemCustody held) throws SQLException {
         try (PreparedStatement ps = prepare(c, """
                 SELECT * FROM npc_item_custody WHERE offer_id=? AND player_id=? AND source='REPAIR_RETURN'
                 """)) {
-            id(ps, 1, held.requestNonce()); id(ps, 2, held.playerId());
+            id(ps, 1, held.requestNonce());
+            id(ps, 2, held.playerId());
             try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(custody(rs)) : Optional.empty(); }
         }
     }
@@ -459,7 +498,10 @@ public final class ItemRepairRepository {
             ItemCustodyRepository.reserveReturn(c, custody);
             try (PreparedStatement ps = prepare(c,
                     "INSERT INTO npc_item_repair_returns(collection_id,stack_no,request_nonce) VALUES(?,?,?)")) {
-                id(ps, 1, q.collectionId()); ps.setInt(2, stack); id(ps, 3, custody.requestNonce()); one(ps.executeUpdate());
+                id(ps, 1, q.collectionId());
+                ps.setInt(2, stack);
+                id(ps, 3, custody.requestNonce());
+                one(ps.executeUpdate());
             }
         }
         String outcome = reason.matches("[A-Z_]{1,32}") ? reason : "REPAIR_TARGET_CHANGED";
@@ -481,7 +523,8 @@ public final class ItemRepairRepository {
     }
 
     private static boolean ownerMatches(Connection c, ItemRepairQuote q) throws SQLException {
-        try (PreparedStatement ps = prepare(c, "SELECT owner_uuid,ownership_epoch,enabled FROM npc_properties WHERE property_id=? FOR UPDATE")) {
+        try (PreparedStatement ps = prepare(c,
+                "SELECT owner_uuid,ownership_epoch,enabled FROM npc_properties WHERE property_id=? FOR UPDATE")) {
             id(ps, 1, q.propertyId());
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return false;
@@ -497,11 +540,21 @@ public final class ItemRepairRepository {
                   incident_type,repair_snapshot_sha256,quote_day,cash_cents,value_ratio_bps,required_value_cents,
                   recipe_value_cents,price_version,quote_sha256,state,run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'INTENT',?)
                 """)) {
-            id(ps, 1, q.collectionId()); id(ps, 2, q.playerId()); id(ps, 3, q.propertyId());
-            ps.setLong(4, q.repair().incidentId()); ps.setInt(5, q.ownershipEpoch()); ps.setString(6, q.repair().type().name());
-            ps.setString(7, q.repair().snapshotSha256()); ps.setString(8, q.quoteDay().toString()); ps.setLong(9, q.cashCents());
-            ps.setInt(10, q.ratioBps()); ps.setLong(11, q.requiredValueCents()); ps.setLong(12, q.recipeValueCents());
-            ps.setString(13, q.priceVersion()); ps.setString(14, q.quoteSha256()); id(ps, 15, runId);
+            id(ps, 1, q.collectionId());
+            id(ps, 2, q.playerId());
+            id(ps, 3, q.propertyId());
+            ps.setLong(4, q.repair().incidentId());
+            ps.setInt(5, q.ownershipEpoch());
+            ps.setString(6, q.repair().type().name());
+            ps.setString(7, q.repair().snapshotSha256());
+            ps.setString(8, q.quoteDay().toString());
+            ps.setLong(9, q.cashCents());
+            ps.setInt(10, q.ratioBps());
+            ps.setLong(11, q.requiredValueCents());
+            ps.setLong(12, q.recipeValueCents());
+            ps.setString(13, q.priceVersion());
+            ps.setString(14, q.quoteSha256());
+            id(ps, 15, runId);
             one(ps.executeUpdate());
         }
         for (int i = 0; i < q.lines().size(); i++) {
@@ -510,9 +563,15 @@ public final class ItemRepairRepository {
                     INSERT INTO npc_item_repair_lines(collection_id,line_no,material,quantity,unit_full_cents,
                       prototype_bytes,prototype_sha256,before_units) VALUES(?,?,?,?,?,?,?,?)
                     """)) {
-                id(ps, 1, q.collectionId()); ps.setInt(2, i); ps.setString(3, line.material()); ps.setInt(4, line.quantity());
-                ps.setLong(5, line.unitFullCents()); ps.setBytes(6, line.prototype().bytes()); ps.setString(7, line.prototype().sha256());
-                ps.setInt(8, line.beforeUnits()); one(ps.executeUpdate());
+                id(ps, 1, q.collectionId());
+                ps.setInt(2, i);
+                ps.setString(3, line.material());
+                ps.setInt(4, line.quantity());
+                ps.setLong(5, line.unitFullCents());
+                ps.setBytes(6, line.prototype().bytes());
+                ps.setString(7, line.prototype().sha256());
+                ps.setInt(8, line.beforeUnits());
+                one(ps.executeUpdate());
             }
         }
         for (int i = 0; i < q.returnPlan().size(); i++) {
@@ -521,8 +580,13 @@ public final class ItemRepairRepository {
                     INSERT INTO npc_item_repair_return_plans(collection_id,stack_no,line_no,quantity,payload_bytes,payload_sha256)
                     VALUES(?,?,?,?,?,?)
                     """)) {
-                id(ps, 1, q.collectionId()); ps.setInt(2, i); ps.setInt(3, stack.lineNo()); ps.setInt(4, stack.quantity());
-                ps.setBytes(5, stack.payload().bytes()); ps.setString(6, stack.payload().sha256()); one(ps.executeUpdate());
+                id(ps, 1, q.collectionId());
+                ps.setInt(2, i);
+                ps.setInt(3, stack.lineNo());
+                ps.setInt(4, stack.quantity());
+                ps.setBytes(5, stack.payload().bytes());
+                ps.setString(6, stack.payload().sha256());
+                one(ps.executeUpdate());
             }
         }
     }
@@ -532,16 +596,21 @@ public final class ItemRepairRepository {
                 INSERT INTO npc_item_repair_evidence(collection_id,player_id,before_inventory_sha256,after_inventory_sha256,
                   before_units_json,after_units_json,returned_normally,durable) VALUES(?,?,?,?,?,?,?,?)
                 """)) {
-            id(ps, 1, evidence.collectionId()); id(ps, 2, evidence.playerId());
-            ps.setString(3, evidence.beforeInventorySha256()); ps.setString(4, evidence.afterInventorySha256());
+            id(ps, 1, evidence.collectionId());
+            id(ps, 2, evidence.playerId());
+            ps.setString(3, evidence.beforeInventorySha256());
+            ps.setString(4, evidence.afterInventorySha256());
             ps.setString(5, ItemCollectionEvidence.json(evidence.beforeUnits()));
             ps.setString(6, ItemCollectionEvidence.json(evidence.afterUnits()));
-            ps.setBoolean(7, evidence.returnedNormally()); ps.setBoolean(8, evidence.durable()); one(ps.executeUpdate());
+            ps.setBoolean(7, evidence.returnedNormally());
+            ps.setBoolean(8, evidence.durable());
+            one(ps.executeUpdate());
         }
     }
 
     private static Optional<ItemCollectionEvidence> evidence(Connection c, UUID collectionId, boolean lock) throws SQLException {
-        try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_item_repair_evidence WHERE collection_id=?" + (lock ? " FOR UPDATE" : ""))) {
+        try (PreparedStatement ps = prepare(c,
+                "SELECT * FROM npc_item_repair_evidence WHERE collection_id=?" + (lock ? " FOR UPDATE" : ""))) {
             id(ps, 1, collectionId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return Optional.empty();
@@ -551,7 +620,9 @@ public final class ItemRepairRepository {
                             ItemCollectionEvidence.parseJson(rs.getString("before_units_json")),
                             ItemCollectionEvidence.parseJson(rs.getString("after_units_json")),
                             rs.getBoolean("returned_normally"), rs.getBoolean("durable")));
-                } catch (IllegalArgumentException | NullPointerException invalid) { throw new SQLException("Invalid stored item evidence", invalid); }
+                } catch (IllegalArgumentException | NullPointerException invalid) {
+                    throw new SQLException("Invalid stored item evidence", invalid);
+                }
             }
         }
     }
@@ -563,10 +634,13 @@ public final class ItemRepairRepository {
                 if (!rs.next()) return Optional.empty();
                 try {
                     CustodyBytes bytes = new CustodyBytes(rs.getBytes("evidence_bytes"));
-                    if (!bytes.sha256().equals(rs.getString("evidence_sha256"))) throw new SQLException("Resolution evidence hash mismatch");
+                    if (!bytes.sha256().equals(rs.getString("evidence_sha256")))
+                        throw new SQLException("Resolution evidence hash mismatch");
                     return Optional.of(new OperatorResolution(uuid(rs, "resolution_id"), rs.getString("operator_ref"),
                             Decision.valueOf(rs.getString("decision")), bytes));
-                } catch (IllegalArgumentException | NullPointerException invalid) { throw new SQLException("Invalid stored resolution", invalid); }
+                } catch (IllegalArgumentException | NullPointerException invalid) {
+                    throw new SQLException("Invalid stored resolution", invalid);
+                }
             }
         }
     }
@@ -576,8 +650,12 @@ public final class ItemRepairRepository {
                 UPDATE npc_item_repair_collections SET state=?,outcome_code=?,updated_at=CURRENT_TIMESTAMP(3)
                 WHERE collection_id=? AND state=? AND run_id=?
                 """)) {
-            ps.setString(1, state.name()); ps.setString(2, outcome); id(ps, 3, old.quote().collectionId());
-            ps.setString(4, old.state().name()); id(ps, 5, old.runId()); one(ps.executeUpdate());
+            ps.setString(1, state.name());
+            ps.setString(2, outcome);
+            id(ps, 3, old.quote().collectionId());
+            ps.setString(4, old.state().name());
+            id(ps, 5, old.runId());
+            one(ps.executeUpdate());
         }
         return new Stored(old.quote(), state, old.runId(), outcome, old.createdAt(), old.updatedAt());
     }
@@ -585,19 +663,34 @@ public final class ItemRepairRepository {
     /** Reads the hand-in, its lines and return plan, and rebuilds the frozen quote; a changed hash is corrupt. */
     private static Optional<Stored> read(Connection c, UUID collectionId, boolean lock) throws SQLException {
         String suffix = lock ? " FOR UPDATE" : "";
-        UUID player, property, run; long incident; int epoch, ratio; String type, snapshot, day, version, hash, state, outcome;
-        long cash, required, value; Instant created, updated;
+        UUID player, property, run;
+        long incident;
+        int epoch, ratio;
+        String type, snapshot, day, version, hash, state, outcome;
+        long cash, required, value;
+        Instant created, updated;
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_item_repair_collections WHERE collection_id=?" + suffix)) {
             id(ps, 1, collectionId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return Optional.empty();
-                player = uuid(rs, "player_id"); property = uuid(rs, "property_id"); run = uuid(rs, "run_id");
-                incident = rs.getLong("incident_id"); epoch = rs.getInt("ownership_epoch"); ratio = rs.getInt("value_ratio_bps");
-                type = rs.getString("incident_type"); snapshot = rs.getString("repair_snapshot_sha256"); day = rs.getString("quote_day");
-                version = rs.getString("price_version"); hash = rs.getString("quote_sha256"); state = rs.getString("state");
-                outcome = rs.getString("outcome_code"); cash = rs.getLong("cash_cents"); required = rs.getLong("required_value_cents");
+                player = uuid(rs, "player_id");
+                property = uuid(rs, "property_id");
+                run = uuid(rs, "run_id");
+                incident = rs.getLong("incident_id");
+                epoch = rs.getInt("ownership_epoch");
+                ratio = rs.getInt("value_ratio_bps");
+                type = rs.getString("incident_type");
+                snapshot = rs.getString("repair_snapshot_sha256");
+                day = rs.getString("quote_day");
+                version = rs.getString("price_version");
+                hash = rs.getString("quote_sha256");
+                state = rs.getString("state");
+                outcome = rs.getString("outcome_code");
+                cash = rs.getLong("cash_cents");
+                required = rs.getLong("required_value_cents");
                 value = rs.getLong("recipe_value_cents");
-                created = time(rs, "created_at"); updated = time(rs, "updated_at");
+                created = time(rs, "created_at");
+                updated = time(rs, "updated_at");
             }
         }
         var lines = new ArrayList<ItemRepairQuote.Line>();
@@ -614,7 +707,8 @@ public final class ItemRepairRepository {
             }
         }
         var plan = new ArrayList<ItemRepairQuote.ReturnStack>();
-        try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_item_repair_return_plans WHERE collection_id=? ORDER BY stack_no" + suffix)) {
+        try (PreparedStatement ps = prepare(c,
+                "SELECT * FROM npc_item_repair_return_plans WHERE collection_id=? ORDER BY stack_no" + suffix)) {
             id(ps, 1, collectionId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -630,7 +724,7 @@ public final class ItemRepairRepository {
                     new RepairQuote(incident, IncidentType.valueOf(type), snapshot), cash, ratio, required, value, version, lines, plan);
             if (!quote.quoteSha256().equals(hash)) throw new SQLException("Item repair quote hash mismatch");
             return Optional.of(new Stored(quote, State.valueOf(state), run, outcome, created, updated));
-        } catch (IllegalArgumentException | NullPointerException | java.time.DateTimeException | ArithmeticException invalid) {
+        } catch (IllegalArgumentException | NullPointerException | DateTimeException | ArithmeticException invalid) {
             throw new SQLException("Invalid stored item repair", invalid);
         }
     }
@@ -639,7 +733,8 @@ public final class ItemRepairRepository {
 
     /** Player guard, then the hand-in row. For steps that do not touch the property. */
     private Stored locked(UUID collectionId, UUID playerId, Step<Stored> step) throws SQLException {
-        Objects.requireNonNull(collectionId); Objects.requireNonNull(playerId);
+        Objects.requireNonNull(collectionId);
+        Objects.requireNonNull(playerId);
         return transaction(c -> {
             requirePlayer(c, playerId);
             Stored stored = read(c, collectionId, true).orElseThrow(() -> new SQLException("Unknown item repair"));
@@ -650,7 +745,8 @@ public final class ItemRepairRepository {
 
     /** Player guard, then the property (the cash repair's first lock), then the hand-in row. */
     private Settlement lockedSettle(UUID collectionId, UUID playerId, Step<Settlement> step) throws SQLException {
-        Objects.requireNonNull(collectionId); Objects.requireNonNull(playerId);
+        Objects.requireNonNull(collectionId);
+        Objects.requireNonNull(playerId);
         return transaction(c -> {
             requirePlayer(c, playerId);
             Stored peek = read(c, collectionId, false).orElseThrow(() -> new SQLException("Unknown item repair"));
@@ -681,13 +777,16 @@ public final class ItemRepairRepository {
             return new ItemCustody(uuid(rs, "request_nonce"), uuid(rs, "player_id"), uuid(rs, "offer_id"),
                     ItemCustody.Source.valueOf(rs.getString("source")), rs.getInt("quantity"), bytes,
                     Instant.ofEpochMilli(rs.getLong("reserved_at_millis")), Instant.ofEpochMilli(rs.getLong("expires_at_millis")));
-        } catch (IllegalArgumentException | NullPointerException invalid) { throw new SQLException("Invalid stored return custody", invalid); }
+        } catch (IllegalArgumentException | NullPointerException invalid) {
+            throw new SQLException("Invalid stored return custody", invalid);
+        }
     }
 
     private static boolean exists(Connection c, String sql, Object... values) throws SQLException {
         try (PreparedStatement ps = prepare(c, sql)) {
             for (int i = 0; i < values.length; i++) {
-                if (values[i] instanceof UUID id) id(ps, i + 1, id); else ps.setObject(i + 1, values[i]);
+                if (values[i] instanceof UUID id) id(ps, i + 1, id);
+                else ps.setObject(i + 1, values[i]);
             }
             try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
         }
@@ -715,7 +814,8 @@ public final class ItemRepairRepository {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
     }
     private static UUID uuid(ResultSet rs, String name) throws SQLException {
-        byte[] bytes = rs.getBytes(name); return bytes == null ? null : Uuids.fromBytes(bytes);
+        byte[] bytes = rs.getBytes(name);
+        return bytes == null ? null : Uuids.fromBytes(bytes);
     }
     private static void id(PreparedStatement ps, int index, UUID value) throws SQLException { ps.setBytes(index, Uuids.toBytes(value)); }
     private static void one(int count) throws SQLException {
@@ -723,19 +823,30 @@ public final class ItemRepairRepository {
     }
     private static PreparedStatement prepare(Connection c, String sql) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); return ps; }
-        catch (SQLException failure) { ps.close(); throw failure; }
+        try {
+            ps.setQueryTimeout(5);
+            return ps;
+        } catch (SQLException failure) {
+            ps.close();
+            throw failure;
+        }
     }
     @FunctionalInterface private interface Work<T> { T run(Connection c) throws SQLException; }
     private <T> T transaction(Work<T> work) throws SQLException {
         try (Connection c = database.getConnection()) {
-            c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED); c.setAutoCommit(false);
+            c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+            c.setAutoCommit(false);
             try {
                 T result = work.run(c);
                 if (c.getWarnings() != null) throw new SQLException("Item repair SQL warning", c.getWarnings());
-                c.commit(); return result;
+                c.commit();
+                return result;
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }

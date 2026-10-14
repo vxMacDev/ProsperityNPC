@@ -28,9 +28,10 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Every new flag off (the shipped config): the read paths a running server takes with contracts and partnerships
- * off write nothing to the new tables and change no price, rank or desk line. Even rows left from an earlier run
- * give no perk while partnerships are off. Positive control: contracts on writes a contract row.
+ * With the contracts and partnerships flags off (the shipped config), the read paths a running server takes write
+ * nothing to the contract and partnership tables and change no price, rank or desk line. Even rows left from an
+ * earlier run give no perk while partnerships are off. With contracts on, a contract row is written, so the zero
+ * counts mean something.
  */
 @Timeout(120)
 class FlagsOffInertIT extends ContractItBase {
@@ -89,9 +90,9 @@ class FlagsOffInertIT extends ContractItBase {
         var state = residents.readRelationship(mara.id(), owner);
         assertEquals("I prefer to know people before discussing business. There are no offers available.",
                 ResidentDialogue.reply(mara, state, ResidentDialogue.Topic.BUSINESS, 1000, 0, null, catalogue.partnershipsEnabled()).line());
-        assertEquals(0, newRows(), "no row in any of the six new tables");
+        assertEquals(0, newRows(), "no row in any of the six contract and partnership tables");
 
-        // Positive control: the same database with contracts on writes one contract row.
+        // With contracts on, the same database writes one contract row, so the zero count above is real.
         assertEquals(Code.ACCEPTED, contracts.accept(contract("mara-wall-stone"), owner, NOW, DAY, 1).code());
         assertEquals(1, count("npc_town_contracts"));
     }
@@ -110,7 +111,7 @@ class FlagsOffInertIT extends ContractItBase {
         var plan = new HousingDecisionRepository(database, Clock.fixed(NOW, ZONE), ZONE, 4).read(DAY, options(off.rankCaps()));
         assertEquals(1, plan.requests().size());
         assertEquals(0, PartnerRankProbe.partnerPoints(database, DAY, off.rankCaps(), owner));
-        assertEquals(2, PartnerRankProbe.partnerPoints(database, DAY, Map.of(NICO, 2), owner), "positive control: on, it counts");
+        assertEquals(2, PartnerRankProbe.partnerPoints(database, DAY, Map.of(NICO, 2), owner), "with partnerships on, it counts");
         // Commerce: no partner rate while off.
         assertEquals(0, new PartnerRateReader(partnerships, () -> off, () -> false, () -> NOW).feeDiscountPct(owner, NICO, DAY));
     }

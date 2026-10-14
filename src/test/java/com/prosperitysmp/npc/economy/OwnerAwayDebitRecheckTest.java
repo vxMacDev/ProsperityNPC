@@ -181,7 +181,7 @@ class OwnerAwayDebitRecheckTest {
         assertEquals(0, rig.sightings.get(), "off reads nothing");
         rig.vacationDays.set(7);
         assertTrue(rig.away.holds(p), "unsettled day: held until today's decisions are saved");
-        // Positive control for the skeptic's narrowing: a saved not-away decision is fixed for the day.
+        // A saved not-away decision is fixed for the day.
         Rig settled = new Rig();
         settled.vacationDays.set(7);
         assertTrue(settled.away.confirm(TODAY, List.of(new OwnerAway.Choice(p.propertyId(), OWNER, false))));
@@ -216,7 +216,7 @@ class OwnerAwayDebitRecheckTest {
         assertTrue(rig.calls.stream().noneMatch(c -> c.startsWith("money-")), rig.calls.toString());
     }
 
-    // (e2) Negative control: with the flag off the same reload still charges the held home (the defect).
+    // (e2) With the flag off, the same reload still charges the held home: only admission checked owner-away.
 
     @Test void flagOffKeepsTheOldAdmissionOnlyBehavior() {
         Rig rig = new Rig(1);
@@ -226,7 +226,7 @@ class OwnerAwayDebitRecheckTest {
         rig.drain();
         assertTrue(result.join());
         assertTrue(rig.away.holds(home(1)), "the home really was held before the debit");
-        assertEquals(State.PAID, rig.journal.get(1L), "old behavior: charged anyway");
+        assertEquals(State.PAID, rig.journal.get(1L), "with the flag off the home is charged anyway");
         assertTrue(rig.calls.contains("money-DEBIT-1"));
     }
 
@@ -300,7 +300,7 @@ class OwnerAwayDebitRecheckTest {
         Rig credit = new Rig();
         assertEquals(1, observe(Leg.CREDIT, credit, credit.payoutHeld(home(1)), out)[0]);
         assertFalse(out[0].threw());
-        // Flag off: the withdraw happens as before.
+        // Flag off: the withdraw goes ahead.
         Rig off = new Rig();
         off.flag = Boolean.FALSE;
         assertEquals(1, observe(Leg.DEBIT, off, off.payoutHeld(home(1)), out)[0]);

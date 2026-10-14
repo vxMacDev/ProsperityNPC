@@ -25,12 +25,14 @@ public final class ChronicleAdmissionTemplate {
      * The stable event key supports correlation/deduplication; hashing is not anonymization.
      */
     public static Preview render(Receipt receipt, Approval mapping, ZoneId serverZone) {
-        Objects.requireNonNull(receipt); Objects.requireNonNull(mapping); Objects.requireNonNull(serverZone);
-        var request=Objects.requireNonNull(receipt.request());
+        Objects.requireNonNull(receipt);
+        Objects.requireNonNull(mapping);
+        Objects.requireNonNull(serverZone);
+        var request = Objects.requireNonNull(receipt.request());
         if (!request.propertyId().equals(mapping.propertyId()) || !request.worldId().equals(mapping.worldId()))
             throw new IllegalArgumentException("Admission property mapping mismatch");
-        LocalDate date=receipt.appliedAt().atZone(serverZone).toLocalDate();
-        if (date.getYear()<1 || date.getYear()>9999) throw new IllegalArgumentException("Invalid admission date");
+        LocalDate date = receipt.appliedAt().atZone(serverZone).toLocalDate();
+        if (date.getYear() < 1 || date.getYear() > 9999) throw new IllegalArgumentException("Invalid admission date");
         return new Preview(eventKey(request.requestId().toString()), "npc-admission-story-v1",
                 mapping.publicWorldKey(), mapping.regionId(), date, "A new arrival at " + mapping.regionId(),
                 "A resident moved into " + mapping.regionId() + " on " + date + ".");
@@ -38,8 +40,8 @@ public final class ChronicleAdmissionTemplate {
 
     private static String eventKey(String requestId) {
         // Stable across wording, mapping and policy revisions: editing copy must not create a new event.
-        byte[] bytes=("npc-housing-admission\n"+requestId).getBytes(StandardCharsets.UTF_8);
-        try {return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));}
-        catch(NoSuchAlgorithmException impossible) {throw new IllegalStateException(impossible);}
+        byte[] bytes = ("npc-housing-admission\n" + requestId).getBytes(StandardCharsets.UTF_8);
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
+        catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 }

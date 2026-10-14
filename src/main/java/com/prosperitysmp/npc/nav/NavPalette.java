@@ -9,10 +9,10 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * The set of materials that count as a walkable support surface for a scan
- * (§10.1). A palette is "a seed, not unquestioned truth" — admins define named
- * palettes in config ({@code nav.palettes.<name>: [MATERIAL, ...]}); if a name is
- * unknown a broad built-in floor/road default is used.
+ * The set of materials that count as a walkable support surface for a scan.
+ * A palette is only a starting point: admins define named palettes in config
+ * ({@code nav.palettes.<name>: [MATERIAL, ...]}); if a name is unknown a broad
+ * built-in floor/road default is used.
  */
 public final class NavPalette {
 

@@ -44,8 +44,11 @@ public record ItemRepairQuote(UUID collectionId, UUID propertyId, UUID playerId,
     }
 
     public ItemRepairQuote {
-        Objects.requireNonNull(collectionId); Objects.requireNonNull(propertyId); Objects.requireNonNull(playerId);
-        Objects.requireNonNull(quoteDay); Objects.requireNonNull(repair);
+        Objects.requireNonNull(collectionId);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(playerId);
+        Objects.requireNonNull(quoteDay);
+        Objects.requireNonNull(repair);
         lines = List.copyOf(lines);
         returnPlan = List.copyOf(returnPlan);
         if (ownershipEpoch < 0 || quoteDay.getYear() < 1 || quoteDay.getYear() > 9999)

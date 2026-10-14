@@ -12,7 +12,7 @@ use it and learn from it.
 
 Pre-release. It runs on our test server and has not shipped to a production server yet.
 Every feature ships switched off, and nothing simulates, pays or renders until you turn it
-on. Eight safety checks ship on, and each does nothing until the feature it guards is on.
+on. Nine safety checks ship on, and each does nothing until the feature it guards is on.
 Some features are still behind beta flags. Expect to read the config comments and test on a
 copy of your server first.
 
@@ -215,6 +215,25 @@ java -cp ProsperityNPC.jar:mariadb-java-client-3.5.9.jar:HikariCP-7.1.0.jar:slf4
 
 `CommerceRecoveryTool` (in `com.prosperitysmp.npc.commerce`) takes
 `--reconcile-payment` or `--cancel-unstarted` with the same two files.
+
+Paid orders are proven the same way as item repair returns while
+`town.commerce.delivery-save-marker` is on, which is the default. Before giving the items the
+plugin saves the player with a marker for this order and reads that save back. Just before it
+starts, it checks that the player's items have not changed since that save. The order's own save
+then carries an after marker, and the whole file must hold exactly the items from before plus the
+order. If the save cannot be read back, or the items changed, the player sees "Collection is busy"
+and nothing is given or held, so they can collect again. Staff get a log line, and a staff alert
+after the third refusal of the same order. An order that is unclear after it started is held for
+staff, with a log line that gives the item count from the save just before it. With the key off,
+only the inventory and ender chest count is checked, as before.
+
+`CommerceRecoveryTool --inspect-delivery` reports one held order and writes nothing. Its profile
+also names `paper_jar` and `libraries_dir`. The manifest names the same service, root, database
+and reserve, plus `payer_uuid`, `order_id`, `request_nonce` (the order's delivery reference) and
+`world_folder`. It prints the order and delivery state, the counts the plugin recorded, how many of
+the item the stopped server's player file holds, and whether the file carries this order's before
+or after marker. The after marker only shows when the file was saved, so compare the counts. There
+is no in-tool decision for a held order yet.
 
 `ItemRepairRecoveryTool` (in `com.prosperitysmp.npc.economy`) settles one held item repair.
 `/npcadmin itemrepair list` shows the reference. Its profile also names the server's own jar and

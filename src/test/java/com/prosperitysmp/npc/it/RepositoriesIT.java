@@ -202,7 +202,7 @@ class RepositoriesIT {
         assertTrue(incidents.hasOverdueIncident(p2), "past due date is overdue");
     }
 
-    // ---- Premium tenant moves (Batch 8b) -----------------------------------
+    // ---- Premium tenant moves ----------------------------------------------
 
     @Test
     void tenant_premiumMovePersistsAndRespectsCooldown() throws SQLException {

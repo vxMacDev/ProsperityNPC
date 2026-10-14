@@ -86,7 +86,7 @@ class OwnerAwayTest {
         f.days.set(0);
         assertFalse(f.away.isAway(p));
         assertEquals(Set.of(), f.away.awayAmong(List.of(p)));
-        assertEquals(0, f.reads.get(), "off reads nothing and behaves as before");
+        assertEquals(0, f.reads.get(), "off reads nothing");
         f.days.set(7);
         assertTrue(f.away.isAway(p));
         // Sold mid-day: the new owner is decided on their own sighting.
@@ -197,10 +197,10 @@ class OwnerAwayTest {
         assertEquals(List.of(), f.away.unsaved(List.of(p)));
         assertFalse(f.away.confirm(f.day.get(), List.of()));
         assertEquals(0, f.reads.get());
-        // Positive control: the same fixture with the flag on does have a decision to save.
+        // The same fixture with the flag on does have a decision to save, so the empty results above are real.
         f.days.set(7);
         assertEquals(List.of(new OwnerAway.Choice(p.propertyId(), owner, true)), f.away.unsaved(List.of(p)));
-        // Not durable (no database): held is exactly awayAmong, as before.
+        // Not durable (no database): held is exactly awayAmong.
         var plain = new Fixture();
         plain.seen.put(owner, new OwnerAway.Seen(false, NOW - 10 * DAY, 0));
         assertEquals(java.util.Optional.of(plain.away.awayAmong(List.of(p))), plain.away.held(List.of(p)));
@@ -227,7 +227,7 @@ class OwnerAwayTest {
         UUID owner = new UUID(2, 1);
         Property a = home(1, owner, true), b = home(2, owner, true), off = home(3, owner, false), ownerless = home(4, null, true);
         var enrolled = List.of(b, off, a, ownerless);
-        assertEquals(List.of(a, b), HousingRuntime.dailyTargets(enrolled, Set.of()), "flag off: same selection as before");
+        assertEquals(List.of(a, b), HousingRuntime.dailyTargets(enrolled, Set.of()), "no away homes: every enabled, owned home is kept");
         assertEquals(List.of(b), HousingRuntime.dailyTargets(enrolled, Set.of(a.propertyId())));
         assertEquals(List.of(), HousingRuntime.dailyTargets(enrolled, Set.of(a.propertyId(), b.propertyId())));
     }

@@ -64,7 +64,8 @@ class ItemCustodyRepositoryIT {
     }
     @BeforeEach void reset() throws SQLException {
         execute("DROP TRIGGER IF EXISTS custody_finish_failure");
-        for (String table : List.of("npc_item_custody_resolutions", "npc_item_delivery_evidence", "npc_item_custody", "npc_item_custody_players"))
+        for (String table : List.of("npc_item_custody_resolutions", "npc_item_delivery_evidence", "npc_item_custody",
+                "npc_item_repair_collections", "npc_town_contracts", "npc_item_custody_players"))
             execute("DELETE FROM " + table);
         repository = new ItemCustodyRepository(database); player = UUID.randomUUID(); run = UUID.randomUUID();
     }
@@ -261,12 +262,12 @@ class ItemCustodyRepositoryIT {
                 new OperatorResolution(UUID.randomUUID(), "staff:verified", Decision.RETURNED_BY_STAFF, new CustodyBytes(new byte[]{7}))));
         assertEquals(State.AMBIGUOUS, found(request).state());
         assertEquals(0, count("npc_item_custody_resolutions"));
-        // Positive control: the same held delivery takes a commerce decision.
+        // The same held delivery does take a commerce decision, so only the item-return decision was refused above.
         assertEquals(State.DELIVERED, repository.reconcile(request, run, new OperatorResolution(UUID.randomUUID(), "staff:verified",
                 Decision.VERIFIED_DELIVERED, new CustodyBytes(new byte[]{7}))).state());
     }
 
-    /** The two commerce decisions, exactly as dev.58. */
+    /** The two commerce decisions release the hold and never revive the offer. */
     @ParameterizedTest @EnumSource(value = Decision.class, names = {"VERIFIED_DELIVERED", "VERIFIED_NOT_DELIVERED"})
     void explicitOperatorAuditReleasesHoldWithoutEverRevivingTheOffer(Decision decision) throws SQLException {
         ItemCustody request = request(player, Source.WORKER_OUTPUT, 4), other = request(player, Source.MERCHANT_GOODS, 2);
@@ -310,6 +311,153 @@ class ItemCustodyRepositoryIT {
         assertEquals(State.RESERVED, found(b).state());
     }
 
+    // ---- the preflight a marked order delivery asks before its save ----------------------------------------------
+
+    /** What would block this player's delivery, set up before the check. Each case is a fresh player. */
+    private enum Blocker { NONE, CUSTODY_INTENT, CUSTODY_AMBIGUOUS, RETURN_AMBIGUOUS, HAND_IN_INTENT, HAND_IN_AMBIGUOUS,
+        HANDOVER_INTENT, HANDOVER_AMBIGUOUS, THIS_DELIVERED, THIS_AMBIGUOUS, THIS_RECONCILED_NOT_DELIVERED }
+
+    @Test void wouldRefuseAgreesWithBeginDeliveryAndStartsNothing() throws SQLException {
+        int refusals = 0;
+        for (Blocker blocker : Blocker.values()) {
+            player = UUID.randomUUID();
+            ItemCustody request = request(player, Source.MERCHANT_GOODS, 4);
+            repository.reserve(request, NOW);
+            switch (blocker) {
+                case NONE -> { }
+                case CUSTODY_INTENT, CUSTODY_AMBIGUOUS -> {
+                    ItemCustody other = request(player, Source.WORKER_OUTPUT, 2);
+                    repository.reserve(other, NOW);
+                    assertTrue(repository.beginDelivery(other, run, NOW).newlyStarted());
+                    if (blocker == Blocker.CUSTODY_AMBIGUOUS) repository.markAmbiguous(other, run, Uncertainty.DELIVERY_UNCERTAIN);
+                }
+                case RETURN_AMBIGUOUS -> {
+                    ItemCustody returned = returnStack(player, 8);
+                    reserveReturns(List.of(returned));
+                    assertTrue(repository.beginDelivery(returned, run, NOW).newlyStarted());
+                    repository.markAmbiguous(returned, run, Uncertainty.DELIVERY_UNCERTAIN);
+                }
+                case HAND_IN_INTENT -> handIn("INTENT");
+                case HAND_IN_AMBIGUOUS -> handIn("AMBIGUOUS");
+                case HANDOVER_INTENT -> handover("HANDOVER_INTENT");
+                case HANDOVER_AMBIGUOUS -> handover("AMBIGUOUS");
+                case THIS_DELIVERED -> {
+                    repository.beginDelivery(request, run, NOW);
+                    assertEquals(State.DELIVERED, repository.recordDelivery(request, run, confirmed(request)).state());
+                }
+                case THIS_AMBIGUOUS -> {
+                    repository.beginDelivery(request, run, NOW);
+                    repository.markAmbiguous(request, run, Uncertainty.DELIVERY_UNCERTAIN);
+                }
+                case THIS_RECONCILED_NOT_DELIVERED -> {
+                    repository.beginDelivery(request, run, NOW);
+                    repository.markAmbiguous(request, run, Uncertainty.DELIVERY_UNCERTAIN);
+                    repository.reconcile(request, run, new OperatorResolution(UUID.randomUUID(), "staff:verified",
+                            Decision.VERIFIED_NOT_DELIVERED, new CustodyBytes(new byte[]{7})));
+                }
+            }
+            List<Object> before = row(request);
+            int evidence = count("npc_item_delivery_evidence"), custodyRows = count("npc_item_custody");
+            var refusal = repository.wouldRefuse(request, NOW);
+            assertEquals(before, row(request), blocker + ": the row's state, run and updated_at are untouched");
+            assertEquals(evidence, count("npc_item_delivery_evidence"), blocker.name());
+            assertEquals(custodyRows, count("npc_item_custody"), blocker.name());
+            refusal.ifPresent(r -> assertEquals(request.requestNonce(), r.request().requestNonce(), "the refusal names this row"));
+            Start start = repository.beginDelivery(request, run, NOW);
+            assertEquals(refusal.isEmpty(), start.newlyStarted(), blocker + ": wouldRefuse agrees with beginDelivery");
+            assertEquals(blocker == Blocker.NONE, start.newlyStarted(), blocker + ": only a free player starts");
+            if (refusal.isPresent()) {
+                assertEquals(start.receipt(), refusal.get(), blocker + ": the same receipt beginDelivery refused with");
+                refusals++;
+            }
+        }
+        assertEquals(Blocker.values().length - 1, refusals, "every blocker refused");
+    }
+
+    @Test void markerConfirmedIsWrittenOnlyWhenAsked() throws SQLException {
+        assertEquals("INVENTORY_CONFIRMED", ItemCustodyRepository.INVENTORY_CONFIRMED);
+        assertEquals("MARKER_CONFIRMED", ItemCustodyRepository.MARKER_CONFIRMED);
+        ItemCustody plain = request(UUID.randomUUID(), Source.MERCHANT_GOODS, 4);
+        repository.reserve(plain, NOW); repository.beginDelivery(plain, run, NOW);
+        Receipt three = repository.recordDelivery(plain, run, confirmed(plain));
+        assertEquals(State.DELIVERED, three.state());
+        assertEquals("INVENTORY_CONFIRMED", repository.find(plain.playerId(), plain.requestNonce(), NOW).orElseThrow().outcome(),
+                "the 3-arg form writes INVENTORY_CONFIRMED");
+        ItemCustody marked = request(UUID.randomUUID(), Source.WORKER_OUTPUT, 4);
+        repository.reserve(marked, NOW); repository.beginDelivery(marked, run, NOW);
+        assertEquals(State.DELIVERED, repository.recordDelivery(marked, run, confirmed(marked), ItemCustodyRepository.MARKER_CONFIRMED).state());
+        assertEquals("MARKER_CONFIRMED", repository.find(marked.playerId(), marked.requestNonce(), NOW).orElseThrow().outcome());
+        // Evidence that does not confirm the delivery holds it in both forms, whatever was asked for.
+        for (int form = 0; form < 2; form++) {
+            ItemCustody request = request(UUID.randomUUID(), Source.MERCHANT_GOODS, 4);
+            repository.reserve(request, NOW); repository.beginDelivery(request, run, NOW);
+            var partial = new ItemDeliveryEvidence(request.playerId(), request.payload().sha256(), "a".repeat(64), "b".repeat(64), 0, 3, 1, true);
+            Receipt held = form == 0 ? repository.recordDelivery(request, run, partial)
+                    : repository.recordDelivery(request, run, partial, ItemCustodyRepository.MARKER_CONFIRMED);
+            assertEquals(State.AMBIGUOUS, held.state());
+            assertEquals("EVIDENCE_UNCERTAIN", held.outcome());
+        }
+        // Any other outcome is refused before anything is written.
+        ItemCustody refused = request(UUID.randomUUID(), Source.MERCHANT_GOODS, 4);
+        repository.reserve(refused, NOW); repository.beginDelivery(refused, run, NOW);
+        int evidence = count("npc_item_delivery_evidence");
+        for (String outcome : java.util.Arrays.asList("EVIDENCE_UNCERTAIN", "marker_confirmed", "DELIVERED", "", null))
+            assertThrows(IllegalArgumentException.class, () -> repository.recordDelivery(refused, run, confirmed(refused), outcome),
+                    String.valueOf(outcome));
+        assertEquals(evidence, count("npc_item_delivery_evidence"));
+        assertEquals(State.DELIVERY_INTENT, repository.find(refused.playerId(), refused.requestNonce(), NOW).orElseThrow().state());
+    }
+
+    /** State, run, outcome and updated_at of one custody row, read straight from the table. */
+    private static List<Object> row(ItemCustody request) throws SQLException {
+        try (Connection c = database.getConnection(); PreparedStatement ps = c.prepareStatement(
+                "SELECT state,HEX(delivery_run_id),outcome_code,CAST(updated_at AS CHAR) FROM npc_item_custody WHERE request_nonce=?")) {
+            ps.setQueryTimeout(5); ps.setBytes(1, Uuids.toBytes(request.requestNonce()));
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                return java.util.Arrays.asList(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4));
+            }
+        }
+    }
+
+    /**
+     * A running or held item hand-in for the current player. Only the columns beginDelivery reads matter; the foreign keys
+     * are switched off for this one insert, on this connection only, and switched back before it returns to the pool.
+     */
+    private void handIn(String state) throws SQLException {
+        unchecked("INSERT INTO npc_item_repair_collections(collection_id,player_id,property_id,incident_id,ownership_epoch,"
+                + "incident_type,repair_snapshot_sha256,quote_day,cash_cents,value_ratio_bps,required_value_cents,recipe_value_cents,"
+                + "price_version,quote_sha256,state,run_id) VALUES(?,?,?,?,0,'PESTS','" + "a".repeat(64) + "','2026-09-29',100,10000,100,100,"
+                + "'v1','" + "b".repeat(64) + "','" + state + "',?)", UUID.randomUUID(), player, UUID.randomUUID(), null, run);
+    }
+
+    /** A running or held contract hand-over for the current player (see {@link #handIn}). */
+    private void handover(String status) throws SQLException {
+        UUID resident = UUID.randomUUID();
+        unchecked("INSERT INTO npc_town_contracts(contract_id,player_id,kind,definition_id,title,description,giver_id,recipient_id,"
+                + "material,quantity,minimum_stage,duration_minutes,accepted_at_millis,accepted_economy_day,day_slot,expires_at_millis,"
+                + "status,handover_run_id) VALUES(?,?,'SUPPLY','fixture','t','d',?,?,'STONE',1,'STRANGER',10,0,'2026-09-29',1,600000,'"
+                + status + "',?)", UUID.randomUUID(), player, resident, resident, run);
+    }
+
+    /** UUID parameters in order; a null one stands for the next incident number. */
+    private static void unchecked(String sql, UUID... ids) throws SQLException {
+        try (Connection c = database.getConnection()) {
+            try (var off = c.createStatement()) { off.execute("SET FOREIGN_KEY_CHECKS=0"); }
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setQueryTimeout(5);
+                for (int i = 0; i < ids.length; i++) {
+                    if (ids[i] == null) ps.setLong(i + 1, INCIDENT.incrementAndGet());
+                    else ps.setBytes(i + 1, Uuids.toBytes(ids[i]));
+                }
+                assertEquals(1, ps.executeUpdate());
+            } finally {
+                try (var on = c.createStatement()) { on.execute("SET FOREIGN_KEY_CHECKS=1"); }
+            }
+        }
+    }
+    private static final java.util.concurrent.atomic.AtomicLong INCIDENT = new java.util.concurrent.atomic.AtomicLong(1_000);
+
     // ---- item-repairs: REPAIR_RETURN custody ----------------------------------------------------------------
 
     @Test void repairReturnsNeverExpireWhileAPlainReservationDoes() throws SQLException {
@@ -318,13 +466,32 @@ class ItemCustodyRepositoryIT {
         ItemCustody returned = returnStack(player, 16);
         reserveReturns(List.of(returned));
         Instant late = NOW.plusSeconds(3_600);
-        assertEquals(1, repository.expireReservations(late, 100), "positive control: the plain reservation expires");
+        assertEquals(1, repository.expireReservations(late, 100), "the plain reservation expires");
         assertEquals(State.EXPIRED, repository.find(player, plain.requestNonce(), late).orElseThrow().state());
         assertEquals(State.RESERVED, repository.find(player, returned.requestNonce(), late).orElseThrow().state());
         assertEquals(0, repository.expireReservations(late, 100));
         assertTrue(repository.beginDelivery(returned, run, late).newlyStarted(), "still deliverable after its nominal expiry");
         assertFalse(repository.beginDelivery(returned, run, late).newlyStarted(), "one shot");
         assertEquals(State.DELIVERED, repository.recordDelivery(returned, run, confirmed(returned)).state());
+    }
+
+    /** The startup report's read: held paid orders only, including one cut off by a restart once recovery holds it. */
+    @Test void heldOrdersListsHeldPaidOrdersOnly() throws SQLException {
+        ItemCustody cutOff = request(player, Source.MERCHANT_GOODS, 4);
+        UUID other = UUID.randomUUID();
+        ItemCustody waiting = request(other, Source.WORKER_OUTPUT, 4);
+        repository.reserve(cutOff, NOW); repository.reserve(waiting, NOW);
+        assertTrue(repository.beginDelivery(cutOff, run, NOW).newlyStarted());
+        assertEquals(List.of(), repository.heldOrders(10), "a running delivery is not held");
+        assertEquals(1, repository.recoverOtherRuns(UUID.randomUUID(), 100), "a restart holds the cut-off delivery");
+        // The waiting order's player: it has the custody guard row and nothing held, so its return can be held.
+        ItemCustody heldReturn = returnStack(other, 1);
+        reserveReturns(List.of(heldReturn));
+        assertEquals(State.AMBIGUOUS, repository.holdUnreadableReturn(heldReturn, run).state(), "a held return exists");
+        assertEquals(List.of(new ItemCustodyRepository.HeldOrder(player, cutOff.requestNonce(), Source.MERCHANT_GOODS,
+                "INTERRUPTED_RUN")), repository.heldOrders(10), "only the held paid order, not the waiting one or the return");
+        assertEquals(List.of(), repository.heldOrders(0));
+        assertEquals(1, repository.heldOrderCount(), "the count leaves out the waiting order and the held return too");
     }
 
     @Test void heldReturnsNeverCrowdOutAnExpiringReservationInABoundedSweep() throws SQLException {
@@ -366,7 +533,7 @@ class ItemCustodyRepositoryIT {
         assertThrows(SQLException.class, () -> reserveReturns(five), "one set of at most 4 stacks");
         assertEquals(1, count("npc_item_custody"), "the refused set rolled back whole");
         reserveReturns(five.subList(0, 4));
-        assertEquals(5, count("npc_item_custody"), "positive control: four fit");
+        assertEquals(5, count("npc_item_custody"), "four fit");
     }
 
     private ItemCustody returnStack(UUID recipient, int quantity) {

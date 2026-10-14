@@ -17,27 +17,30 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.util.Vector;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Thin wrapper over the Citizens API. Uses an ANONYMOUS registry backed by an
- * in-memory data store, so avatars are transient — Citizens never persists them
+ * in-memory data store, so avatars are transient and Citizens never persists them
  * to disk. Calls are main-thread only, fail closed, and expose a bounded diagnostic.
  * An incomplete cleanup disables new spawns until an explicit destroyAll succeeds.
  *
  * <p>References Citizens classes directly, so it is only ever instantiated when
- * Citizens is present + enabled (checked by the caller before construction).
+ * Citizens is present and enabled (checked by the caller before construction).
  */
 public final class CitizensAdapter {
 
     private final NPCRegistry registry;
     private final ResidentAppearanceCatalogue catalogue;
-    private final java.util.function.Predicate<Location> spawnStandable;
-    private final java.util.function.Predicate<Location> spawnLoaded;
+    private final Predicate<Location> spawnStandable;
+    private final Predicate<Location> spawnLoaded;
     private final Set<NPC> failedCleanup = new HashSet<>();
     private String lastFailure = "none";
     private boolean cleanupFailed;
@@ -45,25 +48,25 @@ public final class CitizensAdapter {
     /** {@code catalogue} is the startup skin universe; authored spawns outside it are refused. */
     public CitizensAdapter(ResidentAppearanceCatalogue catalogue) {
         requireMainThread();
-        this.catalogue = java.util.Objects.requireNonNull(catalogue);
+        this.catalogue = Objects.requireNonNull(catalogue);
         this.registry = CitizensAPI.createAnonymousNPCRegistry(new MemoryNPCDataStore());
         this.spawnStandable = CitizensAdapter::standable;
         this.spawnLoaded = CitizensAdapter::loaded;
     }
 
     // Test seam for Paper's registry-dependent block checks; skin application stays real Citizens code.
-    CitizensAdapter(NPCRegistry registry, java.util.function.Predicate<Location> spawnStandable,
-                    java.util.function.Predicate<Location> spawnLoaded) {
+    CitizensAdapter(NPCRegistry registry, Predicate<Location> spawnStandable,
+                    Predicate<Location> spawnLoaded) {
         this(registry, spawnStandable, spawnLoaded, new ResidentAppearanceCatalogue());
     }
 
-    CitizensAdapter(NPCRegistry registry, java.util.function.Predicate<Location> spawnStandable,
-                    java.util.function.Predicate<Location> spawnLoaded, ResidentAppearanceCatalogue catalogue) {
+    CitizensAdapter(NPCRegistry registry, Predicate<Location> spawnStandable,
+                    Predicate<Location> spawnLoaded, ResidentAppearanceCatalogue catalogue) {
         requireMainThread();
-        this.catalogue = java.util.Objects.requireNonNull(catalogue);
-        this.registry = java.util.Objects.requireNonNull(registry);
-        this.spawnStandable = java.util.Objects.requireNonNull(spawnStandable);
-        this.spawnLoaded = java.util.Objects.requireNonNull(spawnLoaded);
+        this.catalogue = Objects.requireNonNull(catalogue);
+        this.registry = Objects.requireNonNull(registry);
+        this.spawnStandable = Objects.requireNonNull(spawnStandable);
+        this.spawnLoaded = Objects.requireNonNull(spawnLoaded);
     }
 
     /** Creates a PLAYER-type NPC and spawns it at {@code loc}; returns the handle, or null on failure. */
@@ -106,7 +109,7 @@ public final class CitizensAdapter {
             npc.data().set(NPC.Metadata.PATHFINDER_OPEN_DOORS, false);
             npc.data().set(NPC.Metadata.DISABLE_DEFAULT_STUCK_ACTION, true);
             npc.getNavigator().getDefaultParameters().stuckAction(null).destinationTeleportMargin(0);
-            // PLUGIN avoids the explicit Chunk.load() used by COMMAND/CHUNK_LOAD in b4220.
+            // PLUGIN avoids the explicit Chunk.load() used by COMMAND/CHUNK_LOAD in Citizens build 4220.
             spawned = spawnLoaded.test(loc) && npc.spawn(loc, SpawnReason.PLUGIN) && location(npc) != null;
             if (!spawned) {
                 lastFailure = "Citizens rejected spawn";
@@ -136,7 +139,7 @@ public final class CitizensAdapter {
         }
         try {
             var navigator = npc.getNavigator();
-            // setTarget clones DEFAULT parameters in b4220; local parameters are discarded.
+            // setTarget clones DEFAULT parameters in Citizens build 4220; local parameters are discarded.
             navigator.getDefaultParameters().speedModifier(0.9f).range(4f)
                     .pathfinderType(PathfinderType.CITIZENS).debug(false)
                     .stuckAction(null).destinationTeleportMargin(0)
@@ -251,7 +254,7 @@ public final class CitizensAdapter {
             // The caller supplies the visitor's eye position; translate that target
             // to the feet-origin convention without changing the caller's Location.
             Location adjusted = target.clone();
-            if (npc.getEntity() instanceof org.bukkit.entity.LivingEntity living) {
+            if (npc.getEntity() instanceof LivingEntity living) {
                 adjusted.subtract(0, living.getEyeHeight(), 0);
             }
             npc.faceLocation(adjusted);
@@ -338,7 +341,7 @@ public final class CitizensAdapter {
         return new RenderPolicy.Vec(location.getX(), location.getY(), location.getZ());
     }
 
-    /** b4220's iterable strategy follows supplied vectors without a path search or detour. */
+    /** Citizens build 4220's iterable strategy follows supplied vectors without a path search or detour. */
     private final class SegmentStrategy extends AbstractPathStrategy {
         private final NPC npc;
         private final Location from;

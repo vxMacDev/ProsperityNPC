@@ -10,6 +10,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -280,7 +281,7 @@ public final class TownTaskRepository {
                                 RelationshipMemory.Kind.valueOf(rs.getString("kind")),
                                 Instant.ofEpochMilli(rs.getLong("occurred_at_millis")),
                                 LocalDate.parse(rs.getString("economy_day"))));
-                    } catch (IllegalArgumentException | java.time.DateTimeException | NullPointerException e) {
+                    } catch (IllegalArgumentException | DateTimeException | NullPointerException e) {
                         throw new SQLException("invalid stored resident memory", e);
                     }
                 }
@@ -322,7 +323,7 @@ public final class TownTaskRepository {
                 try {
                     return new PlayerGuard(day == null ? null : LocalDate.parse(day),
                             atMissing ? null : Instant.ofEpochMilli(at));
-                } catch (java.time.DateTimeException e) {
+                } catch (DateTimeException e) {
                     throw new SQLException("invalid town task player acceptance day", e);
                 }
             }
@@ -383,7 +384,7 @@ public final class TownTaskRepository {
                     Instant.ofEpochMilli(rs.getLong("accepted_at_millis")), LocalDate.parse(rs.getString("accepted_economy_day")),
                     Instant.ofEpochMilli(rs.getLong("expires_at_millis")), TownTask.Status.valueOf(rs.getString("status")),
                     closedAt, completedDay == null ? null : LocalDate.parse(completedDay));
-        } catch (IllegalArgumentException | java.time.DateTimeException | NullPointerException e) {
+        } catch (IllegalArgumentException | DateTimeException | NullPointerException e) {
             throw new SQLException("invalid stored town task", e);
         }
     }
@@ -402,7 +403,11 @@ public final class TownTaskRepository {
                 c.commit();
                 return result;
             } catch (SQLException | RuntimeException e) {
-                try { c.rollback(); } catch (SQLException rollbackFailure) { e.addSuppressed(rollbackFailure); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollbackFailure) {
+                    e.addSuppressed(rollbackFailure);
+                }
                 throw e;
             }
             // Hikari resets transaction settings on close without risking a commit after failed rollback.
@@ -419,7 +424,11 @@ public final class TownTaskRepository {
             ps.setQueryTimeout(5);
             return ps;
         } catch (SQLException e) {
-            try { ps.close(); } catch (SQLException cleanup) { e.addSuppressed(cleanup); }
+            try {
+                ps.close();
+            } catch (SQLException cleanup) {
+                e.addSuppressed(cleanup);
+            }
             throw e;
         }
     }

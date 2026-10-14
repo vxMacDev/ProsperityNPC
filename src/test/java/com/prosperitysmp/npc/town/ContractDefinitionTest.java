@@ -27,7 +27,7 @@ class ContractDefinitionTest {
     }
 
     @Test void supplyMustGoBackToItsGiverAndDeliverToSomeoneElse() {
-        // Mutation guard: drop the giver/recipient switch and the DELIVER-equal case passes.
+        // Without the giver/recipient rule, a DELIVER with the same giver and recipient would pass.
         assertThrows(IllegalArgumentException.class, () -> of("a", ContractDefinition.Kind.DELIVER, A, A, "COAL", 1, 30));
         assertThrows(IllegalArgumentException.class, () -> of("a", ContractDefinition.Kind.SUPPLY, A, B, "COAL", 1, 30));
         assertThrows(IllegalArgumentException.class, () -> new ContractDefinition(ContractDefinition.PARTNER_START,

@@ -40,7 +40,7 @@ public final class OwnerUnits {
         this.membersOf = membersOf;
     }
 
-    /** Every owner is its own group: the behavior before linked accounts. */
+    /** Every owner is its own group, with no links read. */
     public static OwnerUnits identity() { return IDENTITY; }
 
     /** Union-find over the edges. A null or self edge throws IllegalArgumentException. */
@@ -52,7 +52,8 @@ public final class OwnerUnits {
             UUID ra = root(parent, edge.a()), rb = root(parent, edge.b());
             if (ra.equals(rb)) continue;
             // The smaller root stays the root, so the final root of a component is its smallest member.
-            if (BYTE_ORDER.compare(ra, rb) < 0) parent.put(rb, ra); else parent.put(ra, rb);
+            if (BYTE_ORDER.compare(ra, rb) < 0) parent.put(rb, ra);
+            else parent.put(ra, rb);
         }
         if (parent.isEmpty()) return IDENTITY;
         var keyOf = new HashMap<UUID, UUID>();
@@ -78,7 +79,11 @@ public final class OwnerUnits {
         while (!parent.get(at).equals(at)) at = parent.get(at);
         // Path compression keeps lookups short; it never changes which node is the root.
         UUID walk = node;
-        while (!walk.equals(at)) { UUID next = parent.get(walk); parent.put(walk, at); walk = next; }
+        while (!walk.equals(at)) {
+            UUID next = parent.get(walk);
+            parent.put(walk, at);
+            walk = next;
+        }
         return at;
     }
 

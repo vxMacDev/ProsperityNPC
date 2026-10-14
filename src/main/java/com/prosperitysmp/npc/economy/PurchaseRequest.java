@@ -45,8 +45,11 @@ public record PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int
     }
 
     public PurchaseRequest {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(propertyId); Objects.requireNonNull(payerId);
-        Objects.requireNonNull(kind); Objects.requireNonNull(day);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(payerId);
+        Objects.requireNonNull(kind);
+        Objects.requireNonNull(day);
         if (ownershipEpoch < 0 || day.getYear() < 1 || day.getYear() > 9999) throw new IllegalArgumentException("Invalid quote epoch/day");
         if ((kind == Kind.REPAIR) != (repair != null)) throw new IllegalArgumentException("Invalid repair target");
         if (eviction != null && kind != Kind.EVICT) throw new IllegalArgumentException("Invalid eviction target");
@@ -57,13 +60,16 @@ public record PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int
                     throw new IllegalArgumentException("Invalid upgrade quote");
             }
             case MAINTAIN, INSURANCE -> {
-                if (upgrade != null || targetLevel != null || tenantId != null) throw new IllegalArgumentException("Invalid maintenance quote");
+                if (upgrade != null || targetLevel != null || tenantId != null)
+                    throw new IllegalArgumentException("Invalid maintenance quote");
             }
             case EVICT -> {
-                if (upgrade != null || targetLevel != null || tenantId == null) throw new IllegalArgumentException("Invalid eviction quote");
+                if (upgrade != null || targetLevel != null || tenantId == null)
+                    throw new IllegalArgumentException("Invalid eviction quote");
             }
             case REPAIR -> {
-                if (upgrade != null || targetLevel != null || tenantId != null) throw new IllegalArgumentException("Invalid incident repair quote");
+                if (upgrade != null || targetLevel != null || tenantId != null)
+                    throw new IllegalArgumentException("Invalid incident repair quote");
             }
         }
     }
@@ -77,8 +83,12 @@ public record PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int
         };
     }
     public EventSource source() {
-        return switch (kind) { case UPGRADE -> EventSource.UPGRADE; case MAINTAIN, REPAIR -> EventSource.REPAIR;
-            case EVICT -> EventSource.EVICTION; case INSURANCE -> EventSource.INSURANCE; };
+        return switch (kind) {
+            case UPGRADE -> EventSource.UPGRADE;
+            case MAINTAIN, REPAIR -> EventSource.REPAIR;
+            case EVICT -> EventSource.EVICTION;
+            case INSURANCE -> EventSource.INSURANCE;
+        };
     }
     /** Binds the ledger event to the complete typed quote, including the exact tenant/upgrade. */
     public String eventKey() {

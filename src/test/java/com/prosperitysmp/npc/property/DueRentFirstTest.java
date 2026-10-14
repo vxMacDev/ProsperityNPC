@@ -49,7 +49,7 @@ class DueRentFirstTest {
         var rig = new Rig();
         rig.due = false;
         assertTrue(rig.request());
-        assertEquals(List.of("due", "start"), rig.calls, "flag off and nothing pending: exactly the old direct call");
+        assertEquals(List.of("due", "start"), rig.calls, "flag off and nothing pending: the batch starts directly");
         assertEquals(List.of("batch started"), rig.replies);
         rig.calls.clear(); rig.replies.clear();
         rig.batchAccepted = false;

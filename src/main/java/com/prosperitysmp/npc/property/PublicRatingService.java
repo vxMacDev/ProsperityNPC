@@ -26,7 +26,9 @@ public final class PublicRatingService implements AutoCloseable {
     private final Map<UUID, Long> lastAsk = new HashMap<>(); // main thread only
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(8), task -> {
-                Thread t = new Thread(task, "prosperity-npc-public-rating"); t.setDaemon(true); return t;
+                Thread t = new Thread(task, "prosperity-npc-public-rating");
+                t.setDaemon(true);
+                return t;
             }, new ThreadPoolExecutor.AbortPolicy());
     private volatile boolean closed;
 
@@ -41,17 +43,24 @@ public final class PublicRatingService implements AutoCloseable {
     public void show(Player player) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Public rating requires the main thread");
         if (closed || !plugin.isEnabled() || plugin.armAdapter() == null || plugin.propertyService() == null) {
-            say(player, "Property ratings are unavailable."); return;
+            say(player, "Property ratings are unavailable.");
+            return;
         }
         long now = System.nanoTime();
         Long previous = lastAsk.get(player.getUniqueId());
-        if (previous != null && now - previous < COOLDOWN_NANOS) { say(player, "Please wait a moment."); return; }
+        if (previous != null && now - previous < COOLDOWN_NANOS) {
+            say(player, "Please wait a moment.");
+            return;
+        }
         lastAsk.put(player.getUniqueId(), now);
         if (lastAsk.size() > 512) lastAsk.values().removeIf(t -> now - t > COOLDOWN_NANOS);
         var at = plugin.armAdapter().regionAt(player.getLocation());
         var property = at.flatMap(a -> plugin.propertyService().findByWorldRegion(a.worldId(), a.regionId()))
                 .filter(Property::enabled).orElse(null);
-        if (property == null) { say(player, "Stand inside an enrolled property to see its rating."); return; }
+        if (property == null) {
+            say(player, "Stand inside an enrolled property to see its rating.");
+            return;
+        }
         var day = clock.today();
         UUID viewer = player.getUniqueId();
         boolean away = plugin.ownerAway().isAway(property); // main thread; today's vacation decision
@@ -82,5 +91,8 @@ public final class PublicRatingService implements AutoCloseable {
         player.sendMessage(Component.text(message, NamedTextColor.GRAY));
     }
 
-    @Override public void close() { closed = true; worker.shutdownNow(); }
+    @Override public void close() {
+        closed = true;
+        worker.shutdownNow();
+    }
 }

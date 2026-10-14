@@ -33,8 +33,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * {@code /npcnav} — the draft → validate → publish workflow for district
- * navigation graphs (§10.1). A material scan only ever writes a DRAFT; it becomes
+ * {@code /npcnav}: the draft → validate → publish workflow for district
+ * navigation graphs. A material scan only ever writes a DRAFT; it becomes
  * the active graph after {@code validate} passes and an admin {@code publish}es it.
  */
 public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoCloseable {
@@ -57,11 +57,17 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
     private record TagRequest(UUID playerId, UUID graphId, UUID worldId, double x, double y, double z,
                               String tag, boolean add) { }
     private record TagReply(boolean success, String message) { }
-    @FunctionalInterface private interface Work { Reply run() throws SQLException; }
+    @FunctionalInterface
+    private interface Work {
+        Reply run() throws SQLException;
+    }
+
     private record Request(CommandSender sender, UUID playerId, UUID worldId, World scanWorld, Work work) { }
     private record Line(NamedTextColor color, String text) { }
     private record Reply(List<Line> lines, NavGraphRepository.GraphInfo invalidate) {
-        private Reply { lines = List.copyOf(lines); }
+        private Reply {
+            lines = List.copyOf(lines);
+        }
     }
 
     private static Reply reply(NamedTextColor color, String text) {
@@ -121,7 +127,8 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         UUID graphId = parseId(sender, args);
         if (graphId == null) return;
         if (!NavGraphRepository.isValidDraftTag(args[2])) {
-            send(sender, NamedTextColor.RED, "Use home, work, market, leisure, spawn, home/work/market/leisure:<residentUUID>, or work:<occupation>.");
+            send(sender, NamedTextColor.RED,
+                    "Use home, work, market, leisure, spawn, home/work/market/leisure:<residentUUID>, or work:<occupation>.");
             return;
         }
         Location position = player.getLocation();
@@ -169,7 +176,11 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         if (closed) return;
         if (capture != null) {
             try {
-                if (!authorized(scanRequest)) { capture = null; scanRequest = null; scanOutstanding = false; }
+                if (!authorized(scanRequest)) {
+                    capture = null;
+                    scanRequest = null;
+                    scanOutstanding = false;
+                }
                 else if (System.nanoTime() - scanStarted >= TimeUnit.MINUTES.toNanos(10)) {
                     throw new IllegalStateException("Scan capture deadline exceeded");
                 }
@@ -227,7 +238,10 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
                 send(request.sender(), NamedTextColor.GRAY, "Navigation authoring is busy. Try again shortly.");
             }
         }
-        if (capture == null) { tagPump.cancel(); tagPump = null; }
+        if (capture == null) {
+            tagPump.cancel();
+            tagPump = null;
+        }
     }
 
     private boolean authorized(Request request) {
@@ -502,7 +516,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
     }
 
     private void help(CommandSender sender) {
-        send(sender, NamedTextColor.AQUA, "/npcnav — district navigation graphs");
+        send(sender, NamedTextColor.AQUA, "/npcnav: district navigation graphs");
         send(sender, NamedTextColor.GRAY, "  scanhere <region> <radius> [palette]   (in-game)");
         send(sender, NamedTextColor.GRAY, "  scanbox <region> <world> <x1> <y1> <z1> <x2> <y2> <z2> [palette]");
         send(sender, NamedTextColor.GRAY, "  validate <graphId> | publish <graphId> | info <graphId> | list");

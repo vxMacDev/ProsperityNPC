@@ -9,6 +9,7 @@ import org.bukkit.boss.BossBar;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -54,10 +55,11 @@ final class ResidentGuide implements AutoCloseable {
         if (journey != null) journey.bar().removeAll();
     }
     private void tick() {
-        for (var journey : java.util.List.copyOf(journeys.values())) {
+        for (var journey : List.copyOf(journeys.values())) {
             Player player = journey.login();
             if (!allowed(player) || player.getWorld() != journey.target().getWorld()
-                    || System.nanoTime() - journey.expires() >= 0) { stop(player.getUniqueId()); continue; }
+                    || System.nanoTime() - journey.expires() >= 0) { stop(player.getUniqueId());
+            continue; }
             try { update(journey); }
             catch (RuntimeException | LinkageError failure) { stop(player.getUniqueId()); }
         }
@@ -65,7 +67,10 @@ final class ResidentGuide implements AutoCloseable {
     private void update(Journey journey) {
         Location from = journey.login().getLocation();
         double distance = from.distance(journey.target());
-        if (distance <= 5) { stop(journey.login().getUniqueId()); return; }
+        if (distance <= 5) {
+            stop(journey.login().getUniqueId());
+            return;
+        }
         String direction = GuideGeometry.direction(journey.target().getX() - from.getX(),
                 journey.target().getZ() - from.getZ(), from.getYaw());
         journey.bar().setTitle(journey.label() + " | " + direction + " | " + Math.round(distance) + " blocks");
@@ -75,6 +80,6 @@ final class ResidentGuide implements AutoCloseable {
         if (closed) return;
         closed = true;
         task.cancel();
-        for (UUID player : java.util.List.copyOf(journeys.keySet())) stop(player);
+        for (UUID player : List.copyOf(journeys.keySet())) stop(player);
     }
 }

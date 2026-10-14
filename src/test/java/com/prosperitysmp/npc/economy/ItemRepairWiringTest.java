@@ -43,7 +43,7 @@ class ItemRepairWiringTest {
 
     @Test void itemRepairCodeHasNoMoneyDependency() throws Exception {
         for (String file : ITEM_REPAIR_FILES) assertEquals(List.of(), moneyMentions(code(source(file))), file + " reaches money");
-        // Positive controls: the same scan finds money in the cash repair path and in plugin calls of any case.
+        // The same scan does find money in the cash repair path and in plugin calls of any case, so the empty results above are real.
         assertTrue(moneyMentions(code(source("economy/UtilityPaymentRuntime.java"))).contains("TransferJournal"));
         assertEquals(List.of("utilitypayments("), moneyMentions("var p = plugin.utilityPayments();"));
         assertEquals(List.of("vaultaccess"), moneyMentions("plugin.vaultAccess()"));
@@ -85,7 +85,7 @@ class ItemRepairWiringTest {
      * reserveReturn in the settle and in the offline return resolution, reconcileHeldReturn only in the latter.
      */
     @Test void onlyItemRepairsCreateOrSettleReturns() throws Exception {
-        // Positive controls: the scan sees a method reference and a reflective name, not a longer identifier.
+        // The scan sees a method reference and a reflective name, but not a longer identifier.
         assertEquals(1, mentions("Function<?, ?> f = ItemCustodyRepository::reserveReturn;", "reserveReturn"));
         assertEquals(1, mentions("type.getMethod(\"reserveReturn\", Connection.class)", "reserveReturn"));
         assertEquals(0, mentions("reserveReturnLater();", "reserveReturn"));
@@ -131,7 +131,7 @@ class ItemRepairWiringTest {
                                 case ITEM_DELIVERY -> itemDelivery.closeAsync().toCompletableFuture();
                             }), drains);
                 """)));
-        // No other close of these four, and the block sits where dev.58 had it: after housing, before the price book.
+        // No other close of these four, and the block sits after housing and before the price book.
         String disable = between(plugin, "public void onDisable()", "public void trackDatabaseWorker(");
         for (String runtime : List.of("commerce", "commercePayments", "itemRepairs", "itemDelivery"))
             assertEquals(1, disable.split(java.util.regex.Pattern.quote(runtime + ".closeAsync()"), -1).length - 1, runtime);
@@ -149,8 +149,8 @@ class ItemRepairWiringTest {
         var partial = new ItemDeliveryEvidence(java.util.UUID.randomUUID(), "a".repeat(64), "b".repeat(64), "c".repeat(64), 10, 50, 24, true);
         var delivery = ItemCustodyRepository.Decision.VERIFIED_DELIVERED;
         var none = ItemCustodyRepository.Decision.VERIFIED_NOT_DELIVERED;
-        assertNull(ItemRepairRecoveryTool.returnDecisionProblem(delivery, 74, 64, delivered), "positive control");
-        assertNull(ItemRepairRecoveryTool.returnDecisionProblem(none, 10, 64, nothing), "positive control");
+        assertNull(ItemRepairRecoveryTool.returnDecisionProblem(delivery, 74, 64, delivered), "matching counts are clear");
+        assertNull(ItemRepairRecoveryTool.returnDecisionProblem(none, 10, 64, nothing), "matching counts are clear");
         assertNotNull(ItemRepairRecoveryTool.returnDecisionProblem(delivery, 73, 64, delivered), "file off by one");
         assertNotNull(ItemRepairRecoveryTool.returnDecisionProblem(delivery, 74, 63, delivered), "not the whole stack");
         assertNotNull(ItemRepairRecoveryTool.returnDecisionProblem(delivery, 50, 64, partial), "a partial delivery is never clear");
@@ -176,10 +176,10 @@ class ItemRepairWiringTest {
 
     @Test void handInCollectedNeedsRecordedTakeAndAMatchingFile() {
         var whole = took(List.of(20, 8), List.of(4, 0));
-        assertNull(handIn(Decision.VERIFIED_COLLECTED, List.of(4, 0), whole), "positive control");
+        assertNull(handIn(Decision.VERIFIED_COLLECTED, List.of(4, 0), whole), "matching counts are clear");
         // The take was recorded but the save was not proven: the stopped server's file can still settle it.
         var unproven = new ItemCollectionEvidence(PLAYER, HAND_IN, "a".repeat(64), "b".repeat(64), List.of(20, 8), List.of(4, 0), true, false);
-        assertNull(handIn(Decision.VERIFIED_COLLECTED, List.of(4, 0), unproven), "positive control: a save that was not proven");
+        assertNull(handIn(Decision.VERIFIED_COLLECTED, List.of(4, 0), unproven), "a save that was not proven");
         assertNotNull(handIn(Decision.VERIFIED_COLLECTED, List.of(4, 1), whole), "file off by one");
         assertNotNull(handIn(Decision.VERIFIED_COLLECTED, List.of(20, 8), whole), "the file still holds everything: a lost save");
         // The file agrees with the recorded counts in these three; only the recipe check can refuse them.
@@ -193,7 +193,7 @@ class ItemRepairWiringTest {
     @Test void itemsMovedIntoAChestNeverLookLikeATake() {
         // The player put the recipe in a chest. The file shows before minus quantity on every line, exactly like a take.
         var moved = List.of(4, 0);
-        assertNull(handIn(Decision.VERIFIED_COLLECTED, moved, took(List.of(20, 8), List.of(4, 0))), "positive control: a real take");
+        assertNull(handIn(Decision.VERIFIED_COLLECTED, moved, took(List.of(20, 8), List.of(4, 0))), "a real take");
         assertNotNull(handIn(Decision.VERIFIED_COLLECTED, moved, null), "no recorded take: the file alone is never enough");
         assertNotNull(handIn(Decision.VERIFIED_COLLECTED, moved, took(List.of(20, 8), List.of(20, 8))),
                 "the plugin recorded nothing taken: the items went somewhere else");
@@ -202,7 +202,7 @@ class ItemRepairWiringTest {
 
     @Test void handInNotCollectedNeedsRecordedNothingTakenAndTheBeforeCount() {
         var nothing = took(List.of(20, 8), List.of(20, 8));
-        assertNull(handIn(Decision.VERIFIED_NOT_COLLECTED, List.of(20, 8), nothing), "positive control");
+        assertNull(handIn(Decision.VERIFIED_NOT_COLLECTED, List.of(20, 8), nothing), "matching counts are clear");
         assertNotNull(handIn(Decision.VERIFIED_NOT_COLLECTED, List.of(20, 7), nothing), "file off by one");
         assertNotNull(handIn(Decision.VERIFIED_NOT_COLLECTED, List.of(4, 0), nothing), "items gone from the file");
         assertNotNull(handIn(Decision.VERIFIED_NOT_COLLECTED, List.of(20, 8), took(List.of(20, 8), List.of(4, 0))),
@@ -239,7 +239,7 @@ class ItemRepairWiringTest {
         assertEquals(1, mentions(tool, "handInProblem") - 1, "one call besides the declaration");
         assertEquals(1, mentions(tool, "returnProblem") - 1, "one call besides the declaration");
         assertEquals(2, mentions(tool, "readSaved"), "both paths read through the DataVersion-aware reader");
-        assertEquals(java.util.Map.of(), mentionsInMain("readUnits"), "the reader that skipped the DataVersion is gone");
+        assertEquals(java.util.Map.of(), mentionsInMain("readUnits"), "no reader skips the DataVersion");
         String runtime = squash(code(source("economy/ItemRepairRuntime.java")));
         assertTrue(runtime.contains("for (UUID reference : heldReferences(held)) alertHeld(reference);"), "startup alerts every held reference");
     }
@@ -255,7 +255,7 @@ class ItemRepairWiringTest {
     }
 
     /**
-     * P1-A wiring. Both hand-ins save before the take and read that save back before writing their intent, refuse a take
+     * Both hand-ins save before the take and read that save back before writing their intent, refuse a take
      * when the inventory is not exactly as saved, and prove the take's save against that read. The proof itself is
      * tested in ItemSaveProofTest; captureCollection refuses a missing read, so no runtime can skip it.
      */
@@ -289,33 +289,44 @@ class ItemRepairWiringTest {
     /**
      * A REPAIR_RETURN delivery is proven like a take: a save just before it with the return's before marker, read back
      * before the delivery starts; the after marker set in the delivery's tick before its own save; then the bound proof.
-     * Commerce deliveries skip all of it and keep the dev.58 capture. The proof itself is tested in ItemSaveProofTest;
-     * capture() refuses a return, so a return can never fall back to the old proof.
+     * Unmarked commerce deliveries skip all of it and keep the plain capture. The proof itself is tested in
+     * ItemSaveProofTest; capture() refuses a return, so a return can never fall back to the plain proof. A return is always
+     * marked: marked() never reads the commerce key for it (ItemDeliveryRuntimeHelpersTest).
      */
     @Test void aReturnDeliveryIsProvenAgainstASaveMadeJustBefore() throws Exception {
         String delivery = squash(code(source("commerce/ItemDeliveryRuntime.java")));
         inOrder(delivery, "boolean returned = custody.source() == ItemCustody.Source.REPAIR_RETURN;",
-                "if (returned) { try { ItemInventoryCustody.saveBeforeReturn(player, custody.requestNonce()); }",
-                "catch (RuntimeException | LinkageError unsaved) { saveCheckRefused(custody); finish(operation, Result.NOT_READY); return; } }",
-                "if (returned) {", "var read = saveProof.returnBaseline(playerDataWorld, custody);",
+                "boolean marked = marked(custody.source(), this::saveMarkerOn);",
+                "if (marked && !savedBefore(operation)) return;",
+                "if (marked) {", "var read = saveProof.deliveryBaseline(playerDataWorld, custody);",
                 "if (read.isEmpty()) { post(() -> { saveCheckRefused(custody); finish(operation, Result.NOT_READY); }); return; }",
                 "var start = repository.beginDelivery(custody, runId, Instant.now());",
                 "post(() -> dispatch(operation, start, before));",
-                "if (baseline != null) ItemInventoryCustody.markReturnDelivered(operation.login(), operation.custody().requestNonce());",
+                "private boolean savedBefore(Pending operation) {",
+                "try { ItemInventoryCustody.saveBeforeDelivery(operation.login(), operation.custody()); return true; }",
+                "catch (RuntimeException | LinkageError unsaved) { saveCheckRefused(operation.custody()); finish(operation, Result.NOT_READY); return false; }",
+                "private void dispatch(",
+                "if (baseline != null) ItemInventoryCustody.markDelivered(operation.login(), operation.custody());",
                 "evidence = ItemInventoryCustody.deliver(operation.login(), operation.custody());",
                 "var persisted = baseline == null ? saveProof.capture(playerDataWorld, operation.custody(), evidence)",
-                ": saveProof.captureReturn(playerDataWorld, operation.custody(), evidence, baseline);",
-                "if (persisted.isEmpty()) { ambiguous(operation); return; }");
+                ": saveProof.captureDelivery(playerDataWorld, operation.custody(), evidence, baseline);",
+                "if (persisted.isEmpty()) { ambiguous(operation, baseline); return; }");
         String custody = squash(code(source("commerce/ItemInventoryCustody.java")));
-        assertTrue(custody.contains("mark(player, ItemSaveProof.RETURN_MARKER_KEY, ItemSaveProof.marker(requestNonce, false)); player.saveData();"));
-        assertTrue(custody.contains("mark(player, ItemSaveProof.RETURN_MARKER_KEY, ItemSaveProof.marker(requestNonce, true));"));
-        assertEquals(1, mentions(delivery, "saveBeforeReturn"));
-        assertEquals(1, mentions(delivery, "markReturnDelivered"));
+        assertTrue(custody.contains("mark(player, ItemSaveProof.markerKeyFor(custody.source()), ItemSaveProof.marker(custody.requestNonce(), false)); player.saveData();"));
+        assertTrue(custody.contains("mark(player, ItemSaveProof.markerKeyFor(custody.source()), ItemSaveProof.marker(custody.requestNonce(), true));"));
+        // One call site each: the before-save inside savedBefore, the after marker in dispatch under baseline != null.
+        assertEquals(1, mentions(delivery, "saveBeforeDelivery"));
+        assertEquals(1, mentions(delivery, "markDelivered"));
+        assertEquals(java.util.Map.of("ItemDeliveryRuntime.java", 1, "ItemInventoryCustody.java", 1), mentionsInMain("saveBeforeDelivery"));
+        assertEquals(java.util.Map.of("ItemDeliveryRuntime.java", 1, "ItemInventoryCustody.java", 1), mentionsInMain("markDelivered"));
+        // savedBefore: its declaration, the marked return path and the marked order path (afterPreflight).
+        assertEquals(3, mentions(delivery, "savedBefore"));
+        assertTrue(between(delivery, "private void afterPreflight(", "static Result preflightReply(").contains("if (!savedBefore(operation)) return;"));
     }
 
     /**
      * A return whose stored items cannot be read is held in the database before anyone hears "held": the reply is HELD
-     * only when the row really is AMBIGUOUS. Commerce keeps the dev.58 check and reply, with nothing written.
+     * only when the row really is AMBIGUOUS. Commerce keeps its plain check and reply, with nothing written.
      */
     @Test void anUnreadableReturnIsHeldInTheDatabaseBeforeTheReplySaysHeld() throws Exception {
         String delivery = squash(code(source("commerce/ItemDeliveryRuntime.java")));
@@ -327,23 +338,27 @@ class ItemRepairWiringTest {
                 "catch (RuntimeException | LinkageError unreadable) { holdUnreadable(operation); return; }",
                 "if (!ItemInventoryCustody.canReceive(player, item)) { finish(operation, Result.NO_SPACE); return; }",
                 "catch (RuntimeException | LinkageError unclear) { finish(operation, Result.NOT_READY); return; }",
-                "ItemInventoryCustody.saveBeforeReturn(player, custody.requestNonce());");
+                "if (marked && !savedBefore(operation)) return;");
         assertEquals(1, mentions(deliver, "holdUnreadable"), "only the unreadable return is held this way");
         String checks = deliver.substring(0, deliver.indexOf("submit("));
         assertEquals(1, checks.split(java.util.regex.Pattern.quote("Result.HELD"), -1).length - 1,
                 "before any SQL, the only HELD reply is the commerce one; an unreadable return hears HELD only through holdUnreadable");
         // The worker step failing: before beginDelivery a return held nothing (NOT_READY); after it, the row may be a started
         // intent, so it is read back and held where staff see it. Commerce keeps HELD.
-        String worker = between(deliver, "submit(", "private void unclearReturnStart(");
-        inOrder(worker, "var read = saveProof.returnBaseline(playerDataWorld, custody);",
+        String worker = between(deliver, "submit(", "static boolean marked(");
+        inOrder(worker, "var read = saveProof.deliveryBaseline(playerDataWorld, custody);",
                 "startTried.set(true); var start = repository.beginDelivery(custody, runId, Instant.now());",
-                "}, () -> { if (!returned) finish(operation, Result.HELD); else if (startTried.get()) unclearReturnStart(operation);"
+                "}, () -> { if (!marked) finish(operation, Result.HELD); else if (startTried.get()) unclearStart(operation);"
                         + " else finish(operation, Result.NOT_READY); });");
         assertEquals(1, worker.split(java.util.regex.Pattern.quote("Result.HELD"), -1).length - 1);
-        String unclear = between(deliver, "private void unclearReturnStart(", "static boolean nothingStarted(");
-        inOrder(unclear, "boolean waiting = nothingStarted(repository.find(custody.playerId(), custody.requestNonce(), Instant.now()));",
+        String unclear = between(deliver, "private void unclearStart(", "static boolean nothingStarted(");
+        // A return has no baseline here, so heldReport does nothing for it.
+        inOrder(unclear, "private void unclearStart(Pending operation) { unclearStart(operation, null); }",
+                "private void unclearStart(Pending operation, ItemSaveProof.Baseline baseline) {",
+                "boolean waiting = nothingStarted(repository.find(custody.playerId(), custody.requestNonce(), Instant.now()));",
                 "if (!waiting) repository.markAmbiguous(custody, runId, ItemCustodyRepository.Uncertainty.DELIVERY_UNCERTAIN);",
-                "post(() -> finish(operation, waiting ? Result.NOT_READY : Result.HELD));", "}, () -> finish(operation, Result.HELD));");
+                "post(() -> { if (!waiting) heldReport(operation, baseline); finish(operation, waiting ? Result.NOT_READY : Result.HELD); });",
+                "}, () -> { heldReport(operation, baseline); finish(operation, Result.HELD); });");
         String hold = between(delivery, "private void holdUnreadable(", "static Result unreadableReply(");
         inOrder(hold, "var receipt = repository.holdUnreadableReturn(custody, runId);",
                 "post(() -> finish(operation, unreadableReply(receipt.state())));", "finish(operation, Result.NOT_READY);");
@@ -352,9 +367,9 @@ class ItemRepairWiringTest {
     }
 
     /**
-     * Codex re-check: a player who left mid-return was never called back, so the claim stayed set (HOME_BUSY until a
-     * restart) and a held return raised no staff alert. A return's caller is now always told, and it says nothing in chat
-     * unless the player is here.
+     * A return's caller is always told when the delivery finishes, even if the player left. Otherwise the claim stays
+     * set (HOME_BUSY until a restart) and a held return raises no staff alert. Nothing is said in chat unless the
+     * player is here.
      */
     @Test void aReturnCallerIsToldAfterThePlayerLeavesAndSaysNothingToThem() throws Exception {
         String delivery = squash(code(source("commerce/ItemDeliveryRuntime.java")));
@@ -379,16 +394,174 @@ class ItemRepairWiringTest {
                 "the next stack after a player left clears the claim");
     }
 
-    /** A refused save before a return is said once per return per run, then raised to staff after repeated refusals. */
+    /** Every start reports each held paid order, including one cut off by a stop or crash, and a failed read only skips it. */
+    @Test void aHeldOrderIsReportedAtEveryStart() throws Exception {
+        String delivery = squash(code(source("commerce/ItemDeliveryRuntime.java")));
+        String start = between(delivery, "java.util.function.Predicate<ItemCustody.Source> gates, InventoryCustodyGate inventoryGate) {",
+                "public boolean ready()");
+        inOrder(start, "while (repository.recoverOtherRuns(runId, 100) != 0) { if (closed) return; }",
+                "post(() -> ready = true);",
+                "try { held = repository.heldOrders(HELD_REPORT_LIMIT); total = repository.heldOrderCount(); }",
+                "catch (java.sql.SQLException | RuntimeException unreadable) { held = java.util.List.of(); total = 0; }",
+                "post(() -> reportHeldOrders(report, all));", "}, () -> ready = false);");
+        String report = between(delivery, "private void reportHeldOrders(", "public boolean ready()");
+        inOrder(report, "for (var order : held) {", "if (!gates.test(order.source()) || !saveMarkerOn()) continue;",
+                "DeliverySaveCheckWatch.orderHeldAtStartLine(order.requestNonce(), order.playerId(), order.outcome())",
+                "com.prosperitysmp.npc.alert.StaffAlerts.Kind.COMMERCE_DELIVERY_HELD",
+                "if (reported > 0 && total > held.size()) plugin.getLogger().warning(DeliverySaveCheckWatch.orderHeldMoreLine(total - held.size(), total));");
+        String more = com.prosperitysmp.npc.commerce.DeliverySaveCheckWatch.orderHeldMoreLine(3, 67);
+        assertTrue(more.startsWith("3 more held order deliveries") && more.contains("67 held in all") && !more.contains("\u2014"), more);
+        String line = com.prosperitysmp.npc.commerce.DeliverySaveCheckWatch.orderHeldAtStartLine(new java.util.UUID(1, 2),
+                PLAYER, "INTERRUPTED_RUN");
+        assertTrue(line.contains("INTERRUPTED_RUN") && line.contains(PLAYER.toString()) && !line.contains("\u2014"), line);
+    }
+
+    /** The saved file holds the ridden vehicle and its items too, so the 'nothing changed' hash covers them. */
+    @Test void theInventoryHashCoversTheRiddenVehicle() throws Exception {
+        String custody = squash(code(source("commerce/ItemInventoryCustody.java")));
+        String hash = between(custody, "private static String inventoryHash(", "private static void update(");
+        inOrder(hash, "player.getEnderChest()}) update(hash, inventory);", "org.bukkit.entity.Entity root = player.getVehicle();",
+                "while (root != null && root.getVehicle() != null) root = root.getVehicle();",
+                "if (root == null) hash.update((byte) 0);", "if (entity instanceof Player) continue;",
+                "hash.update(entity.getUniqueId().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));",
+                "if (entity instanceof org.bukkit.inventory.InventoryHolder holder) update(hash, holder.getInventory());",
+                "if (entity instanceof org.bukkit.entity.LivingEntity living && living.getEquipment() != null) update(hash, equipment(living.getEquipment()));",
+                "next.addAll(entity.getPassengers());");
+        String slots = between(custody, "private static ItemStack[] equipment(", "private static void update(MessageDigest hash, ItemStack[] items)");
+        inOrder(slots, "org.bukkit.inventory.EquipmentSlot.values()", "ItemStack item = equipment.getItem(slots[i]);",
+                "catch (IllegalArgumentException unsupported) { items[i] = null; }");
+    }
+
+    /**
+     * A refused save before a marked delivery is said once per delivery per run, then raised to staff after repeated
+     * refusals. Returns keep their own watch, lines and alert kind; orders use orderSaveChecks and COMMERCE_SAVE_CHECK.
+     */
     @Test void aRefusedSaveCheckBeforeAReturnIsLoggedAndRaised() throws Exception {
         String delivery = squash(code(source("commerce/ItemDeliveryRuntime.java")));
-        assertEquals(3, mentions(delivery, "saveCheckRefused"), "the declaration and both NOT_READY paths of a return");
+        assertEquals(4, mentions(delivery, "saveCheckRefused"),
+                "the declaration, the refused save (savedBefore), and the unreadable baseline of a return and of an order");
         String refused = between(delivery, "private void saveCheckRefused(", "private boolean authorized(");
-        inOrder(refused, "switch (saveChecks.refused(custody.requestNonce()))",
-                "case LOG -> plugin.getLogger().warning(ReturnSaveCheckWatch.logLine(custody.requestNonce(), custody.playerId()));",
+        inOrder(refused, "if (custody.source() == ItemCustody.Source.REPAIR_RETURN) {",
+                "switch (saveChecks.refused(custody.requestNonce()))",
+                "case LOG -> plugin.getLogger().warning(DeliverySaveCheckWatch.logLine(custody.requestNonce(), custody.playerId()));",
                 "case ALERT -> plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.ITEM_REPAIR_HELD,",
-                "ReturnSaveCheckWatch.staffAlert(custody.requestNonce()));");
+                "DeliverySaveCheckWatch.staffAlert(custody.requestNonce()));", "return; }",
+                "switch (orderSaveChecks.refused(custody.requestNonce()))",
+                "case LOG -> plugin.getLogger().warning(DeliverySaveCheckWatch.orderLogLine(custody.requestNonce(), custody.playerId()));",
+                "case ALERT -> plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.COMMERCE_SAVE_CHECK,",
+                "\"order-save-\" + custody.requestNonce(), DeliverySaveCheckWatch.orderStaffAlert(custody.requestNonce()));");
+        // Commerce never raises ITEM_REPAIR_HELD, and returns never touch the order counts.
+        String returns = refused.substring(0, refused.indexOf("return; }"));
+        assertEquals(1, mentions(refused, "ITEM_REPAIR_HELD"));
+        assertEquals(1, mentions(returns, "ITEM_REPAIR_HELD"));
+        assertEquals(0, mentions(returns, "orderSaveChecks"));
+        assertEquals(0, mentions(refused.substring(refused.indexOf("return; }")), "saveChecks"));
+        assertEquals(2, mentions(delivery, "orderSaveChecks"), "declared, and used only for orders");
+        // Two separate watches: an alias would let order refusals clear the return counts at the tracking cap.
+        assertTrue(delivery.contains("private final DeliverySaveCheckWatch saveChecks = new DeliverySaveCheckWatch();"));
+        assertTrue(delivery.contains("private final DeliverySaveCheckWatch orderSaveChecks = new DeliverySaveCheckWatch();"));
     }
+
+    /**
+     * A marked order (town.commerce.delivery-save-marker on) is proven like a return, with three more steps: a preflight
+     * that writes nothing before the save, a main-thread check that the inventory is still exactly as saved before the
+     * start, and beginDelivery in its own worker task, skipped once the runtime closed.
+     */
+    @Test void aCommerceDeliveryWithTheMarkerIsProvenAgainstASaveMadeJustBefore() throws Exception {
+        String delivery = squash(code(source("commerce/ItemDeliveryRuntime.java")));
+        inOrder(delivery, "boolean orderProof = marked && !returned;", "if (orderProof) { preflight(operation); return; }",
+                "if (marked && !savedBefore(operation)) return;",
+                "private void preflight(", "var refusal = repository.wouldRefuse(custody, Instant.now());",
+                "post(() -> afterPreflight(operation, refusal));",
+                "private void afterPreflight(", "Result refused = preflightReply(refusal, operation.custody().requestNonce());",
+                "if (refused != null) { finish(operation, refused); return; }",
+                "if (!authorized(operation) || player.isDead()) { finish(operation, Result.UNAUTHORIZED); return; }",
+                "if (!savedBefore(operation)) return;",
+                "try { preState = ItemInventoryCustody.inventoryState(player); }",
+                "orderBaseline(operation, preState);",
+                "private void orderBaseline(", "var read = saveProof.deliveryBaseline(playerDataWorld, custody);",
+                "if (read.isEmpty()) { post(() -> { saveCheckRefused(custody); finish(operation, Result.NOT_READY); }); return; }",
+                "post(() -> beforeStart(operation, preState, baseline));",
+                "private void beforeStart(", "boolean alive = authorized(operation) && !player.isDead();",
+                "ItemInventoryCustody.inventoryState(player).equals(preState)",
+                "Result refused = startRefusal(alive, same, receivable);", "orderStart(operation, baseline);",
+                "private void orderStart(", "submit(() -> { if (closed) return; startTried.set(true);",
+                "var start = repository.beginDelivery(custody, runId, Instant.now());",
+                "post(() -> dispatch(operation, start, baseline));",
+                "private void dispatch(",
+                "if (orderProof(baseline, operation) && operation.login().isDead()) { ambiguous(operation, baseline); return; }",
+                "if (baseline != null) ItemInventoryCustody.markDelivered(operation.login(), operation.custody());",
+                "evidence = ItemInventoryCustody.deliver(operation.login(), operation.custody());",
+                ": saveProof.captureDelivery(playerDataWorld, operation.custody(), evidence, baseline);",
+                "confirmedOutcome(operation.custody().source(), baseline != null)");
+        // The baseline read and the start are separate worker tasks, with the main-thread checks between them.
+        String read = between(delivery, "private void orderBaseline(", "private void beforeStart(");
+        String start = between(delivery, "private void orderStart(", "private void unclearStart(");
+        assertEquals(1, mentions(read, "deliveryBaseline"));
+        assertEquals(0, mentions(read, "beginDelivery"));
+        assertEquals(1, mentions(start, "beginDelivery"));
+        assertEquals(0, mentions(start, "deliveryBaseline"));
+        inOrder(start, "if (closed) return;", "startTried.set(true);", "repository.beginDelivery(");
+        // A start that failed after it may have committed carries the order's baseline, so a hold there is reported too.
+        inOrder(start, "}, () -> { if (startTried.get()) unclearStart(operation, baseline); else finish(operation, Result.NOT_READY); });");
+        // The before-save comes after the preflight and never before it: deliver hands an order to preflight first.
+        String deliver = between(delivery, "public void deliver(", "static boolean marked(");
+        assertTrue(deliver.indexOf("if (orderProof) { preflight(operation); return; }") < deliver.indexOf("savedBefore("));
+        // A held marked order is reported once it started: ambiguous and a recorded hold, both from main.
+        inOrder(between(delivery, "private void ambiguous(", "private void heldReport("),
+                "post(() -> { heldReport(operation, baseline); finish(operation, Result.HELD); });");
+        assertTrue(delivery.contains("if (!delivered) heldReport(operation, baseline);"));
+        String held = between(delivery, "private void heldReport(", "private void holdUnreadable(");
+        inOrder(held, "if (!orderProof(baseline, operation)) return;", "DeliverySaveCheckWatch.orderHeldLine(",
+                "baseline.units().getFirst()", "StaffAlerts.Kind.COMMERCE_DELIVERY_HELD", "\"order-held-\" + custody.requestNonce()");
+        String dispatch = between(delivery, "private void dispatch(", "private static boolean orderProof(");
+        assertEquals(0, dispatch.split(java.util.regex.Pattern.quote("ambiguous(operation);"), -1).length - 1,
+                "every hold in dispatch carries the baseline, so a marked order is reported");
+        assertEquals(5, dispatch.split(java.util.regex.Pattern.quote("ambiguous(operation, baseline);"), -1).length - 1, "five holds, each with the baseline");
+    }
+
+    /**
+     * With the key off a commerce delivery takes the plain path: the front check, no before-save, one worker task
+     * whose failure is HELD, no death check, the count-only capture and INVENTORY_CONFIRMED.
+     */
+    @Test void flagOffCommerceIsTheDev59Path() throws Exception {
+        String raw = source("commerce/ItemDeliveryRuntime.java");
+        assertTrue(raw.contains("""
+                        if (!returned) {
+                            // Commerce checks for space here; stored items that cannot be read answer HELD.
+                            try {
+                                if (!ItemInventoryCustody.canReceive(player, ItemInventoryCustody.decode(custody))) {
+                                    finish(operation, Result.NO_SPACE); return;
+                                }
+                            } catch (RuntimeException | LinkageError invalid) { finish(operation, Result.HELD); return; }
+                """), "the commerce front check");
+        String delivery = squash(code(raw));
+        String deliver = between(delivery, "public void deliver(", "static boolean marked(");
+        // Unmarked commerce never saves before: the only before-save in deliver is behind marked, and the baseline read too.
+        assertEquals(1, mentions(deliver, "savedBefore"));
+        assertTrue(deliver.contains("if (marked && !savedBefore(operation)) return;"));
+        inOrder(deliver, "submit(() -> { ItemSaveProof.Baseline baseline = null; if (marked) {",
+                "var read = saveProof.deliveryBaseline(playerDataWorld, custody);");
+        assertTrue(deliver.contains("}, () -> { if (!marked) finish(operation, Result.HELD);"), "the commerce worker failure reply is HELD");
+        // The shared path has no death check and never skips the start on close: a stop still leaves a started intent for
+        // recovery. Only the order path checks either.
+        assertEquals(0, mentions(deliver, "isDead"));
+        assertEquals(0, mentions(deliver, "closed"));
+        assertEquals(2, delivery.split(java.util.regex.Pattern.quote("if (closed) return;"), -1).length - 1,
+                "the recovery loop in the constructor and orderStart");
+        String dispatch = between(delivery, "private void dispatch(", "private static boolean orderProof(");
+        assertTrue(dispatch.contains("var persisted = baseline == null ? saveProof.capture(playerDataWorld, operation.custody(), evidence)"));
+        // The death check is guarded by the order proof, which is false without a baseline and for a return.
+        assertEquals(1, mentions(dispatch, "isDead"));
+        assertTrue(dispatch.contains("if (orderProof(baseline, operation) && operation.login().isDead())"));
+        assertTrue(delivery.contains("private static boolean orderProof(ItemSaveProof.Baseline baseline, Pending operation) {"
+                + " return baseline != null && operation.custody().source() != ItemCustody.Source.REPAIR_RETURN; }"));
+        // The order path does check death, twice before the start.
+        assertEquals(2, mentions(between(delivery, "private void afterPreflight(", "private void orderStart("), "isDead"));
+        // authorized() itself does not check death, so a return is not refused for it.
+        assertFalse(between(delivery, "private boolean authorized(", "private void finish(").contains("isDead"));
+    }
+
 
     /** RETURNED_BY_STAFF always needs a reason, and the report tells staff when it is the decision that fits. */
     @Test void returnedByStaffNeedsAReasonAndTheReportSaysWhenItFits() {
@@ -410,7 +583,7 @@ class ItemRepairWiringTest {
         assertTrue(ItemRepairRecoveryTool.returnReport(unreadable, binding, "PAPER", read, null, "f".repeat(64))
                 .endsWith("\n" + ItemRepairRecoveryTool.UNREADABLE_LINE));
         assertFalse(ItemRepairRecoveryTool.returnReport(uncertain, binding, "PAPER", read, null, "f".repeat(64))
-                .contains("RETURNED_BY_STAFF"), "positive control: only an unreadable return points at it");
+                .contains("RETURNED_BY_STAFF"), "only an unreadable return points at it");
     }
 
     @Test void theReportSaysWhenNoDataVersionWasRecorded() {
@@ -451,7 +624,7 @@ class ItemRepairWiringTest {
     }
 
     @Test void everyProblemIsReportedAndNoneMeansClear() {
-        assertNull(ItemRepairRecoveryTool.problems(null, null), "positive control: nothing found");
+        assertNull(ItemRepairRecoveryTool.problems(null, null), "nothing found");
         assertEquals("A.", ItemRepairRecoveryTool.problems(null, "A."));
         assertEquals("A.", ItemRepairRecoveryTool.problems("A.", null));
         assertEquals("A. B.", ItemRepairRecoveryTool.problems("A.", "B."));

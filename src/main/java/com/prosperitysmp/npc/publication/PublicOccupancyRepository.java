@@ -28,7 +28,8 @@ public final class PublicOccupancyRepository {
     public record Evidence(PublicOccupancySnapshot snapshot, Instant capturedAt,
                            Map<UUID, Long> propertyRevisions, Map<UUID, TenantRevision> tenantRevisions) {
         public Evidence {
-            Objects.requireNonNull(snapshot); Objects.requireNonNull(capturedAt);
+            Objects.requireNonNull(snapshot);
+            Objects.requireNonNull(capturedAt);
             propertyRevisions = Map.copyOf(propertyRevisions);
             tenantRevisions = Map.copyOf(tenantRevisions);
         }

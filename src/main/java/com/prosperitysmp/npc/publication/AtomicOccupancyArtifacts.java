@@ -23,7 +23,9 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -40,7 +42,8 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
     private static final int MAX_BYTES = 128 * 1024;
     private static final int MAX_ARTIFACTS = 256;
     private static final Pattern NAME = Pattern.compile("[0-9a-f]{64}\\.json");
-    private static final Pattern TEMP_NAME = Pattern.compile("\\.occupancy-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.tmp");
+    private static final Pattern TEMP_NAME = Pattern.compile(
+            "\\.occupancy-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.tmp");
     private final Path directory;
     private final Mover mover;
     private final Space space;
@@ -71,7 +74,8 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
 
     AtomicOccupancyArtifacts(Path trustedDirectory, Mover mover, Space space, Deleter deleter) throws IOException {
         directory = Objects.requireNonNull(trustedDirectory).toAbsolutePath().normalize();
-        this.mover = Objects.requireNonNull(mover); this.space = Objects.requireNonNull(space);
+        this.mover = Objects.requireNonNull(mover);
+        this.space = Objects.requireNonNull(space);
         this.deleter = Objects.requireNonNull(deleter);
         checkDirectory();
         Path lockPath = directory.resolve(".writer.lock");
@@ -84,7 +88,8 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
             catch (OverlappingFileLockException busy) { throw new IOException("Occupancy writer busy", busy); }
             if (acquired == null) throw new IOException("Occupancy writer busy");
             checkLockFile(lockPath);
-            lockChannel = channel; writerLock = acquired;
+            lockChannel = channel;
+            writerLock = acquired;
         } catch (IOException | RuntimeException | Error failure) {
             if (acquired != null) {
                 try { acquired.release(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
@@ -173,32 +178,44 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
             cutoff = now.minus(minAge);
         } catch (RuntimeException invalid) { throw new IOException("Invalid occupancy retention request"); }
         var combined = new HashSet<>(keep);
-        combined.addAll(selectionProtection()); keep = Set.copyOf(combined);
-        checkDirectory(); checkLockFile(directory.resolve(".writer.lock"));
+        combined.addAll(selectionProtection());
+        keep = Set.copyOf(combined);
+        checkDirectory();
+        checkLockFile(directory.resolve(".writer.lock"));
         var inventory = new ArrayList<Artifact>();
         var found = new HashSet<String>();
         try (var entries = Files.newDirectoryStream(directory)) {
             for (Path entry : entries) {
                 String name = entry.getFileName().toString();
-                if (name.equals(".writer.lock")) { checkLockFile(entry); continue; }
-                if (name.equals(SELECTION)) { selectionProtection(); continue; }
+                if (name.equals(".writer.lock")) {
+                    checkLockFile(entry);
+                    continue;
+                }
+                if (name.equals(SELECTION)) {
+                    selectionProtection();
+                    continue;
+                }
                 if (inventory.size() >= MAX_ARTIFACTS || !NAME.matcher(name).matches())
                     throw new IOException("Unexpected occupancy retention inventory");
-                inventory.add(verifyArtifact(entry)); found.add(name);
+                inventory.add(verifyArtifact(entry));
+                found.add(name);
             }
         }
         if (!found.containsAll(keep)) throw new IOException("Missing protected occupancy artifact");
         inventory.sort(Comparator.comparing(artifact -> artifact.path().getFileName().toString()));
-        int deleted = 0; long bytes = 0;
+        int deleted = 0;
+        long bytes = 0;
         for (Artifact artifact : inventory) {
             if (keep.contains(artifact.path().getFileName().toString())
                     || !artifact.attributes().lastModifiedTime().toInstant().isBefore(cutoff)) continue;
-            checkDirectory(); checkLockFile(directory.resolve(".writer.lock"));
+            checkDirectory();
+            checkLockFile(directory.resolve(".writer.lock"));
             Artifact rechecked = verifyArtifact(artifact.path());
             if (!sameAttributes(artifact.attributes(), rechecked.attributes()))
                 throw new IOException("Occupancy retention candidate changed");
             deleter.delete(artifact.path());
-            deleted++; bytes += artifact.attributes().size();
+            deleted++;
+            bytes += artifact.attributes().size();
         }
         return new PruneResult(inventory.size(), deleted, bytes);
     }
@@ -218,14 +235,21 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
                     || !now.isBefore(Instant.parse("+10000-01-01T00:00:00Z"))) throw new IllegalArgumentException();
             cutoff = now.minus(minAge);
         } catch (RuntimeException invalid) { throw new IOException("Invalid occupancy recovery request"); }
-        checkDirectory(); checkLockFile(directory.resolve(".writer.lock"));
+        checkDirectory();
+        checkLockFile(directory.resolve(".writer.lock"));
         var temporary = new ArrayList<Temporary>();
         int artifacts = 0;
         try (var entries = Files.newDirectoryStream(directory)) {
             for (Path entry : entries) {
                 String name = entry.getFileName().toString();
-                if (name.equals(".writer.lock")) { checkLockFile(entry); continue; }
-                if (name.equals(SELECTION)) { selectionProtection(); continue; }
+                if (name.equals(".writer.lock")) {
+                    checkLockFile(entry);
+                    continue;
+                }
+                if (name.equals(SELECTION)) {
+                    selectionProtection();
+                    continue;
+                }
                 if (NAME.matcher(name).matches()) {
                     if (++artifacts > MAX_ARTIFACTS) throw new IOException("Recovery artifact bound exceeded");
                     verifyArtifact(entry);
@@ -236,16 +260,20 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
             }
         }
         temporary.sort(Comparator.comparing(t -> t.artifact().path().getFileName().toString()));
-        int deleted = 0; long bytes = 0;
+        int deleted = 0;
+        long bytes = 0;
         for (Temporary candidate : temporary) {
             Artifact artifact = candidate.artifact();
             if (!artifact.attributes().lastModifiedTime().toInstant().isBefore(cutoff)) continue;
-            checkDirectory(); checkLockFile(directory.resolve(".writer.lock"));
+            checkDirectory();
+            checkLockFile(directory.resolve(".writer.lock"));
             Temporary rechecked = verifyTemporary(artifact.path());
             if (!sameAttributes(artifact.attributes(), rechecked.artifact().attributes())
                     || !candidate.hash().equals(rechecked.hash()))
                 throw new IOException("Occupancy recovery candidate changed");
-            deleter.delete(artifact.path()); deleted++; bytes += artifact.attributes().size();
+            deleter.delete(artifact.path());
+            deleted++;
+            bytes += artifact.attributes().size();
         }
         return new PruneResult(temporary.size(), deleted, bytes);
     }
@@ -275,14 +303,14 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
     }
 
     /** Read private metadata and verify every referenced artifact, not live publication authorization. */
-    public synchronized java.util.Optional<OccupancyGenerationHistory> readSelection(UUID expectedAuthorization) throws IOException {
+    public synchronized Optional<OccupancyGenerationHistory> readSelection(UUID expectedAuthorization) throws IOException {
         requireOpen();
         byte[] bytes = selectionBytes();
-        if (bytes == null) return java.util.Optional.empty();
+        if (bytes == null) return Optional.empty();
         var history = OccupancySelectionCodec.decode(bytes, expectedAuthorization);
         verifySelectionArtifacts(history);
         selectionAuthorization = expectedAuthorization;
-        return java.util.Optional.of(history);
+        return Optional.of(history);
     }
 
     /**
@@ -299,12 +327,16 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
         } catch (RuntimeException invalid) { throw new IOException("Invalid occupancy selection commit"); }
         verifySelectionArtifacts(next);
         byte[] actual = selectionBytes();
-        if (Arrays.equals(actual, after)) { selectionAuthorization = expectedAuthorization; return; }
+        if (Arrays.equals(actual, after)) {
+            selectionAuthorization = expectedAuthorization;
+            return;
+        }
         if (!Arrays.equals(actual, before)) throw new IOException("Occupancy selection changed");
         verifyForwardSelection(previous, next);
         if (actual != null) {
             var old = OccupancySelectionCodec.decode(actual, expectedAuthorization);
-            verifySelectionArtifacts(old); selectionAuthorization = expectedAuthorization;
+            verifySelectionArtifacts(old);
+            selectionAuthorization = expectedAuthorization;
         }
         scan();
         replaceSelection(before, after, next);
@@ -330,7 +362,10 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
             after = OccupancySelectionCodec.encode(empty, newAuthorization);
         } catch (RuntimeException invalid) { throw new IOException("Invalid occupancy selection reset"); }
         byte[] actual = selectionBytes();
-        if (Arrays.equals(actual, after)) { selectionAuthorization = newAuthorization; return empty; }
+        if (Arrays.equals(actual, after)) {
+            selectionAuthorization = newAuthorization;
+            return empty;
+        }
         if (!Arrays.equals(actual, before)) throw new IOException("Occupancy selection changed before reset");
         // Revocation must not depend on a still-readable artifact that is being withdrawn.
         OccupancySelectionCodec.decode(actual, previousAuthorization);
@@ -369,8 +404,10 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
         Path temp = directory.resolve(".occupancy-" + UUID.randomUUID() + ".tmp");
         boolean owned = false;
         try {
-            try (var channel = FileChannel.open(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
-                owned = true; var buffer = ByteBuffer.wrap(after);
+            try (var channel = FileChannel.open(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+                    LinkOption.NOFOLLOW_LINKS)) {
+                owned = true;
+                var buffer = ByteBuffer.wrap(after);
                 while (buffer.hasRemaining()) channel.write(buffer);
                 channel.force(true);
             }
@@ -384,10 +421,12 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
 
     private void requireOpen() throws IOException {
         if (closed || !writerLock.isValid()) throw new IOException("Occupancy writer closed");
-        checkDirectory(); checkLockFile(directory.resolve(".writer.lock"));
+        checkDirectory();
+        checkLockFile(directory.resolve(".writer.lock"));
     }
-    private static void verifyForwardSelection(OccupancyGenerationHistory previous, OccupancyGenerationHistory next) throws IOException {
-        var old = previous == null ? java.util.List.<OccupancyGenerationHistory.Entry>of() : previous.entries();
+    private static void verifyForwardSelection(OccupancyGenerationHistory previous, OccupancyGenerationHistory next)
+            throws IOException {
+        var old = previous == null ? List.<OccupancyGenerationHistory.Entry>of() : previous.entries();
         var proposed = next.entries();
         if (old.isEmpty()) {
             if (proposed.size() <= 1) return;
@@ -405,7 +444,9 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
         if (!before.isRegularFile() || before.size() > OccupancySelectionCodec.MAX_BYTES)
             throw new IOException("Invalid occupancy selection file");
         byte[] bytes;
-        try (var input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) { bytes = input.readNBytes(OccupancySelectionCodec.MAX_BYTES + 1); }
+        try (var input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            bytes = input.readNBytes(OccupancySelectionCodec.MAX_BYTES + 1);
+        }
         var after = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         if (!after.isRegularFile() || bytes.length > OccupancySelectionCodec.MAX_BYTES || !sameAttributes(before, after))
             throw new IOException("Occupancy selection file changed");
@@ -455,9 +496,13 @@ public final class AtomicOccupancyArtifacts implements AutoCloseable {
         try (var entries = Files.newDirectoryStream(directory)) {
             for (Path entry : entries) {
                 if (entry.getFileName().toString().equals(".writer.lock")) {
-                    checkLockFile(entry); continue;
+                    checkLockFile(entry);
+                    continue;
                 }
-                if (entry.getFileName().toString().equals(SELECTION)) { selectionProtection(); continue; }
+                if (entry.getFileName().toString().equals(SELECTION)) {
+                    selectionProtection();
+                    continue;
+                }
                 if (++count > MAX_ARTIFACTS || !NAME.matcher(entry.getFileName().toString()).matches())
                     throw new IOException("Unexpected occupancy artifact inventory");
                 BasicFileAttributes attributes = Files.readAttributes(entry, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);

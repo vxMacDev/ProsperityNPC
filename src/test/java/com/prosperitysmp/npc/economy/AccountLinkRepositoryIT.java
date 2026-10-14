@@ -54,7 +54,7 @@ class AccountLinkRepositoryIT {
         // A Bedrock side that is not a Floodgate ID, and a Java side that is one.
         assertThrows(IllegalArgumentException.class, () -> links.observe(JAVA, STRANGER, Source.FLOODGATE_LOGIN, at, DAY, RESERVE));
         assertThrows(IllegalArgumentException.class, () -> links.observe(new UUID(0, 0x55), BEDROCK, Source.FLOODGATE_LOGIN, at, DAY, RESERVE));
-        // Staff rows are never written through observe in this release.
+        // Staff rows are never written through observe.
         assertThrows(IllegalArgumentException.class, () -> links.observe(JAVA, BEDROCK, Source.STAFF, at, DAY, RESERVE));
         assertEquals(0, db.count("npc_account_links"));
         assertEquals(0, db.count("npc_audit_log"));
@@ -62,7 +62,7 @@ class AccountLinkRepositoryIT {
         assertThrows(SQLException.class, () -> db.execute("INSERT INTO npc_account_links(account_low,account_high,java_uuid,bedrock_uuid,source,"
                 + "first_seen_at,first_seen_day,last_seen_at) VALUES (?,?,?,?,'FLOODGATE_LOGIN',?,?,?)",
                 BEDROCK, JAVA, JAVA, JAVA, at, DAY, at));
-        // Positive control: the same call with a real pair and no reserve configured saves.
+        // The same call with a real pair and no reserve configured saves, so the refusals above are real.
         assertEquals(Observed.NEW, links.observe(JAVA, BEDROCK, Source.FLOODGATE_LOOKUP, at, DAY, null));
         assertEquals(1, db.count("npc_audit_log WHERE action='LINK_SAVED' AND actor='lookup'"));
     }

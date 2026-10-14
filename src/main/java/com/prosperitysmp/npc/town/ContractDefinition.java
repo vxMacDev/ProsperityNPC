@@ -37,11 +37,14 @@ public record ContractDefinition(String id, Kind kind, String title, String desc
         if (durationMinutes < MIN_DURATION || durationMinutes > MAX_DURATION)
             throw new IllegalArgumentException("Contract duration must be 10..1440 minutes");
         switch (kind) {
-            case SUPPLY -> { if (!giverId.equals(recipientId)) throw new IllegalArgumentException("A supply contract goes back to its giver"); }
-            case DELIVER -> { if (giverId.equals(recipientId)) throw new IllegalArgumentException("A delivery contract goes to another resident"); }
+            case SUPPLY -> { if (!giverId.equals(recipientId))
+                throw new IllegalArgumentException("A supply contract goes back to its giver"); }
+            case DELIVER -> { if (giverId.equals(recipientId))
+                throw new IllegalArgumentException("A delivery contract goes to another resident"); }
             case PARTNERSHIP -> {
                 if (!giverId.equals(recipientId)) throw new IllegalArgumentException("A partnership hand-over goes to the resident");
-                if (!id.equals(PARTNER_START) && !id.equals(PARTNER_RENEW)) throw new IllegalArgumentException("Unknown partnership hand-over");
+                if (!id.equals(PARTNER_START) && !id.equals(PARTNER_RENEW))
+                    throw new IllegalArgumentException("Unknown partnership hand-over");
             }
         }
     }

@@ -17,18 +17,20 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * The eight safety checks ship on, and each is inert while its parent feature is off:
+ * The nine safety checks ship on, and each is inert while its parent feature is off:
  * appreciation-ledger-rent-hold without economy.appreciation-enabled, away-debit-recheck with housing.vacation-days 0.
  * (rent-change-lease-guard: GuardedRentStepIT; payout-retirement: PayoutRetirementIT;
  * require-skin-for-roster without residents.cast-file-enabled: ResidentCastIT; item-repairs.require-survival and
  * block-cash-while-items-held without item-repairs.enabled: ItemRepairSettingsTest and ItemRepairRepositoryIT;
- * town.contracts.require-survival without contracts and partnerships: contractSurvivalIsOnlyReadWhenAHandOverStarts.)
+ * town.contracts.require-survival without contracts and partnerships: contractSurvivalIsOnlyReadWhenAHandOverStarts;
+ * town.commerce.delivery-save-marker without town.commerce-enabled: commerceSaveMarkerIsOnlyReadAfterTheCommerceGate.)
  */
 class SafetyChecksDefaultOnTest {
     private static final List<String> SAFETY = List.of(UtilityPaymentRuntime.APPRECIATION_LEDGER_RENT_HOLD,
             UtilityPaymentRuntime.AWAY_DEBIT_RECHECK, PropertyService.RENT_CHANGE_LEASE_GUARD, UtilityPaymentRuntime.PAYOUT_RETIREMENT,
             com.prosperitysmp.npc.market.HousingRuntime.REQUIRE_SKIN_FOR_ROSTER,
-            ItemRepairSettings.REQUIRE_SURVIVAL, ItemRepairSettings.BLOCK_CASH, "town.contracts.require-survival");
+            ItemRepairSettings.REQUIRE_SURVIVAL, ItemRepairSettings.BLOCK_CASH, "town.contracts.require-survival",
+            com.prosperitysmp.npc.commerce.CommerceWiring.SAVE_MARKER);
 
     @Test void shippedOnWithTheirParentFeaturesOff() throws Exception {
         String yaml;
@@ -64,6 +66,67 @@ class SafetyChecksDefaultOnTest {
         assertEquals(Boolean.FALSE, config.get(ItemRepairSettings.ENABLED));
         assertEquals(Boolean.FALSE, config.get("town.contracts.enabled"));
         assertEquals(Boolean.FALSE, config.get("town.partnerships.enabled"));
+        assertEquals(Boolean.FALSE, config.get("town.commerce-enabled"));
+    }
+
+    // ---- town.commerce.delivery-save-marker: read once per delivery, only after the commerce gate let it through
+
+    @Test void commerceSaveMarkerIsOnlyReadAfterTheCommerceGate() throws Exception {
+        String read = "CommerceWiring.SAVE_MARKER";
+        // Exactly one read outside CommerceWiring, in ItemDeliveryRuntime.saveMarkerOn().
+        var found = new java.util.TreeMap<String, Integer>();
+        try (var files = Files.walk(Path.of("src/main/java"))) {
+            for (Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
+                if (file.getFileName().toString().equals("CommerceWiring.java")) continue;
+                int count = Files.readString(file).split(java.util.regex.Pattern.quote(read), -1).length - 1;
+                if (count > 0) found.put(file.getFileName().toString(), count);
+            }
+        }
+        assertEquals(java.util.Map.of("ItemDeliveryRuntime.java", 1), found);
+        // Nor is the key read by its literal name, whole or in part. The one literal in code is saveMarkerOn's warning.
+        String warning = "\"town.commerce.delivery-save-marker is not true or false; the check stays on.\"";
+        var literals = new java.util.TreeMap<String, Integer>();
+        int warnings = 0;
+        try (var files = Files.walk(Path.of("src/main/java"))) {
+            for (Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
+                if (file.getFileName().toString().equals("CommerceWiring.java")) continue;
+                String code = ItemRepairWiringTest.code(Files.readString(file));
+                warnings += code.split(java.util.regex.Pattern.quote(warning), -1).length - 1;
+                int count = code.replace(warning, "").split(java.util.regex.Pattern.quote("delivery-save-marker"), -1).length - 1;
+                if (count > 0) literals.put(file.getFileName().toString(), count);
+            }
+        }
+        assertEquals(java.util.Map.of(), literals, "the key read by its literal name");
+        assertEquals(1, warnings, "the scan sees the warning's literal");
+        String runtime = Files.readString(Path.of("src/main/java/com/prosperitysmp/npc/commerce/ItemDeliveryRuntime.java"))
+                .replace("\r\n", "\n");
+        int at = runtime.indexOf(read);
+        assertTrue(at >= 0, "the read exists");
+        int method = runtime.indexOf("private boolean saveMarkerOn() {");
+        int next = runtime.indexOf("\n    }\n", method);
+        assertTrue(method > 0 && at > method && at < next, "the read sits inside saveMarkerOn()");
+        // saveMarkerOn is used once, from deliver, after the gate refused nothing: a closed commerce gate answers
+        // UNAUTHORIZED first, so the key is never read with commerce off.
+        String use = "marked(custody.source(), this::saveMarkerOn)";
+        assertEquals(2, runtime.split(java.util.regex.Pattern.quote("saveMarkerOn()"), -1).length - 1,
+                "declared once, and read once by the startup report");
+        assertEquals(1, runtime.split(java.util.regex.Pattern.quote("this::saveMarkerOn"), -1).length - 1, "used once");
+        int deliver = runtime.indexOf("public void deliver(");
+        int gate = runtime.indexOf("if (!authorized(operation)) { reply.accept(Result.UNAUTHORIZED); return; }", deliver);
+        int call = runtime.indexOf(use, deliver);
+        int end = runtime.indexOf("private void preflight(", deliver);
+        assertTrue(deliver > 0 && gate > deliver && call > gate && call < end, "the only use is in deliver, after the gate");
+        // The startup report reads it only for an order whose commerce gate is open.
+        int report = runtime.indexOf("private void reportHeldOrders(");
+        String body = runtime.substring(report, runtime.indexOf("\n    }\n", report));
+        assertTrue(report > 0 && body.contains("if (!gates.test(order.source()) || !saveMarkerOn()) continue;"),
+                "the startup report checks the commerce gate first");
+        // Apart from that report, the constructor and ready() never mention it.
+        String startup = runtime.substring(runtime.indexOf("public ItemDeliveryRuntime(ProsperityNpcPlugin plugin, Database database,"),
+                runtime.indexOf("private static java.util.function.Predicate<ItemCustody.Source> sameGate("));
+        assertTrue(startup.contains(body), "the report sits between the constructor and ready()");
+        startup = startup.replace(body, "");
+        assertFalse(startup.contains("saveMarkerOn") || startup.contains(read));
     }
 
     // ---- town.contracts.require-survival: read only when a hand-over starts, which needs a contract flag
@@ -92,7 +155,7 @@ class SafetyChecksDefaultOnTest {
                 () -> { throw new AssertionError("appreciation phase started"); }, counted::set, Runnable::run);
         assertSame(rent, out, "the rent sequence is returned unchanged");
         assertEquals(99, counted.get(), "no appreciation count recorded");
-        // Positive control: on, the phase is started.
+        // With appreciation on, the phase does start, so the checks above are real.
         AtomicInteger started = new AtomicInteger();
         UtilityPaymentRuntime.thenAppreciation(rent, true, () -> false,
                 () -> { started.incrementAndGet(); return CompletableFuture.completedFuture(0); }, counted::set, Runnable::run).join();
@@ -155,7 +218,7 @@ class SafetyChecksDefaultOnTest {
         assertFalse(UtilityPaymentRuntime.awayBlocks(away.holds(home), true, 0, false));
         assertEquals(0, sightings.get(), "no owner sighting read and no decision made");
 
-        // Positive control: vacation-days above 0 with a long-gone owner, the same recheck holds the debit.
+        // With vacation-days above 0 and a long-gone owner, the same recheck holds the debit.
         var on = new OwnerAway(() -> 3, () -> LocalDate.of(2026, 10, 13), () -> 2_000_000_000_000L,
                 owner -> { sightings.incrementAndGet(); return new OwnerAway.Seen(false, 1, 1); });
         assertTrue(UtilityPaymentRuntime.awayHeldNow(Boolean.TRUE, () -> on.holds(home)));

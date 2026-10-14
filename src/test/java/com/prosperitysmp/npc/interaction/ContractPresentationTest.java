@@ -184,7 +184,7 @@ class ContractPresentationTest {
     }
 
     @Test void timesUseTheConfiguredZoneAndResetHour() {
-        // Integrator correction: no hard-coded 4 AM or UTC. A non-default zone and hour.
+        // A non-default zone and reset hour, so nothing is hard-coded to 4 AM or UTC.
         Instant winter = Instant.parse("2026-01-15T12:00:00Z");
         var berlin = new EconomyClock(Clock.fixed(winter, ZoneOffset.UTC), ZoneId.of("Europe/Berlin"), 6);
         assertEquals("You've taken a contract today. Come back after the daily reset at 6 AM CET.",
@@ -197,11 +197,11 @@ class ContractPresentationTest {
         assertEquals("The contract is in your journal. Bring 16 Coal by 13:00 CDT.", ContractPresentation.accepted(t, CHICAGO));
     }
 
-    /** DEV 2026-10-14: a 24-hour contract taken at 06:40 CDT said "by 06:40 CDT", which read as already passed. */
+    /** A 24-hour contract taken at 06:40 CDT is due at 06:40 the next day. Without the day it read as already passed. */
     @Test void aDeadlineOnALaterDaySaysWhichDay() {
         Instant taken = Instant.parse("2026-10-14T11:40:00Z");
         var chicago = new EconomyClock(Clock.fixed(taken, java.time.ZoneOffset.UTC), java.time.ZoneId.of("America/Chicago"), 4);
-        assertEquals("06:40 CDT", ContractPresentation.deadline(taken, chicago), "positive control: the same day keeps the old form");
+        assertEquals("06:40 CDT", ContractPresentation.deadline(taken, chicago), "the same day shows the time only");
         assertEquals("09:40 CDT", ContractPresentation.deadline(taken.plusSeconds(3 * 3600), chicago));
         assertEquals("tomorrow 06:40 CDT", ContractPresentation.deadline(taken.plusSeconds(24 * 3600), chicago));
         assertEquals("Oct 16 06:40 CDT", ContractPresentation.deadline(taken.plusSeconds(48 * 3600), chicago));
@@ -258,7 +258,7 @@ class ContractPresentationTest {
                 "quantity", ContractDefinition.MAX_QUANTITY, "minimum-stage", "STRANGER", "duration-minutes", 60));
         var catalogue = ContractCatalogue.load(Map.of("town.contracts.enabled", true,
                 "town.contracts.definitions", List.of(entry))::get, CAST, name -> true);
-        assertEquals(0, catalogue.skippedCount(), "positive control: config accepts it");
+        assertEquals(0, catalogue.skippedCount(), "config accepts it");
         var stranger = state(MARA, -1);
         var view = ContractPresentation.view(base(MARA, stranger), MARA, stranger, new ContractPresentation.Facts(catalogue, true,
                 false, false, Optional.empty(), 0, 0, Optional.empty(), false, false, 0, false, Set.of(), NOW, DAY), CAST, CHICAGO);
@@ -286,7 +286,7 @@ class ContractPresentationTest {
                 "pitch", "Bring me these and I cut my fee for you."));
         var catalogue = ContractCatalogue.load(Map.of("town.contracts.enabled", true, "town.partnerships.enabled", true,
                 "town.partnerships.offers", List.of(offer))::get, cast, name -> true);
-        // Positive control: the long offer loads (the default contracts name Mara, Ellis and Nico, who are not in this cast).
+        // The long offer must load, or the fit check below proves nothing. (The default contracts name Mara, Ellis and Nico, who are not in this cast.)
         assertEquals(ContractDefinition.MAX_QUANTITY, catalogue.partnerOffer(person.id()).orElseThrow().quantity());
         var trusted = state(person, 3);
         var view = ContractPresentation.view(base(person, trusted), person, trusted, new ContractPresentation.Facts(catalogue, true, true,
@@ -300,7 +300,7 @@ class ContractPresentationTest {
         var ellis = ON.partnerOffer(ELLIS.id()).orElseThrow();
         UUID shown = ContractPresentation.confirmPartner(ELLIS, ellis, true, 7, false, false).actions().getFirst().taskId();
         assertEquals(ContractPresentation.offerKey(ellis), shown);
-        assertTrue(ContractPresentation.confirmStillValid(Optional.of(ellis), shown, false), "positive control");
+        assertTrue(ContractPresentation.confirmStillValid(Optional.of(ellis), shown, false), "the unchanged offer still confirms");
         // Config reloaded between the screen and the click: other items, another amount or other perks are refused.
         for (var changed : List.of(
                 new PartnerOffer(ellis.residentId(), ellis.material(), ellis.quantity() + 16, ellis.feeDiscountPct(), 0, ellis.pitch()),
@@ -347,7 +347,7 @@ class ContractPresentationTest {
         assertEquals(ResidentDialogue.Topic.CONTRACTS, ResidentEncounterController.typedTopic("CONTRACTS", true));
         assertEquals(ResidentDialogue.Topic.BUSINESS, ResidentEncounterController.typedTopic("business", false));
         assertThrows(IllegalArgumentException.class, () -> ResidentEncounterController.typedTopic("nope", true));
-        // Both typed paths parse with it, so a hidden topic fails before the session check, as in dev.58.
+        // Both typed paths parse with it, so a hidden topic fails before the session check.
         String c = Files.readString(Path.of("src/main/java/com/prosperitysmp/npc/interaction/ResidentEncounterController.java"));
         assertFalse(c.contains("Topic.valueOf(args["));
         assertTrue(c.contains("choose(player, open.get().token(), typedTopic(args[1], contractsTopicShown()));"));

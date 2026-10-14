@@ -63,13 +63,17 @@ public final class LinkedAccounts {
     }
 
     /**
-     * Staff show lines: the active group first ("Linked group: Ann (Java), Ann_BE (Bedrock). Since 2026-10-13.
+     * Staff show lines: the active group first ("Linked group: Ann (Java), Ann_BE (Bedrock). Since <day>.
      * Source: Floodgate."), then one line per saved split. names turns a UUID into a player name or the UUID.
      */
     public static List<String> showLines(AccountLinkRepository.Group group, String asked, Function<UUID, String> names) {
-        Objects.requireNonNull(group); Objects.requireNonNull(names);
+        Objects.requireNonNull(group);
+        Objects.requireNonNull(names);
         var lines = new ArrayList<String>();
-        if (group.links().isEmpty()) { lines.add(noLinks(asked)); return lines; }
+        if (group.links().isEmpty()) {
+            lines.add(noLinks(asked));
+            return lines;
+        }
         if (group.members().size() > 1) {
             var parts = new ArrayList<String>();
             for (UUID member : group.members()) parts.add(names.apply(member) + " (" + platform(member) + ")");
@@ -78,7 +82,8 @@ public final class LinkedAccounts {
             for (var link : group.links()) {
                 if (!group.members().contains(link.low()) || !group.members().contains(link.high())) continue;
                 if (since == null || link.firstSeenDay().isBefore(since)) since = link.firstSeenDay();
-                if (link.source() == AccountLinkRepository.Source.STAFF) staff = true; else floodgate = true;
+                if (link.source() == AccountLinkRepository.Source.STAFF) staff = true;
+                else floodgate = true;
             }
             lines.add("Linked group: " + String.join(", ", parts) + "." + (since == null ? "" : " Since " + since + ".")
                     + " Source: " + (floodgate && staff ? "Floodgate and staff" : staff ? "staff" : "Floodgate") + ".");

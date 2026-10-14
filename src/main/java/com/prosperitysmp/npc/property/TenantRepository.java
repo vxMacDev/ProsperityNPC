@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -72,7 +73,7 @@ public final class TenantRepository {
         Objects.requireNonNull(propertyId);
         if (capacity < 1 || capacity > 4) throw new IllegalArgumentException("Invalid display capacity");
         var out = new ArrayList<Tenant>();
-        var slots = new java.util.HashSet<Integer>();
+        var slots = new HashSet<Integer>();
         try (Connection c = database.getConnection();
              PreparedStatement ps = c.prepareStatement("SELECT tenant_id,display_name,slot,tier,archetype,satisfaction "
                      + "FROM npc_tenants WHERE property_id=? ORDER BY slot,tenant_id LIMIT ?")) {
@@ -138,7 +139,7 @@ public final class TenantRepository {
     /**
      * Relocates a tenant to a new property/slot and pins its move cooldown. This is
      * the authoritative move: it commits before any cosmetic avatar walk, so cash
-     * and occupancy stay correct even if rendering later fails (§8.4).
+     * and occupancy stay correct even if rendering later fails.
      */
     public void moveTenant(UUID tenantId, UUID newProperty, int newSlot, String cooldownUntilDay)
             throws SQLException {
@@ -215,7 +216,9 @@ public final class TenantRepository {
 
     private static TenancyDeparture record(Connection c, UUID tenantId, UUID expectedProperty, Clock clock,
                                            Long purchaseEventId, TenancyDeparture.Cause cause) throws SQLException {
-        Objects.requireNonNull(tenantId); Objects.requireNonNull(clock); Objects.requireNonNull(cause);
+        Objects.requireNonNull(tenantId);
+        Objects.requireNonNull(clock);
+        Objects.requireNonNull(cause);
         if (c.getAutoCommit()) throw new SQLException("Vacating requires an explicit transaction");
         // Discover without a tenant lock, then take the shared property-before-tenant order.
         byte[] observedHome = expectedProperty == null ? null : Uuids.toBytes(expectedProperty);
@@ -265,8 +268,10 @@ public final class TenantRepository {
                 } catch (IllegalArgumentException invalid) { throw new SQLException("Invalid departure evidence", invalid); }
                 if (purchaseEventId != null) verifyEvictionBinding(c, departure);
                 insertDeparture(c, departure);
-                try (PreparedStatement update = query(c, "UPDATE npc_tenants SET property_id=NULL,slot=NULL,row_version=row_version+1 WHERE tenant_id=? AND row_version=?")) {
-                    update.setBytes(1, Uuids.toBytes(tenantId)); update.setLong(2, revision);
+                try (PreparedStatement update = query(c, "UPDATE npc_tenants SET property_id=NULL,slot=NULL,row_version=row_version+1 "
+                        + "WHERE tenant_id=? AND row_version=?")) {
+                    update.setBytes(1, Uuids.toBytes(tenantId));
+                    update.setLong(2, revision);
                     if (update.executeUpdate() != 1) throw new SQLException("Tenant departure changed");
                     warnings(c, update, null);
                 }
@@ -281,7 +286,8 @@ public final class TenantRepository {
         if (before < 0 || before == Long.MAX_VALUE) throw new IllegalArgumentException("Invalid departure revision");
         try (Connection c = database.getConnection(); PreparedStatement ps = query(c,
                 "SELECT * FROM npc_tenancy_departures WHERE resident_id=? AND occupancy_revision_before=? LIMIT 2")) {
-            ps.setBytes(1, Uuids.toBytes(resident)); ps.setLong(2, before);
+            ps.setBytes(1, Uuids.toBytes(resident));
+            ps.setLong(2, before);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!next(c, ps, rs)) return Optional.empty();
                 TenancyDeparture result = readDeparture(rs);
@@ -315,12 +321,17 @@ public final class TenantRepository {
                   property_id,owner_at_departure,ownership_epoch,slot,departed_at,cause,purchase_event_id,payload_sha256)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 """)) {
-            ps.setBytes(1, Uuids.toBytes(d.residentId())); ps.setLong(2, d.occupancyRevisionBefore());
-            ps.setLong(3, d.occupancyRevisionAfter()); ps.setBytes(4, Uuids.toBytes(d.propertyId()));
+            ps.setBytes(1, Uuids.toBytes(d.residentId()));
+            ps.setLong(2, d.occupancyRevisionBefore());
+            ps.setLong(3, d.occupancyRevisionAfter());
+            ps.setBytes(4, Uuids.toBytes(d.propertyId()));
             ps.setBytes(5, d.ownerAtDeparture() == null ? null : Uuids.toBytes(d.ownerAtDeparture()));
-            ps.setInt(6, d.ownershipEpoch()); ps.setInt(7, d.slot());
+            ps.setInt(6, d.ownershipEpoch());
+            ps.setInt(7, d.slot());
             ps.setObject(8, LocalDateTime.ofInstant(d.departedAt(), ZoneOffset.UTC));
-            ps.setString(9, d.cause().name()); ps.setObject(10, d.purchaseEventId()); ps.setString(11, d.fingerprint());
+            ps.setString(9, d.cause().name());
+            ps.setObject(10, d.purchaseEventId());
+            ps.setString(11, d.fingerprint());
             if (ps.executeUpdate() != 1) throw new SQLException("Departure evidence not inserted");
             warnings(c, ps, null);
         }
@@ -379,14 +390,16 @@ public final class TenantRepository {
      * Only a vacant current revision may re-enter; identity and cooldown are untouched.
      */
     public void rehouse(UUID tenantId, long expectedRevision, UUID propertyId, int slot) throws SQLException {
-        java.util.Objects.requireNonNull(tenantId); java.util.Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(tenantId);
+        Objects.requireNonNull(propertyId);
         if (expectedRevision < 0 || expectedRevision == Long.MAX_VALUE || slot < 0 || slot >= 4)
             throw new IllegalArgumentException("Invalid tenancy revision/slot");
         try (Connection c = database.getConnection()) {
             c.setAutoCommit(false);
             try {
                 // Same property-before-tenant order as paid repair; contenders share this lock.
-                try (PreparedStatement ps = query(c, "SELECT capacity,enabled,owner_uuid FROM npc_properties WHERE property_id=? FOR UPDATE")) {
+                try (PreparedStatement ps = query(c,
+                        "SELECT capacity,enabled,owner_uuid FROM npc_properties WHERE property_id=? FOR UPDATE")) {
                     ps.setBytes(1, Uuids.toBytes(propertyId));
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!next(c, ps, rs)) throw new SQLException("Target property missing");
@@ -406,15 +419,20 @@ public final class TenantRepository {
                         if (next(c, ps, rs)) throw new SQLException("Duplicate tenant");
                     }
                 }
-                try (PreparedStatement ps = query(c, "SELECT tenant_id FROM npc_tenants WHERE property_id=? AND slot=? LIMIT 1 FOR UPDATE")) {
-                    ps.setBytes(1, Uuids.toBytes(propertyId)); ps.setInt(2, slot);
+                try (PreparedStatement ps = query(c,
+                        "SELECT tenant_id FROM npc_tenants WHERE property_id=? AND slot=? LIMIT 1 FOR UPDATE")) {
+                    ps.setBytes(1, Uuids.toBytes(propertyId));
+                    ps.setInt(2, slot);
                     try (ResultSet rs = ps.executeQuery()) {
                         if (next(c, ps, rs)) throw new SQLException("Target slot occupied");
                     }
                 }
-                try (PreparedStatement ps = query(c, "UPDATE npc_tenants SET property_id=?,slot=?,row_version=row_version+1 WHERE tenant_id=? AND row_version=? AND property_id IS NULL AND slot IS NULL")) {
-                    ps.setBytes(1, Uuids.toBytes(propertyId)); ps.setInt(2, slot);
-                    ps.setBytes(3, Uuids.toBytes(tenantId)); ps.setLong(4, expectedRevision);
+                try (PreparedStatement ps = query(c, "UPDATE npc_tenants SET property_id=?,slot=?,row_version=row_version+1 "
+                        + "WHERE tenant_id=? AND row_version=? AND property_id IS NULL AND slot IS NULL")) {
+                    ps.setBytes(1, Uuids.toBytes(propertyId));
+                    ps.setInt(2, slot);
+                    ps.setBytes(3, Uuids.toBytes(tenantId));
+                    ps.setLong(4, expectedRevision);
                     if (ps.executeUpdate() != 1) throw new SQLException("Tenant re-entry changed");
                     warnings(c, ps, null);
                 }
@@ -433,8 +451,13 @@ public final class TenantRepository {
     }
     private static PreparedStatement query(Connection c, String sql) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); return ps; }
-        catch (SQLException failure) { ps.close(); throw failure; }
+        try {
+            ps.setQueryTimeout(5);
+            return ps;
+        } catch (SQLException failure) {
+            ps.close();
+            throw failure;
+        }
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
         warnings(c, ps, rs);
@@ -447,7 +470,11 @@ public final class TenantRepository {
             throw new SQLException("Incomplete tenancy operation");
     }
     private static void rollback(Connection c, Throwable failure) {
-        try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+        try {
+            c.rollback();
+        } catch (SQLException rollback) {
+            failure.addSuppressed(rollback);
+        }
     }
 
     /** Lowest unoccupied slot index in [0, capacity), or -1 if full. */

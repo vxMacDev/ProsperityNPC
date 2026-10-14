@@ -1,6 +1,8 @@
 package com.prosperitysmp.npc.commerce;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -14,9 +16,12 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Readback evidence after saveData(), not authorization or permission to replay an intent. */
 public final class ItemSaveProof {
@@ -54,7 +59,7 @@ public final class ItemSaveProof {
             Object players = craftServer.getClass().getMethod("getHandle").invoke(craftServer);
             Object storage = players.getClass().getField("playerIo").get(players);
             Object value = storage.getClass().getMethod("getPlayerDir").invoke(storage);
-            if (!(value instanceof java.io.File directory)) return Optional.empty();
+            if (!(value instanceof File directory)) return Optional.empty();
             Path actual = directory.toPath().toAbsolutePath().normalize();
             Path world = actual;
             for (int i = 0; i < dataDirectory.getNameCount(); i++) world = world.getParent();
@@ -66,8 +71,9 @@ public final class ItemSaveProof {
     }
 
     /**
-     * Capture on main, after the adjacent inventory mutation/save; this performs no file I/O. Commerce deliveries only:
-     * a REPAIR_RETURN batch is refused here and must use {@link #captureReturn}, which also proves the save is its own.
+     * Capture on main, after the adjacent inventory mutation/save; this performs no file I/O. Unmarked commerce
+     * deliveries only (town.commerce.delivery-save-marker off), checked by the storage and ender chest count alone. A
+     * REPAIR_RETURN batch is refused here and must use {@link #captureDelivery}, which also proves the save is its own.
      */
     public Optional<Snapshot> capture(Path mainWorldFolder, ItemCustody batch, ItemDeliveryEvidence evidence) {
         if (batch == null || batch.source() == ItemCustody.Source.REPAIR_RETURN) return Optional.empty();
@@ -75,15 +81,16 @@ public final class ItemSaveProof {
     }
 
     /**
-     * Capture on main for a REPAIR_RETURN delivery, after its after marker, the delivery and its save; no file I/O.
-     * The baseline is this return's before-delivery save, read back by {@link #returnBaseline} for the same player,
-     * return and item. {@link #verify(Snapshot)} then also needs the return's after marker and the whole file to hold
-     * exactly the baseline units plus the batch.
+     * Capture on main for a marked delivery (every REPAIR_RETURN, and commerce with the save marker on), after its after
+     * marker, the delivery and its save; no file I/O. The baseline is this delivery's before-delivery save, read back by
+     * {@link #deliveryBaseline} under {@link #markerKeyFor} the batch's source, for the same player, delivery and item.
+     * {@link #verify(Snapshot)} then also needs the delivery's after marker and the whole file to hold exactly the
+     * baseline units plus the batch.
      */
-    public Optional<Snapshot> captureReturn(Path mainWorldFolder, ItemCustody batch, ItemDeliveryEvidence evidence,
-                                            Baseline baseline) {
-        if (batch == null || batch.source() != ItemCustody.Source.REPAIR_RETURN || baseline == null || baseline.owner != this
-                || !RETURN_MARKER_KEY.equals(baseline.key) || !baseline.player.equals(batch.playerId())
+    public Optional<Snapshot> captureDelivery(Path mainWorldFolder, ItemCustody batch, ItemDeliveryEvidence evidence,
+                                              Baseline baseline) {
+        if (batch == null || baseline == null || baseline.owner != this
+                || !markerKeyFor(batch.source()).equals(baseline.key) || !baseline.player.equals(batch.playerId())
                 || !baseline.collectionId.equals(batch.requestNonce()) || baseline.units.size() != 1) return Optional.empty();
         var snapshot = capture(mainWorldFolder, batch, evidence, baseline);
         if (snapshot.isEmpty()) return snapshot;
@@ -129,44 +136,59 @@ public final class ItemSaveProof {
 
     /**
      * The persistent data key a REPAIR_RETURN delivery writes into the player's saved data: its before marker before the
-     * save just ahead of the delivery (ItemInventoryCustody.saveBeforeReturn), and its after marker just before the
+     * save just ahead of the delivery (ItemInventoryCustody.saveBeforeDelivery), and its after marker just before the
      * delivery's own save. Its own key, so a return never overwrites a hand-in's marker. The value is
      * {@link #marker}(request nonce, after); a nonce is delivered at most once.
      */
     public static final String RETURN_MARKER_KEY = "prosperitynpc:item_return";
 
     /**
-     * Worker only, under the player's inventory gate, before a REPAIR_RETURN delivery: reads back and forces the save
-     * ItemInventoryCustody.saveBeforeReturn made. Empty unless the file is this player's, carries this return's before
-     * marker (so that save really happened) and is at the batch's DataVersion. The units are every unit of the item
-     * anywhere in the file.
+     * The same markers for a commerce delivery (MERCHANT_GOODS or WORKER_OUTPUT) while
+     * town.commerce.delivery-save-marker is on. Its own key, so an order never overwrites a hand-in's or a return's marker.
      */
-    public Optional<Baseline> returnBaseline(Path mainWorldFolder, ItemCustody batch) {
+    public static final String DELIVERY_MARKER_KEY = "prosperitynpc:item_delivery";
+
+    /** The marker key a delivery of this source writes and its proof reads. */
+    static String markerKeyFor(ItemCustody.Source source) {
+        return switch (Objects.requireNonNull(source)) {
+            case REPAIR_RETURN -> RETURN_MARKER_KEY;
+            case MERCHANT_GOODS, WORKER_OUTPUT -> DELIVERY_MARKER_KEY;
+        };
+    }
+
+    /**
+     * Worker only, under the player's inventory gate, before a marked delivery: reads back and forces the save
+     * ItemInventoryCustody.saveBeforeDelivery made. Empty unless the file is this player's, carries this delivery's
+     * before marker under {@link #markerKeyFor} its source (so that save really happened) and is at the batch's
+     * DataVersion. The units are every unit of the item anywhere in the file.
+     */
+    public Optional<Baseline> deliveryBaseline(Path mainWorldFolder, ItemCustody batch) {
         if (batch == null) return Optional.empty();
         Optional<Path> file = playerFile(mainWorldFolder, batch.playerId());
         if (file.isEmpty()) return Optional.empty();
-        var found = new java.util.concurrent.atomic.AtomicReference<Baseline>();
+        var found = new AtomicReference<Baseline>();
         boolean read = verifyFile(file.get(), bytes -> {
-            var value = returnBaselineOf(file.get(), bytes, batch);
+            var value = deliveryBaselineOf(file.get(), bytes, batch);
             value.ifPresent(found::set);
             return value.isPresent();
         });
         return read ? Optional.ofNullable(found.get()) : Optional.empty();
     }
 
-    /** No I/O: the before-delivery baseline these saved bytes give for a REPAIR_RETURN batch, or empty. */
-    Optional<Baseline> returnBaselineOf(Path file, byte[] bytes, ItemCustody batch) {
-        if (!available() || file == null || bytes == null || bytes.length == 0 || bytes.length > MAX_FILE_BYTES || batch == null
-                || batch.source() != ItemCustody.Source.REPAIR_RETURN) return Optional.empty();
+    /** No I/O: the before-delivery baseline these saved bytes give for a batch, or empty. */
+    Optional<Baseline> deliveryBaselineOf(Path file, byte[] bytes, ItemCustody batch) {
+        if (!available() || file == null || bytes == null || bytes.length == 0 || bytes.length > MAX_FILE_BYTES || batch == null)
+            return Optional.empty();
         try {
+            String key = markerKeyFor(batch.source());
             Object prototype = nbt.read(batch.payload().bytes(), 512 * 1024);
             int version = nbt.integer(prototype, "DataVersion");
             if (version <= 0 || nbt.count(prototype) != batch.quantity() || !nbt.hasItemId(prototype)) return Optional.empty();
             Object shape = nbt.shape(prototype);
             Object root = nbt.read(bytes, MAX_NBT_HEAP);
             if (nbt.integer(root, "DataVersion") != version || !nbt.uuidMatches(root, batch.playerId())
-                    || !marker(batch.requestNonce(), false).equals(nbt.marker(root, RETURN_MARKER_KEY))) return Optional.empty();
-            return Optional.of(new Baseline(this, RETURN_MARKER_KEY, file, batch.playerId(), batch.requestNonce(), version,
+                    || !marker(batch.requestNonce(), false).equals(nbt.marker(root, key))) return Optional.empty();
+            return Optional.of(new Baseline(this, key, file, batch.playerId(), batch.requestNonce(), version,
                     List.of(shape), List.of(nbt.everywhere(root, shape))));
         } catch (ReflectiveOperationException | RuntimeException | LinkageError uncertain) {
             return Optional.empty();
@@ -181,7 +203,7 @@ public final class ItemSaveProof {
     public Optional<Baseline> baseline(Path mainWorldFolder, UUID player, UUID collectionId, List<CustodyBytes> prototypes) {
         Optional<Path> file = playerFile(mainWorldFolder, player);
         if (file.isEmpty() || collectionId == null) return Optional.empty();
-        var found = new java.util.concurrent.atomic.AtomicReference<Baseline>();
+        var found = new AtomicReference<Baseline>();
         boolean read = verifyFile(file.get(), bytes -> {
             var value = baselineOf(file.get(), bytes, player, collectionId, prototypes);
             value.ifPresent(found::set);
@@ -237,7 +259,7 @@ public final class ItemSaveProof {
         return snapshot;
     }
 
-    /** Tests of the storage counts only: no baseline, so {@link #verify(CollectionSnapshot)} always refuses it. */
+    /** For tests of the storage counts only: no baseline, so {@link #verify(CollectionSnapshot)} always refuses it. */
     Optional<CollectionSnapshot> captureCollection(Path mainWorldFolder, UUID player, List<Expectation> expectations) {
         return captureCollection(mainWorldFolder, player, expectations, null, false);
     }
@@ -279,27 +301,37 @@ public final class ItemSaveProof {
     /**
      * What an offline read found: units per prototype in inventory storage plus ender chest, the saved file's DataVersion
      * (null when the file has none) and the distinct DataVersions recorded on the prototypes, in order (empty when none
-     * carries one). wholeFile is every unit of each prototype anywhere in the file (storage, hotbar, offhand, armor, ender
-     * chest, nested shulker boxes and bundles, a ridden animal's chest). handInMarker and returnMarker are the markers a
-     * hand-in and a return delivery write before their saves, as found in the file (null when absent).
+     * carries one). wholeFile is every unit of each prototype anywhere in the file, nested containers and a ridden
+     * animal's chest included. handInMarker, returnMarker and deliveryMarker are the markers a hand-in, a return delivery
+     * and a marked commerce delivery write before their saves, as found in the file (null when absent).
      */
     public record SavedUnits(List<Integer> units, Integer fileDataVersion, List<Integer> recordedDataVersions,
-                             List<Integer> wholeFile, String handInMarker, String returnMarker) {
+                             List<Integer> wholeFile, String handInMarker, String returnMarker, String deliveryMarker) {
         public SavedUnits {
-            units = List.copyOf(units); recordedDataVersions = List.copyOf(recordedDataVersions); wholeFile = List.copyOf(wholeFile);
+            units = List.copyOf(units);
+            recordedDataVersions = List.copyOf(recordedDataVersions);
+            wholeFile = List.copyOf(wholeFile);
             if (wholeFile.size() != units.size()) throw new IllegalArgumentException("One whole-file count per line");
+        }
+
+        /** A read with no commerce delivery marker. */
+        public SavedUnits(List<Integer> units, Integer fileDataVersion, List<Integer> recordedDataVersions,
+                          List<Integer> wholeFile, String handInMarker, String returnMarker) {
+            this(units, fileDataVersion, recordedDataVersions, wholeFile, handInMarker, returnMarker, null);
         }
     }
 
     /**
      * Offline evidence only (the server stopped): plain units per prototype in a saved player file, inventory storage
-     * plus ender chest and the whole file, with both DataVersions and the hand-in and return markers. Empty when the bytes are not that player's readable file or a prototype
-     * is not one item. The counts are only comparable when {@link #dataVersionProblem} finds nothing: after a server
-     * upgrade an item can be saved in a new shape, and then it reads as 0.
+     * plus ender chest and the whole file, with both DataVersions and the hand-in, return and delivery markers. Empty
+     * when the bytes are not that player's readable file or a prototype is not one item. The counts are only comparable
+     * when {@link #dataVersionProblem} finds nothing: after a server upgrade an item can be saved in a new shape, and
+     * then it reads as 0.
      */
     public Optional<SavedUnits> readSaved(byte[] savedFile, UUID player, List<CustodyBytes> prototypes) {
         if (!available() || savedFile == null || savedFile.length == 0 || savedFile.length > MAX_FILE_BYTES || player == null
-                || prototypes == null || prototypes.isEmpty() || prototypes.size() > ItemCollectionEvidence.MAX_LINES) return Optional.empty();
+                || prototypes == null || prototypes.isEmpty() || prototypes.size() > ItemCollectionEvidence.MAX_LINES)
+            return Optional.empty();
         try {
             var shapes = new ArrayList<Object>();
             var recorded = new ArrayList<Integer>();
@@ -319,7 +351,32 @@ public final class ItemSaveProof {
                 whole.add(nbt.everywhere(root, shape));
             }
             return Optional.of(new SavedUnits(units, nbt.optionalInteger(root, "DataVersion"), recorded, whole,
-                    nbt.marker(root, MARKER_KEY), nbt.marker(root, RETURN_MARKER_KEY)));
+                    nbt.marker(root, MARKER_KEY), nbt.marker(root, RETURN_MARKER_KEY), nbt.marker(root, DELIVERY_MARKER_KEY)));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError unreadable) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Offline evidence only (the server stopped), for one delivery batch: its payload is the prototype (count equal to the
+     * batch quantity), and the units of that item in storage plus ender chest and in the whole file are read the way the
+     * delivery proof counts them. recordedDataVersions is the payload's DataVersion (empty when it has none). Empty when
+     * the bytes are not the batch player's readable file or the payload is not the batch.
+     */
+    public Optional<SavedUnits> readSavedDelivery(byte[] savedFile, ItemCustody batch) {
+        if (!available() || savedFile == null || savedFile.length == 0 || savedFile.length > MAX_FILE_BYTES || batch == null)
+            return Optional.empty();
+        try {
+            Object prototype = nbt.read(batch.payload().bytes(), 512 * 1024);
+            if (nbt.count(prototype) != batch.quantity() || !nbt.hasItemId(prototype)) return Optional.empty();
+            Integer version = nbt.optionalInteger(prototype, "DataVersion");
+            Object shape = nbt.shape(prototype);
+            Object root = nbt.read(savedFile, MAX_NBT_HEAP);
+            if (!nbt.uuidMatches(root, batch.playerId())) return Optional.empty();
+            int units = Math.addExact(nbt.units(root, "Inventory", shape, false), nbt.units(root, "EnderItems", shape, true));
+            return Optional.of(new SavedUnits(List.of(units), nbt.optionalInteger(root, "DataVersion"),
+                    version == null ? List.of() : List.of(version), List.of(nbt.everywhere(root, shape)),
+                    nbt.marker(root, MARKER_KEY), nbt.marker(root, RETURN_MARKER_KEY), nbt.marker(root, DELIVERY_MARKER_KEY)));
         } catch (ReflectiveOperationException | RuntimeException | LinkageError unreadable) {
             return Optional.empty();
         }
@@ -327,13 +384,14 @@ public final class ItemSaveProof {
 
     /**
      * Null when the saved file's DataVersion is the one recorded with the items, or when no DataVersion was ever recorded
-     * with them (older records, which are read as before). Otherwise why the counts cannot be trusted.
+     * with them (older records, which are not checked). Otherwise why the counts cannot be trusted.
      */
     public static String dataVersionProblem(Integer fileDataVersion, List<Integer> recordedDataVersions) {
         if (recordedDataVersions == null || recordedDataVersions.isEmpty()) return null;
         String skipped = " The tool skips this check only when no DataVersion was recorded with the items.";
         if (recordedDataVersions.size() > 1)
-            return "The items were recorded at more than one DataVersion " + recordedDataVersions + ", so the counts cannot be trusted." + skipped;
+            return "The items were recorded at more than one DataVersion " + recordedDataVersions + ", so the counts cannot be trusted."
+                    + skipped;
         int recorded = recordedDataVersions.getFirst();
         if (fileDataVersion == null)
             return "The player file has no DataVersion, but the items were recorded at DataVersion " + recorded + "." + skipped;
@@ -446,18 +504,24 @@ public final class ItemSaveProof {
 
         private CollectionSnapshot(ItemSaveProof owner, Path file, UUID player, int version, List<Object> shapes,
                                    List<Integer> expected, List<Integer> taken, Baseline baseline) {
-            this.owner = owner; this.file = file; this.player = player; this.version = version;
-            this.shapes = shapes; this.expected = List.copyOf(expected); this.taken = List.copyOf(taken); this.baseline = baseline;
+            this.owner = owner;
+            this.file = file;
+            this.player = player;
+            this.version = version;
+            this.shapes = shapes;
+            this.expected = List.copyOf(expected);
+            this.taken = List.copyOf(taken);
+            this.baseline = baseline;
         }
     }
 
     /**
-     * Opaque, immutable read of the save made just before a take or a return delivery: its file, hand-in or return and
+     * Opaque, immutable read of the save made just before a take or a marked delivery: its file, hand-in or delivery and
      * every unit of each line anywhere in it.
      */
     public static final class Baseline {
         private final ItemSaveProof owner;
-        /** MARKER_KEY for a hand-in's before-take save, RETURN_MARKER_KEY for a return's before-delivery save. */
+        /** MARKER_KEY for a hand-in's before-take save, {@link #markerKeyFor} the source for a delivery's before-delivery save. */
         private final String key;
         private final Path file;
         private final UUID player;
@@ -468,8 +532,14 @@ public final class ItemSaveProof {
 
         private Baseline(ItemSaveProof owner, String key, Path file, UUID player, UUID collectionId, int version,
                          List<Object> shapes, List<Integer> units) {
-            this.owner = owner; this.key = key; this.file = file; this.player = player; this.collectionId = collectionId; this.version = version;
-            this.shapes = shapes; this.units = List.copyOf(units);
+            this.owner = owner;
+            this.key = key;
+            this.file = file;
+            this.player = player;
+            this.collectionId = collectionId;
+            this.version = version;
+            this.shapes = shapes;
+            this.units = List.copyOf(units);
         }
 
         /** Every unit of each line anywhere in the before-take save, for tests and reports. */
@@ -477,11 +547,12 @@ public final class ItemSaveProof {
     }
 
     /**
-     * Storage plus ender chest hold the recorded after units. For a REPAIR_RETURN (bound to its before-delivery save) the
-     * file must also be the delivery's own save: it carries this return's after marker, and every unit of the item
-     * anywhere in the file (storage, hotbar, offhand, armor, ender chest, nested containers) is exactly the before-delivery
-     * count plus the batch. A failed save, the old file or a file with the items moved somewhere storage does not look is
-     * refused. Commerce deliveries are checked exactly as before.
+     * Storage plus ender chest hold the recorded after units. A marked delivery (bound to its before-delivery save: every
+     * REPAIR_RETURN, and commerce with the save marker on) must also be the delivery's own save: it carries this
+     * delivery's after marker under the baseline's key, and every unit of the item anywhere in the file is exactly the
+     * before-delivery count plus the batch. A failed save, the old file or a file with the items moved somewhere storage
+     * does not look is refused. An unmarked commerce delivery (no baseline) is checked by the count alone; an unmarked
+     * return is refused.
      */
     private boolean matches(byte[] bytes, Snapshot snapshot) throws ReflectiveOperationException {
         if (bytes.length == 0 || bytes.length > MAX_FILE_BYTES || snapshot == null || snapshot.owner != this) return false;
@@ -490,14 +561,13 @@ public final class ItemSaveProof {
         int persisted = Math.addExact(nbt.units(root, "Inventory", snapshot.prototype, false),
                 nbt.units(root, "EnderItems", snapshot.prototype, true));
         if (persisted != snapshot.evidence.afterUnits() || !snapshot.evidence.confirms(snapshot.batch)) return false;
-        if (snapshot.batch.source() != ItemCustody.Source.REPAIR_RETURN) return true;
         Baseline before = snapshot.baseline;
-        if (before == null) return false;
-        return marker(before.collectionId, true).equals(nbt.marker(root, RETURN_MARKER_KEY))
+        if (before == null) return snapshot.batch.source() != ItemCustody.Source.REPAIR_RETURN;
+        return marker(before.collectionId, true).equals(nbt.marker(root, before.key))
                 && nbt.everywhere(root, snapshot.prototype) == Math.addExact(before.units.getFirst(), snapshot.batch.quantity());
     }
 
-    /** Opaque, immutable binding of the prototype, batch, immediately adjacent unit counts and, for a return, its baseline. */
+    /** Opaque, immutable binding of the prototype, batch, immediately adjacent unit counts and, for a marked delivery, its baseline. */
     public static final class Snapshot {
         private final ItemSaveProof owner;
         private final Path file;
@@ -509,33 +579,38 @@ public final class ItemSaveProof {
 
         private Snapshot(ItemSaveProof owner, Path file, ItemCustody batch,
                          ItemDeliveryEvidence evidence, int version, Object prototype, Baseline baseline) {
-            this.owner = owner; this.file = file; this.batch = batch;
-            this.evidence = evidence; this.version = version; this.prototype = prototype; this.baseline = baseline;
+            this.owner = owner;
+            this.file = file;
+            this.batch = batch;
+            this.evidence = evidence;
+            this.version = version;
+            this.prototype = prototype;
+            this.baseline = baseline;
         }
     }
 
     private record Identity(Path path, Object key) { }
 
-    private static BasicFileAttributes attributes(Path path) throws java.io.IOException {
+    private static BasicFileAttributes attributes(Path path) throws IOException {
         BasicFileAttributes value = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         if (value.isSymbolicLink() || value.isOther() || !path.toRealPath().equals(path))
-            throw new java.io.IOException("Unstable or linked player-data path");
+            throw new IOException("Unstable or linked player-data path");
         return value;
     }
 
-    private static List<Identity> directories(Path directory) throws java.io.IOException {
+    private static List<Identity> directories(Path directory) throws IOException {
         List<Identity> identities = new ArrayList<>();
         Path next = directory.getRoot();
         for (Path part : directory) {
             next = next.resolve(part);
             BasicFileAttributes value = attributes(next);
-            if (!value.isDirectory() || value.fileKey() == null) throw new java.io.IOException("Unknown directory identity");
+            if (!value.isDirectory() || value.fileKey() == null) throw new IOException("Unknown directory identity");
             identities.add(new Identity(next, value.fileKey()));
         }
         return identities;
     }
 
-    private static boolean sameDirectories(List<Identity> identities) throws java.io.IOException {
+    private static boolean sameDirectories(List<Identity> identities) throws IOException {
         for (Identity identity : identities) {
             BasicFileAttributes value = attributes(identity.path());
             if (!value.isDirectory() || !identity.key().equals(value.fileKey())) return false;
@@ -593,8 +668,8 @@ public final class ItemSaveProof {
                         && get.invoke(prototype, "id") != null
                         && getString.invoke(tag, "id").equals(getString.invoke(prototype, "id"))
                         && shape(tag).equals(prototype)) return count(tag);
-                for (Object entry : (java.util.Set<?>) entrySet.invoke(tag))
-                    total = Math.addExact(total, everywhere(((java.util.Map.Entry<?, ?>) entry).getValue(), prototype));
+                for (Object entry : (Set<?>) entrySet.invoke(tag))
+                    total = Math.addExact(total, everywhere(((Map.Entry<?, ?>) entry).getValue(), prototype));
             } else if (tag instanceof List<?> entries) {
                 for (Object entry : entries) total = Math.addExact(total, everywhere(entry, prototype));
             }

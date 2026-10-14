@@ -50,13 +50,14 @@ public final class IncidentServiceRepository {
 
     /** Trusted admission revalidation; caller owns the transaction and its captured cutoff. */
     public IncidentServiceAssessment readInTransaction(Connection c, Instant at, UUID owner, Instant dueFrom) throws SQLException {
-        Objects.requireNonNull(owner); Objects.requireNonNull(dueFrom);
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(dueFrom);
         ReadSnapshot.requireTransaction(c);
         try {
             if (!dueFrom.isBefore(at) || Duration.between(dueFrom, at).compareTo(Duration.ofDays(30)) > 0)
                 throw new IllegalArgumentException("Service evidence window must be positive and at most 30 days");
-            // Roll v7 creates exactly a 24-hour obligation. Bound on that immutable
-            // origin, not a mutable incident due_at which could hide changed terms.
+            // A roll creates exactly a 24-hour obligation. Bound the window on that immutable
+            // origin, not on the mutable incident due_at, which could hide changed terms.
             Instant firstMillisecond = dueFrom.truncatedTo(ChronoUnit.MILLIS);
             if (firstMillisecond.isBefore(dueFrom)) firstMillisecond = firstMillisecond.plusMillis(1);
             var cases = new ArrayList<Case>();
@@ -252,7 +253,10 @@ public final class IncidentServiceRepository {
     }
     private static Instant time(ResultSet rs, String column, boolean nullable) throws SQLException {
         LocalDateTime value = rs.getObject(column, LocalDateTime.class);
-        if (value == null) { require(nullable, "Missing service time: " + column); return null; }
+        if (value == null) {
+            require(nullable, "Missing service time: " + column);
+            return null;
+        }
         require(value.getYear() >= 1 && value.getYear() <= 9999, "Invalid service time: " + column);
         return value.toInstant(ZoneOffset.UTC);
     }
@@ -264,7 +268,10 @@ public final class IncidentServiceRepository {
     }
     private static UUID uuid(ResultSet rs, String column, boolean nullable) throws SQLException {
         byte[] bytes = rs.getBytes(column);
-        if (bytes == null) { require(nullable, "Missing service identity: " + column); return null; }
+        if (bytes == null) {
+            require(nullable, "Missing service identity: " + column);
+            return null;
+        }
         require(bytes.length == 16, "Invalid service identity: " + column);
         return Uuids.fromBytes(bytes);
     }
@@ -274,7 +281,10 @@ public final class IncidentServiceRepository {
         return value;
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        warnings(c, ps, rs); boolean next = rs.next(); warnings(c, ps, rs); return next;
+        warnings(c, ps, rs);
+        boolean next = rs.next();
+        warnings(c, ps, rs);
+        return next;
     }
     private static void warnings(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
         if (c.getWarnings() != null || ps.getWarnings() != null || (rs != null && rs.getWarnings() != null))

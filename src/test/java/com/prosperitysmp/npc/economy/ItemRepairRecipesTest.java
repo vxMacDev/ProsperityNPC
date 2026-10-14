@@ -57,7 +57,7 @@ class ItemRepairRecipesTest {
                 assertTrue(reason == Unavailable.TOO_MANY_UNITS || reason == Unavailable.TOO_MANY_STACKS, "unexpected " + reason);
             }
         }
-        // Positive controls: both branches are exercised, so the property is not vacuous.
+        // Both outcomes occur, so the property above is not vacuous.
         assertTrue(quoted > 1_000, "quoted " + quoted);
         assertTrue(refused > 100, "refused " + refused);
     }
@@ -92,7 +92,7 @@ class ItemRepairRecipesTest {
                 prices(Map.of("PAPER", 100L, "BAKED_POTATO", 0L)), STACK64));
         assertEquals(new Refused(Unavailable.PRICE_UNKNOWN), ItemRepairRecipes.quote(base, 2_000, 15_000, 256, 4,
                 prices(Map.of("PAPER", 100L, "BAKED_POTATO", ItemRepairRecipes.MAX_UNIT_CENTS + 1)), STACK64));
-        // Positive control: both known prices quote.
+        // With both prices known the quote succeeds, so the refusals above are real.
         assertInstanceOf(Quoted.class, ItemRepairRecipes.quote(base, 2_000, 15_000, 256, 4,
                 prices(Map.of("PAPER", 100L, "BAKED_POTATO", 300L)), STACK64));
     }
@@ -152,7 +152,7 @@ class ItemRepairRecipesTest {
         assertFalse(ItemRepairRecipes.allowedMaterial("DIAMOND_SWORD", 1));
         assertFalse(ItemRepairRecipes.allowedMaterial("paper", 64));
         assertFalse(ItemRepairRecipes.allowedMaterial("NOT_AN_ITEM", 0));
-        // Positive control: the shipped recipe materials pass.
+        // The shipped recipe materials are allowed.
         for (String plain : List.of("PAPER", "BAKED_POTATO", "COPPER_INGOT", "IRON_INGOT", "GLASS"))
             assertTrue(ItemRepairRecipes.allowedMaterial(plain, 64), plain);
         assertTrue(ItemRepairSettings.parse(List.of(Map.of("material", "SPAWNER", "quantity", 1)), STACK64).isEmpty());

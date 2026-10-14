@@ -13,11 +13,10 @@ import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 
 /**
- * Shortest-path over a {@link NavGraph} (§10.1: "Dijkstra chooses graph nodes").
- * Deterministic — the frontier and equal-distance tie-breaks both order by node
- * id, so a restart replays the identical route rather than reshuffling avatars.
- * Non-positive-cost or dangling edges are skipped defensively (the validator
- * reports them as errors before publish).
+ * Shortest-path over a {@link NavGraph}. Deterministic: the frontier and the
+ * equal-distance tie-breaks both order by node id, so a restart replays the
+ * identical route rather than reshuffling avatars. Non-positive-cost or dangling
+ * edges are skipped defensively (the validator reports them as errors before publish).
  */
 public final class Dijkstra {
 

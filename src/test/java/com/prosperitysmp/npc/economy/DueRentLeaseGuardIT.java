@@ -127,7 +127,7 @@ class DueRentLeaseGuardIT {
      * The service's rent step on main. Guard on: the production GuardedRentStep (what PropertyService runs), with
      * its main and worker hops drained to completion inside this main task, against the shared cache. It takes
      * DueRentLeases before the SQL, passes their exclusions to SQL, rebases only held entries, then releases; a
-     * deferred change leaves its retry scheduled (not fired here). Returns the SQL step's result. Off: the original step.
+     * deferred change leaves its retry scheduled (not fired here). Returns the SQL step's result. Off: the step without the guard.
      */
     private PropertyRepository.DueRentResult step(boolean guard, OwnershipFence fence, Map<UUID, Property> cache)
             throws SQLException {
@@ -228,7 +228,7 @@ class DueRentLeaseGuardIT {
         assertTrue(new PropertyRepository.DueRentResult(List.of(), 0).deferred().isEmpty());
     }
 
-    // ---- the finding: a payment between DEBIT and CREDIT while the day's rent step runs
+    // ---- a payment between DEBIT and CREDIT while the day's rent step runs
 
     @Test void guardedStepWaitsForTheInFlightPaymentWhichCompletes() throws Exception {
         Property p = property(1000);
@@ -265,7 +265,7 @@ class DueRentLeaseGuardIT {
         assertEquals(p.withAskingRent(1200), cache.get(p.propertyId()));
     }
 
-    /** Negative control: the same interleaving without the guard strands the debit at CREDIT_INTENT. */
+    /** Without the guard, the same interleaving strands the debit at CREDIT_INTENT. */
     @Test void unguardedStepBreaksTheCreditAuthorization() throws Exception {
         Property p = property(1000);
         long change = dueChange(p, 1200);
@@ -320,7 +320,7 @@ class DueRentLeaseGuardIT {
         var free = PropertyService.rebaseDueRent(cache, empty, List.of(fresh), x -> true);
         assertFalse(free.drift());
         assertEquals(fresh, cache.get(id));
-        // A non-rent difference is drift either way (original behavior).
+        // A non-rent difference is drift either way.
         Map<UUID, Property> other = new ConcurrentHashMap<>(Map.of(id, cached));
         assertTrue(PropertyService.rebaseDueRent(other, empty, List.of(fresh.withOwner(UUID.randomUUID(), 1)), x -> true).drift());
         assertSame(cached, other.get(id));

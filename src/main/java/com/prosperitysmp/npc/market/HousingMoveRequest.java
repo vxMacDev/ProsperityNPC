@@ -17,7 +17,9 @@ public record HousingMoveRequest(UUID requestId, UUID residentId, UUID propertyI
     public record Origin(UUID propertyId, UUID ownerId, int ownershipEpoch, long propertyRevision,
                          int slot, UUID admissionId) {
         public Origin {
-            Objects.requireNonNull(propertyId); Objects.requireNonNull(ownerId); Objects.requireNonNull(admissionId);
+            Objects.requireNonNull(propertyId);
+            Objects.requireNonNull(ownerId);
+            Objects.requireNonNull(admissionId);
             if (ownershipEpoch < 0 || propertyRevision < 0 || propertyRevision == Long.MAX_VALUE || slot < 0 || slot > 3)
                 throw new IllegalArgumentException("Invalid housing origin");
         }
@@ -43,9 +45,15 @@ public record HousingMoveRequest(UUID requestId, UUID residentId, UUID propertyI
         }
     }
     public HousingMoveRequest {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(residentId); Objects.requireNonNull(propertyId);
-        Objects.requireNonNull(ownerId); Objects.requireNonNull(worldId); Objects.requireNonNull(day); Objects.requireNonNull(tier);
-        HousingPolicy.key(marketId); HousingPolicy.key(classKey);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(residentId);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(ownerId);
+        Objects.requireNonNull(worldId);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(tier);
+        HousingPolicy.key(marketId);
+        HousingPolicy.key(classKey);
         if (ownershipEpoch < 0 || propertyRevision < 0 || propertyRevision == Long.MAX_VALUE
                 || membershipRevision < 0 || membershipRevision == Long.MAX_VALUE
                 || tenancyRevision < -1 || tenancyRevision == Long.MAX_VALUE || slot < 0 || slot > 3

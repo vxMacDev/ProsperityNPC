@@ -4,6 +4,7 @@ import com.prosperitysmp.npc.arm.OwnershipFence;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -28,7 +29,7 @@ public final class DueRentLeases {
 
     private DueRentLeases() { }
 
-    /** Only a real Boolean true enables the guard; anything else is the old unguarded step. */
+    /** Only a real Boolean true enables the guard; anything else runs the unguarded step. */
     public static boolean enabled(Object configured) { return Boolean.TRUE.equals(configured); }
 
     /**
@@ -38,7 +39,8 @@ public final class DueRentLeases {
      * of marking every home excluded and trying again.
      */
     public static DueRentLeases acquire(OwnershipFence fence, Collection<Property> cached) {
-        Objects.requireNonNull(fence); Objects.requireNonNull(cached);
+        Objects.requireNonNull(fence);
+        Objects.requireNonNull(cached);
         var leases = new DueRentLeases();
         try {
             for (Property p : cached) {
@@ -48,7 +50,11 @@ public final class DueRentLeases {
             }
         } catch (RuntimeException failure) {
             // Nothing was submitted: every lease taken here may be released.
-            try { leases.releaseAll(); } catch (RuntimeException release) { failure.addSuppressed(release); }
+            try {
+                leases.releaseAll();
+            } catch (RuntimeException release) {
+                failure.addSuppressed(release);
+            }
             throw failure;
         }
         return leases;
@@ -63,7 +69,7 @@ public final class DueRentLeases {
     public int heldCount() { return released ? 0 : held.size(); }
 
     /** The properties this step holds right now, in acquisition order; empty once released. */
-    public java.util.List<UUID> heldIds() { return released ? java.util.List.of() : java.util.List.copyOf(held.keySet()); }
+    public List<UUID> heldIds() { return released ? List.of() : List.copyOf(held.keySet()); }
 
     /** Call only after the SQL outcome is known and the cache reconciled. Releases every lease; idempotent. */
     public void releaseAll() {
@@ -72,7 +78,10 @@ public final class DueRentLeases {
         RuntimeException first = null;
         for (var lease : held.values()) {
             try { lease.releaseReconciled(); }
-            catch (RuntimeException failure) { if (first == null) first = failure; else first.addSuppressed(failure); }
+            catch (RuntimeException failure) {
+                if (first == null) first = failure;
+                else first.addSuppressed(failure);
+            }
         }
         if (first != null) throw first;
     }

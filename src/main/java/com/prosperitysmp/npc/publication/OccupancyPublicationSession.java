@@ -42,8 +42,10 @@ public final class OccupancyPublicationSession implements OccupancyRefreshPump.R
 
     // Test-only factory for actual filesystem fault injection, never a production alternate backend.
     OccupancyPublicationSession(Path directory, List<Approval> scope, OccupancyRefreshPump.Reader source,
-            Clock clock, LongSupplier monotonic, Duration maxAge, Duration recoveryAge, Duration retentionAge, StoreFactory storeFactory) {
-        this(directory,scope,source,clock,monotonic,maxAge,recoveryAge,retentionAge,storeFactory,AtomicOccupancyArtifacts::close);
+            Clock clock, LongSupplier monotonic, Duration maxAge, Duration recoveryAge, Duration retentionAge,
+            StoreFactory storeFactory) {
+        this(directory, scope, source, clock, monotonic, maxAge, recoveryAge, retentionAge, storeFactory,
+                AtomicOccupancyArtifacts::close);
     }
 
     // Test-only close failure injection; the public path always closes the real acquired store.
@@ -54,11 +56,16 @@ public final class OccupancyPublicationSession implements OccupancyRefreshPump.R
         this.storeFactory = Objects.requireNonNull(storeFactory);
         this.storeCloser = Objects.requireNonNull(storeCloser);
         if (scope == null || scope.isEmpty() || scope.size() > 512) throw new IllegalArgumentException("Invalid publication scope");
-        this.scope = List.copyOf(scope); this.source = Objects.requireNonNull(source);
-        this.clock = Objects.requireNonNull(clock); this.monotonic = Objects.requireNonNull(monotonic);
+        this.scope = List.copyOf(scope);
+        this.source = Objects.requireNonNull(source);
+        this.clock = Objects.requireNonNull(clock);
+        this.monotonic = Objects.requireNonNull(monotonic);
         for (Duration policy : Arrays.asList(maxAge, recoveryAge, retentionAge))
-            if (policy == null || policy.isZero() || policy.isNegative()) throw new IllegalArgumentException("Invalid publication duration");
-        this.maxAge = maxAge; this.recoveryAge = recoveryAge; this.retentionAge = retentionAge;
+            if (policy == null || policy.isZero() || policy.isNegative())
+                throw new IllegalArgumentException("Invalid publication duration");
+        this.maxAge = maxAge;
+        this.recoveryAge = recoveryAge;
+        this.retentionAge = retentionAge;
         try { maxAgeNanos = maxAge.toNanos(); }
         catch (ArithmeticException overflow) { throw new IllegalArgumentException("Publication max age overflow"); }
     }
@@ -70,24 +77,31 @@ public final class OccupancyPublicationSession implements OccupancyRefreshPump.R
             if (!scope.equals(requested)) throw new IOException("Publication session scope changed");
             try {
                 if (store == null) store = storeFactory.open(directory);
-                if (!initialized) { store.beginAuthorization(generation); initialized = true; }
+                if (!initialized) {
+                    store.beginAuthorization(generation);
+                    initialized = true;
+                }
                 store.recoverTemporaryFiles(recoveryAge, clock.instant());
                 var previous = store.readSelection(generation).orElseThrow(() -> new IOException("Missing publication selection"));
                 if (!previous.entries().isEmpty()) store.prune(previous.protectedNames(generation), retentionAge, clock.instant());
                 else store.pruneUnselected(retentionAge, clock.instant());
                 active();
-                Instant requestedAt = clock.instant(); long started = monotonic.getAsLong();
+                Instant requestedAt = clock.instant();
+                long started = monotonic.getAsLong();
                 Evidence evidence = source.read(scope);
-                fresh(evidence, requestedAt, started); active();
+                fresh(evidence, requestedAt, started);
+                active();
                 var snapshot = evidence.snapshot();
                 if (snapshot.isEmpty()) return evidence;
                 var receipt = store.write(snapshot);
-                fresh(evidence, requestedAt, started); active();
+                fresh(evidence, requestedAt, started);
+                active();
                 var next = previous.advance(generation, snapshot, receipt, maxAge, clock.instant());
                 store.commitSelection(previous, next, generation);
                 // A lost acknowledgment can leave committed metadata; next read reloads it before advancing.
                 store.prune(next.protectedNames(generation), retentionAge, clock.instant());
-                fresh(evidence, requestedAt, started); active();
+                fresh(evidence, requestedAt, started);
+                active();
                 return evidence;
             } finally {
                 if (cancelled.get()) closeLocked();
@@ -99,31 +113,35 @@ public final class OccupancyPublicationSession implements OccupancyRefreshPump.R
     public void cancel() { cancelled.set(true); }
 
     @Override public void close() throws IOException {
-        worker(); cancel();
+        worker();
+        cancel();
         synchronized (this) { closeLocked(); }
     }
     private void closeLocked() throws IOException {
         closed = true;
-        if(cleanupFailure!=null)throw cleanupFailure;
+        if (cleanupFailure != null) throw cleanupFailure;
         if (store != null) {
-            var acquired = store; store = null;
-            try {storeCloser.close(acquired);}
-            catch(IOException | RuntimeException failure) {
-                cleanupFailure=new IOException("Publication cleanup failed; operator review required",failure);
+            var acquired = store;
+            store = null;
+            try { storeCloser.close(acquired); }
+            catch (IOException | RuntimeException failure) {
+                cleanupFailure = new IOException("Publication cleanup failed; operator review required", failure);
                 throw cleanupFailure;
             }
-            catch(Error fatal) {
-                cleanupFailure=new IOException("Publication cleanup failed; operator review required");
+            catch (Error fatal) {
+                cleanupFailure = new IOException("Publication cleanup failed; operator review required");
                 throw fatal;
             }
         }
     }
     private void fresh(Evidence evidence, Instant requestedAt, long started) throws IOException {
-        Instant now = clock.instant(); long elapsed = monotonic.getAsLong() - started;
+        Instant now = clock.instant();
+        long elapsed = monotonic.getAsLong() - started;
         if (evidence == null || !evidence.capturedAt().equals(evidence.snapshot().capturedAt())
                 || evidence.capturedAt().isBefore(requestedAt.truncatedTo(ChronoUnit.MILLIS))
                 || evidence.capturedAt().isAfter(now) || now.isBefore(requestedAt)
-                || elapsed < 0 || elapsed >= maxAgeNanos) throw new IOException("Publication evidence stale or invalid");
+                || elapsed < 0 || elapsed >= maxAgeNanos)
+            throw new IOException("Publication evidence stale or invalid");
         try {
             if (Duration.between(evidence.capturedAt(), now).toNanos() >= maxAgeNanos)
                 throw new IOException("Publication evidence expired");

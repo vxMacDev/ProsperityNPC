@@ -1,8 +1,12 @@
 package com.prosperitysmp.npc.command;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import com.prosperitysmp.npc.economy.ItemRepairCopy;
+import com.prosperitysmp.npc.economy.PurchaseRequest;
 import com.prosperitysmp.npc.economy.PurchaseService;
 import com.prosperitysmp.npc.formulas.UpgradeType;
+import com.prosperitysmp.npc.property.OwnerAway;
+import com.prosperitysmp.npc.property.Property;
 import com.prosperitysmp.npc.util.Money;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -16,6 +20,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /** Player-facing {@code /property status|rent|upgrade|maintain}. Operates on the property you stand in. */
 public final class PropertyCommand implements TabExecutor {
@@ -37,9 +43,13 @@ public final class PropertyCommand implements TabExecutor {
             return true;
         }
         String sub = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
-        if (sub.equals("autocare")) { doAutoCare(player, args); return true; }
+        if (sub.equals("autocare")) {
+            doAutoCare(player, args);
+            return true;
+        }
         if (sub.equals("rent")) {
-            doCoordinatedRent(player,args); return true;
+            doCoordinatedRent(player, args);
+            return true;
         }
         if (sub.equals("upgrade") || sub.equals("maintain")) {
             doConfirmedPurchase(player, args, sub.equals("upgrade"));
@@ -54,7 +64,7 @@ public final class PropertyCommand implements TabExecutor {
             return true;
         }
         if (sub.equals("repair")) {
-            doRepair(player,args);
+            doRepair(player, args);
             return true;
         }
         if (sub.equals("insure") && insureEnabled()) {
@@ -79,7 +89,10 @@ public final class PropertyCommand implements TabExecutor {
             return true;
         }
         if (sub.equals("receipt")) {
-            if (plugin.purchaseService() == null) { PurchaseService.unavailable(player); return true; }
+            if (plugin.purchaseService() == null) {
+                PurchaseService.unavailable(player);
+                return true;
+            }
             if (args.length != 2 || !args[1].matches("[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")) {
                 send(player, NamedTextColor.RED, "Usage: /property receipt <request-uuid>");
                 return true;
@@ -99,8 +112,11 @@ public final class PropertyCommand implements TabExecutor {
             return;
         }
         long maximum;
-        try { maximum = Money.parseDollarsToCents(args[2]); }
-        catch (IllegalArgumentException | ArithmeticException invalid) { maximum = 0; }
+        try {
+            maximum = Money.parseDollarsToCents(args[2]);
+        } catch (IllegalArgumentException | ArithmeticException invalid) {
+            maximum = 0;
+        }
         if (maximum <= 0) {
             send(player, NamedTextColor.RED, "Enter a positive maximum payment in dollars.");
             return;
@@ -120,7 +136,7 @@ public final class PropertyCommand implements TabExecutor {
             return;
         }
         if (plugin.ownerAway().isAway(property.get())) {
-            send(player, NamedTextColor.GRAY, com.prosperitysmp.npc.property.OwnerAway.PAY_NOTE);
+            send(player, NamedTextColor.GRAY, OwnerAway.PAY_NOTE);
             return;
         }
         boolean accepted = plugin.utilityPayments().request(property.get().propertyId(), player.getUniqueId(), maximum,
@@ -138,16 +154,19 @@ public final class PropertyCommand implements TabExecutor {
         boolean status = args.length <= 1 || (args.length == 2 && args[1].equalsIgnoreCase("status"));
         long ceiling = on ? Money.parseDollarsToCents(args[2]) : 0;
         if ((!on && !off && !status) || (on && ceiling <= 0)) {
-            send(player, NamedTextColor.GOLD, "Usage: /property autocare <status|off|on <maximum-dollars-per-day>>"); return;
+            send(player, NamedTextColor.GOLD, "Usage: /property autocare <status|off|on <maximum-dollars-per-day>>");
+            return;
         }
         if (plugin.autoCare() == null || plugin.armAdapter() == null || plugin.propertyService() == null) {
-            send(player, NamedTextColor.GRAY, "Auto-care is unavailable."); return;
+            send(player, NamedTextColor.GRAY, "Auto-care is unavailable.");
+            return;
         }
         var owner = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
-        var property = owner == null ? Optional.<com.prosperitysmp.npc.property.Property>empty()
+        var property = owner == null ? Optional.<Property>empty()
                 : plugin.propertyService().findByWorldRegion(owner.worldId(), owner.regionId());
         if (property.isEmpty() || !player.getUniqueId().equals(property.get().ownerUuid())) {
-            send(player, NamedTextColor.RED, "Stand in your enrolled property."); return;
+            send(player, NamedTextColor.RED, "Stand in your enrolled property.");
+            return;
         }
         plugin.autoCare().configure(player, property.get(), status ? null : on, ceiling);
     }
@@ -165,25 +184,29 @@ public final class PropertyCommand implements TabExecutor {
         try {
             maximum = Money.parseDollarsToCents(args[upgrade ? 3 : 1]);
             if (upgrade) {
-                type = UpgradeType.fromKey(args[1]); level = Integer.valueOf(args[2]);
+                type = UpgradeType.fromKey(args[1]);
+                level = Integer.valueOf(args[2]);
                 if (type == null || level < 1 || level > UpgradeType.MAX_LEVEL) throw new IllegalArgumentException();
             }
             if (maximum <= 0) throw new IllegalArgumentException();
         } catch (IllegalArgumentException | ArithmeticException invalid) {
-            send(player, NamedTextColor.RED, "Enter a valid upgrade level and maximum payment."); return;
+            send(player, NamedTextColor.RED, "Enter a valid upgrade level and maximum payment.");
+            return;
         }
         if (plugin.utilityPayments() == null || plugin.armAdapter() == null || plugin.propertyService() == null) {
-            send(player, NamedTextColor.RED, "Property payments are unavailable."); return;
+            send(player, NamedTextColor.RED, "Property payments are unavailable.");
+            return;
         }
         var authority = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
-        var property = authority == null ? Optional.<com.prosperitysmp.npc.property.Property>empty()
+        var property = authority == null ? Optional.<Property>empty()
                 : plugin.propertyService().findByWorldRegion(authority.worldId(), authority.regionId());
         if (property.isEmpty() || !property.get().enabled() || !player.getUniqueId().equals(property.get().ownerUuid())) {
-            send(player, NamedTextColor.RED, "Stand in your enrolled property."); return;
+            send(player, NamedTextColor.RED, "Stand in your enrolled property.");
+            return;
         }
         boolean accepted = plugin.utilityPayments().requestPurchase(property.get().propertyId(), player.getUniqueId(),
-                upgrade ? com.prosperitysmp.npc.economy.PurchaseRequest.Kind.UPGRADE
-                        : com.prosperitysmp.npc.economy.PurchaseRequest.Kind.MAINTAIN,
+                upgrade ? PurchaseRequest.Kind.UPGRADE
+                        : PurchaseRequest.Kind.MAINTAIN,
                 type, level, maximum, () -> player.isOnline() && !player.isDead()
                         && plugin.getServer().getPlayer(player.getUniqueId()) == player
                         && player.hasPermission("prosperitynpc.use")
@@ -197,43 +220,61 @@ public final class PropertyCommand implements TabExecutor {
 
     private void doCoordinatedRent(Player player, String[] args) {
         if (args.length != 2 || plugin.propertyService() == null || plugin.armAdapter() == null) {
-            send(player,NamedTextColor.GOLD,"Usage: /property rent <dollars-per-day>"); return;
+            send(player, NamedTextColor.GOLD, "Usage: /property rent <dollars-per-day>");
+            return;
         }
         long cents;
-        try { cents=Money.parseDollarsToCents(args[1]); }
-        catch (IllegalArgumentException | ArithmeticException invalid) { cents=0; }
-        var owner=plugin.armAdapter().ownerReadAt(player.getLocation(),player.getUniqueId()).orElse(null);
-        if (cents<=0 || owner==null) { send(player,NamedTextColor.RED,"Stand in your property and enter a positive rent."); return; }
-        boolean accepted=plugin.propertyService().setRentCoordinated(owner.worldId(),owner.regionId(),player.getUniqueId(),cents,
-                ()->player.isOnline() && !player.isDead() && plugin.getServer().getPlayer(player.getUniqueId())==player
-                    && player.hasPermission("prosperitynpc.use")
-                    && plugin.armAdapter().ownerReadAt(player.getLocation(),player.getUniqueId())
-                        .filter(a->a.worldId().equals(owner.worldId())&&a.regionId().equals(owner.regionId())).isPresent(),
-                message->send(player,NamedTextColor.GRAY,message));
-        send(player,accepted?NamedTextColor.GRAY:NamedTextColor.RED,accepted?"Checking your property and rent range..."
-                :"Rent change unavailable, or outside 50%-150% of reference rent. Nothing dispatched.");
+        try {
+            cents = Money.parseDollarsToCents(args[1]);
+        } catch (IllegalArgumentException | ArithmeticException invalid) {
+            cents = 0;
+        }
+        var owner = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
+        if (cents <= 0 || owner == null) {
+            send(player, NamedTextColor.RED, "Stand in your property and enter a positive rent.");
+            return;
+        }
+        boolean accepted = plugin.propertyService().setRentCoordinated(owner.worldId(), owner.regionId(), player.getUniqueId(), cents,
+                () -> player.isOnline() && !player.isDead() && plugin.getServer().getPlayer(player.getUniqueId()) == player
+                        && player.hasPermission("prosperitynpc.use")
+                        && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                                .filter(a -> a.worldId().equals(owner.worldId()) && a.regionId().equals(owner.regionId())).isPresent(),
+                message -> send(player, NamedTextColor.GRAY, message));
+        send(player, accepted ? NamedTextColor.GRAY : NamedTextColor.RED, accepted ? "Checking your property and rent range..."
+                : "Rent change unavailable, or outside 50%-150% of reference rent. Nothing dispatched.");
     }
 
-    private boolean insureEnabled() { return plugin.getConfig().getBoolean("ux.insure-command", false); }
+    private boolean insureEnabled() {
+        return plugin.getConfig().getBoolean("ux.insure-command", false);
+    }
 
     /** Typed twin of the desk's insurance button: the maximum is a ceiling, the premium is quoted by the server. */
     private void doInsure(Player player, String[] args) {
         if (args.length != 2) {
             send(player, NamedTextColor.GOLD, "Usage: /property insure <maximum-dollars>");
-            send(player, NamedTextColor.GRAY, "Seven economy days of cover for one new incident. Prepaid, nonrefundable. Your limit must cover the premium.");
+            send(player, NamedTextColor.GRAY,
+                    "Seven economy days of cover for one new incident. Prepaid, nonrefundable. Your limit must cover the premium.");
             return;
         }
         long maximum;
-        try { maximum = Money.parseDollarsToCents(args[1]); }
-        catch (IllegalArgumentException | ArithmeticException invalid) { maximum = 0; }
-        if (maximum <= 0) { send(player, NamedTextColor.RED, "Enter a positive maximum payment in dollars."); return; }
+        try {
+            maximum = Money.parseDollarsToCents(args[1]);
+        } catch (IllegalArgumentException | ArithmeticException invalid) {
+            maximum = 0;
+        }
+        if (maximum <= 0) {
+            send(player, NamedTextColor.RED, "Enter a positive maximum payment in dollars.");
+            return;
+        }
         if (plugin.utilityPayments() == null || plugin.armAdapter() == null || plugin.propertyService() == null) {
-            send(player, NamedTextColor.RED, "Property payments are unavailable."); return;
+            send(player, NamedTextColor.RED, "Property payments are unavailable.");
+            return;
         }
         var authority = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId());
         var property = authority.flatMap(a -> plugin.propertyService().findByWorldRegion(a.worldId(), a.regionId()));
         if (property.isEmpty() || !property.get().enabled() || !player.getUniqueId().equals(property.get().ownerUuid())) {
-            send(player, NamedTextColor.RED, "Stand in your enrolled property."); return;
+            send(player, NamedTextColor.RED, "Stand in your enrolled property.");
+            return;
         }
         var owner = authority.get();
         boolean accepted = plugin.utilityPayments().requestInsurance(property.get().propertyId(), player.getUniqueId(), maximum,
@@ -247,44 +288,72 @@ public final class PropertyCommand implements TabExecutor {
                 : "Property payments are busy or unavailable. No payment was started.");
     }
 
-    private void doRepair(Player player,String[] args) {
-        // Off and never used: no runtime, so this keeps the old usage reply.
-        if(args.length==2 && args[1].equalsIgnoreCase("returns")
-                && (plugin.itemRepairSettings().enabled() || plugin.itemRepairsRunning())) { doRepairReturns(player); return; }
-        if(args.length==3 && args[2].equalsIgnoreCase("items")) { doItemRepair(player,args[1]); return; }
-        if(args.length!=3) {
-            send(player,NamedTextColor.GOLD,"Usage: /property repair <incident-id> <maximum-dollars>");return;
+    private void doRepair(Player player, String[] args) {
+        // With item-repairs off and never used there is no runtime, so "returns" falls through to the usage reply.
+        if (args.length == 2 && args[1].equalsIgnoreCase("returns")
+                && (plugin.itemRepairSettings().enabled() || plugin.itemRepairsRunning())) {
+            doRepairReturns(player);
+            return;
         }
-        long incident,maximum;
-        try {incident=Long.parseLong(args[1]);maximum=Money.parseDollarsToCents(args[2]);}
-        catch(IllegalArgumentException|ArithmeticException invalid) {
-            send(player,NamedTextColor.RED,"Enter a valid incident number and maximum payment.");return;
+        if (args.length == 3 && args[2].equalsIgnoreCase("items")) {
+            doItemRepair(player, args[1]);
+            return;
         }
-        if(incident<=0 || maximum<=0 || plugin.utilityPayments()==null || plugin.armAdapter()==null || plugin.propertyService()==null) {
-            send(player,NamedTextColor.RED,"Repair payments are unavailable, or the amount is invalid.");return;
+        if (args.length != 3) {
+            send(player, NamedTextColor.GOLD, "Usage: /property repair <incident-id> <maximum-dollars>");
+            return;
         }
-        var authority=plugin.armAdapter().ownerReadAt(player.getLocation(),player.getUniqueId());
-        var property=authority.flatMap(a->plugin.propertyService().findByWorldRegion(a.worldId(),a.regionId()));
-        if(property.isEmpty() || !property.get().enabled() || !player.getUniqueId().equals(property.get().ownerUuid())) {
-            send(player,NamedTextColor.RED,"Stand in your enrolled property to repair it.");return;
+        long incident, maximum;
+        try {
+            incident = Long.parseLong(args[1]);
+            maximum = Money.parseDollarsToCents(args[2]);
+        } catch (IllegalArgumentException | ArithmeticException invalid) {
+            send(player, NamedTextColor.RED, "Enter a valid incident number and maximum payment.");
+            return;
         }
-        boolean accepted=plugin.utilityPayments().requestRepair(property.get().propertyId(),player.getUniqueId(),incident,maximum,
-                ()->player.isOnline() && !player.isDead() && plugin.getServer().getPlayer(player.getUniqueId())==player
-                        && player.hasPermission("prosperitynpc.use"),message->send(player,NamedTextColor.GRAY,message));
-        send(player,accepted?NamedTextColor.GRAY:NamedTextColor.RED,accepted
-                ?"Checking the repair and payment limit. Wait for the verified repair result."
-                :"Repair payments are busy or unavailable. No payment was started by this command.");
+        if (incident <= 0 || maximum <= 0 || plugin.utilityPayments() == null || plugin.armAdapter() == null
+                || plugin.propertyService() == null) {
+            send(player, NamedTextColor.RED, "Repair payments are unavailable, or the amount is invalid.");
+            return;
+        }
+        var authority = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId());
+        var property = authority.flatMap(a -> plugin.propertyService().findByWorldRegion(a.worldId(), a.regionId()));
+        if (property.isEmpty() || !property.get().enabled() || !player.getUniqueId().equals(property.get().ownerUuid())) {
+            send(player, NamedTextColor.RED, "Stand in your enrolled property to repair it.");
+            return;
+        }
+        boolean accepted = plugin.utilityPayments().requestRepair(property.get().propertyId(), player.getUniqueId(), incident, maximum,
+                () -> player.isOnline() && !player.isDead() && plugin.getServer().getPlayer(player.getUniqueId()) == player
+                        && player.hasPermission("prosperitynpc.use"),
+                message -> send(player, NamedTextColor.GRAY, message));
+        send(player, accepted ? NamedTextColor.GRAY : NamedTextColor.RED, accepted
+                ? "Checking the repair and payment limit. Wait for the verified repair result."
+                : "Repair payments are busy or unavailable. No payment was started by this command.");
     }
 
     /** item-repairs: hand in the listed plain items for one open problem, while standing in the home. */
     private void doItemRepair(Player player, String id) {
-        if (!plugin.itemRepairSettings().enabled()) { send(player, NamedTextColor.GRAY, com.prosperitysmp.npc.economy.ItemRepairCopy.OFF); return; }
+        if (!plugin.itemRepairSettings().enabled()) {
+            send(player, NamedTextColor.GRAY, ItemRepairCopy.OFF);
+            return;
+        }
         long incident;
-        try { incident = Long.parseLong(id); } catch (NumberFormatException invalid) { incident = 0; }
-        if (incident <= 0) { send(player, NamedTextColor.GOLD, com.prosperitysmp.npc.economy.ItemRepairCopy.USAGE); return; }
+        try {
+            incident = Long.parseLong(id);
+        } catch (NumberFormatException invalid) {
+            incident = 0;
+        }
+        if (incident <= 0) {
+            send(player, NamedTextColor.GOLD, ItemRepairCopy.USAGE);
+            return;
+        }
         var runtime = plugin.itemRepairs();
-        if (runtime == null) { send(player, NamedTextColor.GRAY, com.prosperitysmp.npc.economy.ItemRepairCopy.UNAVAILABLE); return; }
-        var owner = plugin.armAdapter() == null ? null : plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
+        if (runtime == null) {
+            send(player, NamedTextColor.GRAY, ItemRepairCopy.UNAVAILABLE);
+            return;
+        }
+        var owner = plugin.armAdapter() == null ? null
+                : plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
         runtime.requestTyped(player, incident, () -> player.isOnline() && !player.isDead()
                         && plugin.getServer().getPlayer(player.getUniqueId()) == player && player.hasPermission("prosperitynpc.use")
                         && owner != null && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
@@ -295,21 +364,29 @@ public final class PropertyCommand implements TabExecutor {
     /** item-repairs: collect items given back after a hand-in could not finish. Works with item-repairs off. */
     private void doRepairReturns(Player player) {
         var runtime = plugin.itemRepairReturns();
-        if (runtime == null) { send(player, NamedTextColor.GRAY, com.prosperitysmp.npc.economy.ItemRepairCopy.UNAVAILABLE); return; }
+        if (runtime == null) {
+            send(player, NamedTextColor.GRAY, ItemRepairCopy.UNAVAILABLE);
+            return;
+        }
         runtime.claimReturns(player, message -> send(player, NamedTextColor.GRAY, message));
     }
 
     private void doLifecycle(Player player, String[] args, boolean resume) {
         if (args.length != 1 || plugin.armAdapter() == null || plugin.propertyService() == null) {
-            send(player, NamedTextColor.RED, "Use /property pause or /property resume while inside your property."); return;
+            send(player, NamedTextColor.RED, "Use /property pause or /property resume while inside your property.");
+            return;
         }
         var owner = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
-        if (owner == null) { send(player, NamedTextColor.RED, "Stand inside a property you solely own."); return; }
-        java.util.function.BooleanSupplier authorized = () -> player.isOnline()
+        if (owner == null) {
+            send(player, NamedTextColor.RED, "Stand inside a property you solely own.");
+            return;
+        }
+        BooleanSupplier authorized = () -> player.isOnline()
                 && player.hasPermission("prosperitynpc.use")
                 && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
-                    .filter(current -> current.worldId().equals(owner.worldId()) && current.regionId().equals(owner.regionId())).isPresent();
-        java.util.function.Consumer<String> reply = message -> {
+                    .filter(current -> current.worldId().equals(owner.worldId())
+                            && current.regionId().equals(owner.regionId())).isPresent();
+        Consumer<String> reply = message -> {
             if (player.isOnline()) send(player, NamedTextColor.YELLOW, message);
         };
         boolean accepted = resume
@@ -328,7 +405,8 @@ public final class PropertyCommand implements TabExecutor {
         if (!(sender instanceof Player) || !sender.hasPermission("prosperitynpc.use")) return List.of();
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
-            for (String s : List.of("status", "close", "pause", "resume", "autocare", "utility", "repair", "insure", "rent", "upgrade", "maintain", "receipt", "rating")) {
+            for (String s : List.of("status", "close", "pause", "resume", "autocare", "utility", "repair", "insure", "rent",
+                    "upgrade", "maintain", "receipt", "rating")) {
                 if (s.equals("insure") && !insureEnabled()) continue;
                 if (s.startsWith(args[0].toLowerCase(Locale.ROOT))) {
                     out.add(s);

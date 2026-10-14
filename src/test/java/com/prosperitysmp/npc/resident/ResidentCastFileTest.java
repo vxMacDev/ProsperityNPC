@@ -70,7 +70,7 @@ class ResidentCastFileTest {
         ResidentCast cast;
         try (var in = Files.newInputStream(EXAMPLE)) { cast = ResidentCastFile.read(in); }
         var generated = ResidentCatalogue.generatedHouseholds();
-        assertTrue(generated.contains("Hale") && generated.contains("Ashby"), "positive control: the real list");
+        assertTrue(generated.contains("Hale") && generated.contains("Ashby"), "the real list holds these surnames");
         for (ResidentProfile person : cast.profiles().subList(3, 9)) assertFalse(generated.contains(person.household()), person.name());
     }
 
@@ -144,7 +144,7 @@ class ResidentCastFileTest {
     @ParameterizedTest
     @MethodSource("rejected")
     void everyRuleRejectsTheWholeFileAndFallsBackToTheBuiltInThree(String text) throws Exception {
-        assertEquals(ResidentCast.Source.FILE, read(VALID).source(), "positive control");
+        assertEquals(ResidentCast.Source.FILE, read(VALID).source(), "a valid file loads");
         var error = assertThrows(IllegalArgumentException.class, () -> read(text));
         assertEquals("Invalid residents.yml", error.getMessage(), "no file contents in the message");
         assertNull(error.getCause());
@@ -180,7 +180,7 @@ class ResidentCastFileTest {
         assertEquals(ResidentCast.Source.FILE_REJECTED, ResidentCastFile.load(dir, true).source());
         Files.delete(dir.resolve(ResidentCastFile.FILE_NAME));
         Files.copy(target, dir.resolve(ResidentCastFile.FILE_NAME));
-        assertEquals(ResidentCast.Source.FILE, ResidentCastFile.load(dir, true).source(), "positive control");
+        assertEquals(ResidentCast.Source.FILE, ResidentCastFile.load(dir, true).source(), "a regular file loads");
     }
 
     @Test void aDirectoryInPlaceOfTheFileIsRejected(@TempDir Path dir) throws Exception {
@@ -189,7 +189,7 @@ class ResidentCastFileTest {
     }
 
     @Test void aQuotedLessThanPairInALineIsNotAMergeKey() {
-        // Positive control for the merge-key rule: only a plain << scalar is a merge key.
+        // Only a plain << scalar is a merge key. A quoted one is ordinary text.
         var cast = read(file(OTTO + lines("        - \"<<\"\n        - \"b\"\n")));
         assertEquals(ResidentCast.Source.FILE, cast.source());
     }
@@ -200,7 +200,7 @@ class ResidentCastFileTest {
     }
 
     @Test void firstNamesTheLookupFoldsTogetherCannotBothLoad() {
-        // Positive control: each name loads on its own.
+        // Each name loads on its own, so the rejection below is about the pair.
         assertEquals("Isa Marsh", read(file(entry("isa-marsh", "Isa Marsh", "Marsh", ""))).profiles().getFirst().name());
         assertEquals("ısa Marsh", read(file(entry("isa-marsh", "ısa Marsh", "Marsh", ""))).profiles().getFirst().name());
         // equalsIgnoreCase folds the dotless i to I, so /resident Isa could never reach the second one.
@@ -211,7 +211,7 @@ class ResidentCastFileTest {
     @Test void firstNameLookupMatchesDev58() {
         var cast = ResidentCast.builtIn();
         assertEquals("Mara Vale", cast.byFirstName("MARA").orElseThrow().name());
-        // dev.58 used equalsIgnoreCase, which folds a dotless i to I. toLowerCase would not.
+        // equalsIgnoreCase folds a dotless i to I. toLowerCase would not.
         assertEquals("Nico Reed", cast.byFirstName("Nıco").orElseThrow().name());
         assertTrue(cast.byFirstName("Nic").isEmpty());
     }

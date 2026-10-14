@@ -37,7 +37,7 @@ class TownTaskCatalogueTest {
         assertEquals(List.of("nico-home-note"), TownTaskCatalogue.offers(NICO, withoutEllis).stream().map(TownTaskDefinition::id).toList());
         assertTrue(TownTaskCatalogue.find("mara-material-list", withoutEllis).isEmpty());
         assertTrue(TownTaskCatalogue.find("nico-local-partnership", withoutEllis).isEmpty());
-        assertTrue(TownTaskCatalogue.find("nico-home-note", withoutEllis).isPresent(), "positive control");
+        assertTrue(TownTaskCatalogue.find("nico-home-note", withoutEllis).isPresent(), "a task whose giver and recipient are in the cast is found");
         assertEquals("the named resident", TownTaskCatalogue.name(ELLIS, withoutEllis));
         assertEquals(TownTaskCatalogue.offers(MARA), TownTaskCatalogue.offers(MARA, ResidentCast.builtIn()));
     }

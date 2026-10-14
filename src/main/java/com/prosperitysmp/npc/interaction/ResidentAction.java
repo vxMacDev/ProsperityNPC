@@ -1,11 +1,13 @@
 package com.prosperitysmp.npc.interaction;
 
+import com.prosperitysmp.npc.commerce.CommerceOrder;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /** A server-authored action attached to one encounter ticket, not a client-supplied entitlement. */
 public record ResidentAction(Kind kind, String definitionId, UUID taskId, UUID recipientId, String label,
-                             com.prosperitysmp.npc.commerce.CommerceOrder order) {
+                             CommerceOrder order) {
     public enum Kind {
         ACCEPT, COMPLETE, CANCEL, DIRECTIONS, VISIT, TRAIN, ORDER, COLLECT,
         /** Contracts and partners (town.contracts / town.partnerships). definitionId is the contract ID. */
@@ -37,13 +39,13 @@ public record ResidentAction(Kind kind, String definitionId, UUID taskId, UUID r
                     || !order.residentId().equals(recipientId)) throw new IllegalArgumentException("Unbound commerce quote");
         } else if (order != null) throw new IllegalArgumentException("Unexpected commerce quote");
         else if (kind == Kind.VISIT) {
-            if (!java.util.Set.of("market", "leisure").contains(definitionId) || taskId != null)
+            if (!Set.of("market", "leisure").contains(definitionId) || taskId != null)
                 throw new IllegalArgumentException("Invalid public-stop action");
         } else if (kind == Kind.ACCEPT || kind == Kind.TRAIN || kind == Kind.CONTRACT_ACCEPT) {
             if (definitionId == null || !definitionId.matches("[a-z0-9_-]{1,48}") || taskId != null)
                 throw new IllegalArgumentException("Invalid offer action");
         } else if (kind == Kind.PARTNER || kind == Kind.PARTNER_CONFIRM) {
-            if (!java.util.Set.of("partner-start", "partner-renew").contains(definitionId) || (kind == Kind.PARTNER) != (taskId == null))
+            if (!Set.of("partner-start", "partner-renew").contains(definitionId) || (kind == Kind.PARTNER) != (taskId == null))
                 throw new IllegalArgumentException("Invalid partnership action");
         } else if (kind == Kind.CONTRACT_BACK) {
             if (definitionId != null || taskId != null) throw new IllegalArgumentException("Invalid back action");

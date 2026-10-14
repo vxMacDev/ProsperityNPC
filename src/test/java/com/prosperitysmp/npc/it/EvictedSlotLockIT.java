@@ -129,7 +129,7 @@ class EvictedSlotLockIT {
         clock.set(NOW.plus(Duration.ofDays(1)));
         var locked = moves(2);
         assertThrows(SQLException.class, () -> locked.quote(UUID.randomUUID(), A, HOME, 0, DAY.plusDays(1)));
-        assertNotNull(moves(0).quote(UUID.randomUUID(), A, HOME, 0, DAY.plusDays(1)), "flag off keeps the old behavior");
+        assertNotNull(moves(0).quote(UUID.randomUUID(), A, HOME, 0, DAY.plusDays(1)), "with the lock days at 0 the slot is not locked");
         clock.set(NOW.plus(Duration.ofDays(2)));
         assertNotNull(moves(2).quote(UUID.randomUUID(), A, HOME, 0, DAY.plusDays(2)));
     }

@@ -3,6 +3,7 @@ package com.prosperitysmp.npc.economy;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -63,7 +64,8 @@ public final class ItemRepairRecipes {
      */
     public static Result quote(List<Line> base, long cashCents, int ratioBps, int maxUnits, int maxStacks,
                                Function<String, OptionalLong> fullUnitCents, ToIntFunction<String> maxStack) {
-        Objects.requireNonNull(fullUnitCents); Objects.requireNonNull(maxStack);
+        Objects.requireNonNull(fullUnitCents);
+        Objects.requireNonNull(maxStack);
         if (maxUnits < 1 || maxUnits > MAX_LINE_QUANTITY || maxStacks < 1 || maxStacks > MAX_LINES)
             throw new IllegalArgumentException("Invalid item repair bounds");
         long required = requiredCents(cashCents, ratioBps);
@@ -135,17 +137,24 @@ public final class ItemRepairRecipes {
     public static String describe(List<? extends Object> lines) {
         var parts = new ArrayList<String>();
         for (Object line : lines) {
-            String material; int quantity;
-            if (line instanceof Priced p) { material = p.material(); quantity = p.quantity(); }
-            else if (line instanceof Line l) { material = l.material(); quantity = l.quantity(); }
-            else if (line instanceof ItemRepairQuote.Line q) { material = q.material(); quantity = q.quantity(); }
-            else throw new IllegalArgumentException("Unknown item line");
+            String material;
+            int quantity;
+            if (line instanceof Priced p) {
+                material = p.material();
+                quantity = p.quantity();
+            } else if (line instanceof Line l) {
+                material = l.material();
+                quantity = l.quantity();
+            } else if (line instanceof ItemRepairQuote.Line q) {
+                material = q.material();
+                quantity = q.quantity();
+            } else throw new IllegalArgumentException("Unknown item line");
             parts.add(quantity + " " + itemName(material));
         }
         return String.join(", ", parts);
     }
 
     public static String itemName(String material) {
-        return material.toLowerCase(java.util.Locale.ROOT).replace('_', ' ');
+        return material.toLowerCase(Locale.ROOT).replace('_', ' ');
     }
 }

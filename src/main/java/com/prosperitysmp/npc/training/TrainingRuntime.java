@@ -5,6 +5,7 @@ import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
@@ -34,13 +35,16 @@ import java.util.function.Consumer;
 /**
  * Main-thread authorization/events/cache; one bounded tracked worker for SQL. No per-event SQL.
  * Parent owns construction, nearby trainer authorization, migration registration and closeAsync drainage
- * before Database.close(). Missing town.training-enabled is always disabled (DEV opt-in only).
+ * before Database.close(). A missing town.training-enabled setting reads as disabled, so training is opt-in.
  */
 public final class TrainingRuntime implements AutoCloseable, Listener {
     public static final int MAX_CACHED_PLAYERS = 256;
     public enum Status { UNKNOWN, LOADING, NONE, ACTIVE, EXPIRED, INELIGIBLE, DISABLED, UNAVAILABLE, UNCERTAIN }
     public record View(Status status, Optional<TrainingGrant> grant) {
-        public View { Objects.requireNonNull(status); Objects.requireNonNull(grant); }
+        public View {
+            Objects.requireNonNull(status);
+            Objects.requireNonNull(grant);
+        }
     }
     private record Cached(Player login, Optional<TrainingGrant> grant, Status status) { }
     private record Pending(Player login, UUID token, UUID trainer, String job,
@@ -81,7 +85,9 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
         this.nearbyTrainer = Objects.requireNonNull(nearbyTrainer);
         this.jobs = jobs;
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(16), r -> {
-            Thread thread = new Thread(r, "npc-training-sql"); thread.setDaemon(true); return thread;
+            Thread thread = new Thread(r, "npc-training-sql");
+            thread.setDaemon(true);
+            return thread;
         }, new ThreadPoolExecutor.AbortPolicy()) {
             @Override protected void terminated() { drained.complete(null); }
         };
@@ -106,9 +112,17 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
         } catch (RuntimeException | Error failure) {
             closed = true;
             if (scheduled != null) {
-                try { scheduled.cancel(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                try {
+                    scheduled.cancel();
+                } catch (RuntimeException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
             }
-            try { HandlerList.unregisterAll(this); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            try {
+                HandlerList.unregisterAll(this);
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
             finally { worker.shutdown(); }
             throw failure;
         }
@@ -124,14 +138,26 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
 
     /** Main thread only; callback on main while the same login/encounter remains authorized. */
     public void request(Player player, UUID trainer, String jobName, Consumer<TrainingRepository.Result> callback) {
-        requireMain(); Objects.requireNonNull(player); Objects.requireNonNull(trainer); Objects.requireNonNull(callback);
+        requireMain();
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(trainer);
+        Objects.requireNonNull(callback);
         String job;
         try { job = TrainingGrant.canonicalJob(jobName); }
-        catch (RuntimeException invalid) { callback.accept(TrainingRepository.Result.denied(TrainingRepository.Code.NOT_EMPLOYED)); return; }
+        catch (RuntimeException invalid) {
+            callback.accept(TrainingRepository.Result.denied(TrainingRepository.Code.NOT_EMPLOYED));
+            return;
+        }
         TrainingRepository.Code denied = admission(player, trainer, job);
-        if (denied != null) { callback.accept(TrainingRepository.Result.denied(denied)); return; }
+        if (denied != null) {
+            callback.accept(TrainingRepository.Result.denied(denied));
+            return;
+        }
         UUID id = player.getUniqueId();
-        if (!room(id)) { callback.accept(TrainingRepository.Result.denied(TrainingRepository.Code.BUSY)); return; }
+        if (!room(id)) {
+            callback.accept(TrainingRepository.Result.denied(TrainingRepository.Code.BUSY));
+            return;
+        }
         Pending ticket = new Pending(player, UUID.randomUUID(), trainer, job, callback, null);
         Instant at = clock.instant();
         submit(id, ticket, () -> {
@@ -142,20 +168,27 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
 
     /** Explicit off-thread refresh/recovery; never changes the original session's expiry. */
     public void view(Player player, Consumer<View> callback) {
-        requireMain(); Objects.requireNonNull(player); Objects.requireNonNull(callback);
+        requireMain();
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(callback);
         if (!baseAuthorized(player)) {
             callback.accept(new View(!available() ? Status.UNAVAILABLE : !enabled() ? Status.DISABLED : Status.INELIGIBLE,
-                    Optional.empty())); return;
+                    Optional.empty()));
+            return;
         }
         UUID id = player.getUniqueId();
-        if (!room(id)) { callback.accept(new View(Status.LOADING, Optional.empty())); return; }
+        if (!room(id)) {
+            callback.accept(new View(Status.LOADING, Optional.empty()));
+            return;
+        }
         Pending ticket = new Pending(player, UUID.randomUUID(), null, null, null, callback);
         submit(id, ticket, () -> new Delivery(id, ticket, null, repository.currentForPlayer(id), false));
     }
 
     /** Main-thread, player-scoped, SQL-free snapshot. UNKNOWN is not proof of no durable grant. */
     public View current(UUID player) {
-        requireMain(); Objects.requireNonNull(player);
+        requireMain();
+        Objects.requireNonNull(player);
         if (!available()) return new View(Status.UNAVAILABLE, Optional.empty());
         if (!enabled()) return new View(Status.DISABLED, Optional.empty());
         if (pending.containsKey(player)) return new View(Status.LOADING, Optional.empty());
@@ -204,12 +237,16 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
 
     /** Main-thread offer inspection; Jobs availability is required, training enablement is not. */
     public boolean employed(UUID id, String job) {
-        requireMain(); Objects.requireNonNull(id);
+        requireMain();
+        Objects.requireNonNull(id);
         try { TrainingGrant.canonicalJob(job); }
         catch (RuntimeException invalid) { return false; }
         if (!available()) return false;
         try { return jobs.employed(id, job).isPresent(); }
-        catch (ReflectiveOperationException | RuntimeException | LinkageError failure) { failed = true; return false; }
+        catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            failed = true;
+            return false;
+        }
     }
 
     public boolean isEmployed(UUID id, String job) { return employed(id, job); }
@@ -234,7 +271,8 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
                 }
                 if (!closed && !deliveries.offer(delivery)) {
                     // Impossible under queue/pending bounds; hold rather than publish an unacknowledged grant.
-                    closed = true; worker.shutdown();
+                    closed = true;
+                    worker.shutdown();
                 }
             });
         } catch (RejectedExecutionException busy) {
@@ -250,7 +288,8 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
         for (int i = 0; i < 32; i++) {
             Delivery delivery = deliveries.poll();
             if (delivery == null) break;
-            Pending ticket = delivery.pending(); UUID id = delivery.player();
+            Pending ticket = delivery.pending();
+            UUID id = delivery.player();
             if (!pending.remove(id, ticket) || !ticket.login().isOnline()
                     || plugin.getServer().getPlayer(id) != ticket.login()) continue;
             TrainingRepository.Code denied = ticket.trainer() == null ? null
@@ -268,7 +307,7 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
                 || plugin.getServer().getPlayer(entry.getKey()) != entry.getValue().login());
     }
 
-    private void apply(TrainingJobsAdapter.EventBinding binding, org.bukkit.event.Event event) {
+    private void apply(TrainingJobsAdapter.EventBinding binding, Event event) {
         if (!Bukkit.isPrimaryThread() || event.isAsynchronous() || !available() || !enabled()) return;
         try {
             binding.apply(event, clock.instant(), id -> {
@@ -279,19 +318,30 @@ public final class TrainingRuntime implements AutoCloseable, Listener {
                 Cached entry = cache.get(id);
                 return entry != null && baseAuthorized(entry.login()) && employed(id, job);
             });
-        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) { failed = true; cache.clear(); }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            failed = true;
+            cache.clear();
+        }
     }
 
     @EventHandler public void joined(PlayerJoinEvent event) { view(event.getPlayer(), ignored -> { }); }
     @EventHandler public void quit(PlayerQuitEvent event) {
-        requireMain(); UUID id = event.getPlayer().getUniqueId(); cache.remove(id); pending.remove(id);
+        requireMain();
+        UUID id = event.getPlayer().getUniqueId();
+        cache.remove(id);
+        pending.remove(id);
     }
 
     /** Revoke first; no main-thread wait. Parent MUST await this completion before closing its Database. */
     public CompletionStage<Void> closeAsync() {
         requireMain();
-        closed = true; ticker.cancel(); HandlerList.unregisterAll(this);
-        cache.clear(); pending.clear(); deliveries.clear(); worker.shutdown();
+        closed = true;
+        ticker.cancel();
+        HandlerList.unregisterAll(this);
+        cache.clear();
+        pending.clear();
+        deliveries.clear();
+        worker.shutdown();
         return drained.minimalCompletionStage();
     }
 

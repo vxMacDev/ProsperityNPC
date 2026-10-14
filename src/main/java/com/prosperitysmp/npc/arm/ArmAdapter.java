@@ -11,9 +11,12 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 /**
  * The single, read-only boundary to AdvancedRegionMarket. It reads region
@@ -77,7 +80,7 @@ public final class ArmAdapter {
     }
 
     private Optional<OwnerRead> strictOwnerRead(World world, UUID owner,
-            java.util.function.Function<RegionManager, Region> select) {
+            Function<RegionManager, Region> select) {
         if (!plugin.isEnabled() || !isAvailable() || Bukkit.getWorld(world.getUID()) != world
                 || !Bukkit.getPluginManager().isPluginEnabled("WorldGuard")) return Optional.empty();
         try {
@@ -110,7 +113,7 @@ public final class ArmAdapter {
             if (!managerType.isInstance(wgManager)
                     || managerType.getMethod("getRegion", String.class).invoke(wgManager, id) != raw) return Optional.empty();
             return Optional.of(new OwnerRead(world.getUID(), id, owner, provider, manager, region, raw, wgManager, world));
-        } catch (java.lang.reflect.InvocationTargetException invocation) {
+        } catch (InvocationTargetException invocation) {
             if (invocation.getCause() instanceof VirtualMachineError fatal) throw fatal;
             if (invocation.getCause() instanceof ThreadDeath fatal) throw fatal;
             ownerReadFailure(invocation);
@@ -123,7 +126,7 @@ public final class ArmAdapter {
     private void ownerReadFailure(Throwable failure) {
         long now = System.nanoTime();
         if (now >= nextOwnerWarning) {
-            nextOwnerWarning = now + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+            nextOwnerWarning = now + TimeUnit.SECONDS.toNanos(30);
             plugin.getLogger().warning("Owner desk region read unavailable: " + failure.getClass().getSimpleName());
         }
     }
@@ -171,7 +174,7 @@ public final class ArmAdapter {
         }
         try {
             RegionManager rm = AdvancedRegionMarket.getInstance().getRegionManager();
-            // Iterate by WG region id + world, mirroring the proven Skript approach.
+            // Iterate by WG region id + world, mirroring the Skript lookup.
             // ARM's direct name lookup is unreliable; getRegion().getId() is authoritative.
             for (SellType sellType : SellType.values()) {
                 for (Region region : rm.getRegionsBySelltype(sellType)) {
@@ -202,7 +205,7 @@ public final class ArmAdapter {
         try {
             RegionManager rm = AdvancedRegionMarket.getInstance().getRegionManager();
             for (SellType st : SellType.values()) {
-                java.util.List<Region> list = rm.getRegionsBySelltype(st);
+                List<Region> list = rm.getRegionsBySelltype(st);
                 sb.append(st.name()).append('=').append(list.size());
                 int shown = 0;
                 for (Region r : list) {

@@ -41,10 +41,10 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Rent never pays the old rate on the day a delayed asking-rent change takes effect, on a real MariaDB with the
+ * Rent never pays the previous rate on the day a delayed asking-rent change takes effect, on a real MariaDB with the
  * real rent reservation SQL and the real rent-change repository. Nothing here can move money.
- * Positive control: without the hold, a decrease effective today is reserved at the old rate and the daily
- * (property, day) uniqueness then prevents any same-day correction, which is the defect the hold closes.
+ * Without the hold, a decrease effective today is reserved at the previous rate, and the daily (property, day)
+ * uniqueness then prevents any same-day correction. The hold closes that gap.
  */
 @Timeout(300)
 class DueRentChangeRentHoldIT {
@@ -116,7 +116,7 @@ class DueRentChangeRentHoldIT {
         var limits = limits();
         UUID id = operating(new UUID(0, 3410));
         scheduleDueToday(id, 500);
-        assertEquals(1000, property(id).askingRentCents(), "the rent-change step has not run: SQL still holds the old rate");
+        assertEquals(1000, property(id).askingRentCents(), "the rent-change step has not run: SQL still holds the previous rate");
 
         // Staff rent before the rent-change step: the home is held, nothing is reserved, no event is written.
         assertTrue(rents().reserve(DAY, List.of(property(id)), limits, true).isEmpty());
@@ -141,7 +141,7 @@ class DueRentChangeRentHoldIT {
 
     @Test
     void withoutTheHoldTheOldRateIsReservedAndCannotBeCorrectedTheSameDay() throws Exception {
-        // Positive control for the defect: the plain batch (flag off path) pays the old rate.
+        // Without the hold (flag off) the plain batch pays the previous rate.
         var limits = limits();
         UUID id = operating(new UUID(0, 3411));
         scheduleDueToday(id, 500);

@@ -19,22 +19,21 @@ import java.util.function.Supplier;
 /**
  * Vacation protection (housing.vacation-days, 0 = off). A property whose owner has not been seen for more than
  * that many days is "owner away" for the economy day: the daily phases leave it out, so no money moves either way
- * and nothing decays. Each property is decided once per economy day on the main thread, the first time any phase
- * or view asks, and that decision holds for the rest of the day. A returning owner resumes on the next day's cycle.
- * Workers only ever receive the resulting id set; they never read Bukkit.
+ * and nothing decays. Each property is decided once per economy day on the main thread, the first time anything
+ * asks, and the decision holds for the rest of the day. A returning owner resumes on the next day's cycle.
+ * Workers only receive the resulting id set; they never read Bukkit.
  *
- * <p>Durable mode ({@link #requireDurable()}, set by the plugin once the database is up): the first decision per
- * property, owner and economy day is saved in {@code npc_owner_away_decisions} and adopted from there, so a restart or
- * reload later that day keeps it. Daily phases and recurring charges then read saved decisions only ({@link #held}):
- * a property whose decision is not saved yet is left out for now (no money moves) until the next save, and until
- * today's decisions have been saved at all those paths refuse. While the flag is 0 nothing is saved, read or held:
- * exactly the old behavior. Views ({@link #isAway}) still answer at once from memory.
+ * <p>In durable mode ({@link #requireDurable()}, set once the database is up) the first decision per property, owner
+ * and day is saved in {@code npc_owner_away_decisions}, so a restart later that day keeps it. Daily phases and
+ * recurring charges then use saved decisions only ({@link #held}); views ({@link #isAway}) still answer from memory.
+ * With the flag at 0 nothing is saved, read or held.
  */
 public final class OwnerAway {
     public static final String CONFIG = "housing.vacation-days";
     public static final int MAX_DAYS = 365;
     public static final String LABEL = "Owner away";
-    public static final String DESK_NOTE = "Owner away. Rent, utility bills, incidents and resident moods are paused until the next daily cycle.";
+    public static final String DESK_NOTE = "Owner away. Rent, utility bills, incidents and resident moods are paused "
+            + "until the next daily cycle.";
     public static final String PAY_NOTE = "Owner away for today. Utility bills and rent start again at the next daily cycle.";
     private static final long DAY_MILLIS = 86_400_000L;
     /** Most decisions kept for one day. A daily save refuses above this; the day's decisions are never wiped mid-day. */
@@ -45,7 +44,10 @@ public final class OwnerAway {
     private record Decision(UUID owner, boolean away, boolean durable) { }
     /** One property's decision for one owner on one economy day, as saved or to be saved. */
     public record Choice(UUID propertyId, UUID ownerUuid, boolean away) {
-        public Choice { Objects.requireNonNull(propertyId); Objects.requireNonNull(ownerUuid); }
+        public Choice {
+            Objects.requireNonNull(propertyId);
+            Objects.requireNonNull(ownerUuid);
+        }
     }
 
     private final IntSupplier configuredDays;
@@ -77,7 +79,8 @@ public final class OwnerAway {
 
     /** Shared by every skipped phase: away properties are left out, order kept. No away ids returns the same list. */
     public static List<Property> present(List<Property> properties, Set<UUID> away) {
-        Objects.requireNonNull(properties); Objects.requireNonNull(away);
+        Objects.requireNonNull(properties);
+        Objects.requireNonNull(away);
         if (away.isEmpty()) return properties;
         return properties.stream().filter(p -> !away.contains(p.propertyId())).toList();
     }
@@ -115,7 +118,7 @@ public final class OwnerAway {
     /**
      * Main thread. The ids to leave out of a daily phase or recurring charge today: away homes, plus (durable mode)
      * homes whose decision is not saved yet. Empty Optional: durable mode and today's decisions are not saved yet, so
-     * the caller must not run. Off: always an empty set, as before. Not durable: identical to {@link #awayAmong}.
+     * the caller must not run. Off: always an empty set. Not durable: identical to {@link #awayAmong}.
      */
     public Optional<Set<UUID>> held(Collection<Property> properties) {
         Objects.requireNonNull(properties);
@@ -162,7 +165,8 @@ public final class OwnerAway {
      * marks the day settled. False when the flag is off or the economy day changed meanwhile; nothing is adopted then.
      */
     public boolean confirm(LocalDate savedDay, Collection<Choice> saved) {
-        Objects.requireNonNull(savedDay); Objects.requireNonNull(saved);
+        Objects.requireNonNull(savedDay);
+        Objects.requireNonNull(saved);
         if (!enabled()) return false;
         roll();
         if (!day.equals(savedDay)) return false;
@@ -179,7 +183,10 @@ public final class OwnerAway {
 
     private void roll() {
         LocalDate current = today.get();
-        if (!current.equals(day)) { decided.clear(); day = current; }
+        if (!current.equals(day)) {
+            decided.clear();
+            day = current;
+        }
     }
 
     private Decision decide(Property property, int days) {

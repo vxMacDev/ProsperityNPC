@@ -10,7 +10,7 @@ import java.nio.file.Path;
 
 /**
  * Immutable connection settings for the dedicated {@code prosperity_npc} MariaDB.
- * The password is resolved from config, or — if blank — from a server-only
+ * The password is resolved from config or, if blank, from a server-only
  * {@code db-password.txt} beside the plugin (never bundled in the jar or repo).
  */
 public record DatabaseSettings(

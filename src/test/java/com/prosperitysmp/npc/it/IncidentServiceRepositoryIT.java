@@ -776,7 +776,7 @@ class IncidentServiceRepositoryIT {
         itemRepair(items, owner, 0, items.due());
         Incident cash = open(owner, NOW.minus(Duration.ofDays(2)));
         repair(cash, owner, 0, cash.due());
-        assertEquals(1.0, read(owner).onTimeRate().orElseThrow(), 0.0, "positive control: both repairs count");
+        assertEquals(1.0, read(owner).onTimeRate().orElseThrow(), 0.0, "both repairs count");
         // Move the cash fact onto the item-repaired incident: two proofs for one incident is a broken lifecycle.
         unchecked("UPDATE npc_incident_service_receipts SET incident_id=? WHERE incident_id=?", items.id(), cash.id());
         assertReadRejectedWithoutWrites();

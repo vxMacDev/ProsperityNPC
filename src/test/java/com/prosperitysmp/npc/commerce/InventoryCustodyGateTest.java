@@ -30,7 +30,7 @@ class InventoryCustodyGateTest {
     @Test void commerceGatingIsUnchangedAndReturnsNeedOnlySystemAndDatabase() {
         boolean[] flags = {false, true};
         for (boolean system : flags) for (boolean economy : flags) for (boolean commerce : flags) for (boolean db : flags) {
-            boolean old = system && economy && commerce; // the dev.58 delivery gate
+            boolean old = system && economy && commerce; // the commerce delivery gate
             assertEquals(old, ItemDeliveryRuntime.sourceAllowed(ItemCustody.Source.WORKER_OUTPUT, system, economy, commerce, db));
             assertEquals(old, ItemDeliveryRuntime.sourceAllowed(ItemCustody.Source.MERCHANT_GOODS, system, economy, commerce, db));
             assertEquals(system && db, ItemDeliveryRuntime.sourceAllowed(ItemCustody.Source.REPAIR_RETURN, system, economy, commerce, db));

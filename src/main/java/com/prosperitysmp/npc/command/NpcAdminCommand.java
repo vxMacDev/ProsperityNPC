@@ -6,19 +6,34 @@ import com.prosperitysmp.npc.config.EconomyLimits;
 import com.prosperitysmp.npc.config.KillSwitches;
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.economy.BridgeApi;
+import com.prosperitysmp.npc.economy.LinkedAccounts;
+import com.prosperitysmp.npc.economy.ReserveAccount;
+import com.prosperitysmp.npc.market.HousingPolicy;
+import com.prosperitysmp.npc.market.HousingRuntime;
 import com.prosperitysmp.npc.property.Property;
 import com.prosperitysmp.npc.property.PropertyService;
+import com.prosperitysmp.npc.publication.ChronicleProvisioning;
+import com.prosperitysmp.npc.publication.ChronicleRuntime;
+import com.prosperitysmp.npc.render.RenderManager;
+import com.prosperitysmp.npc.resident.ResidentCast;
+import com.prosperitysmp.npc.util.Money;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.command.RemoteConsoleCommandSender;
 import org.bukkit.command.TabExecutor;
+import org.bukkit.entity.Player;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 /**
  * The {@code /npcadmin} staff surface: health, reload, kill switches, Chronicle, ARM reconcile,
@@ -59,7 +74,7 @@ public final class NpcAdminCommand implements TabExecutor {
             case "chronicle" -> {
                 if (args.length == 2 && args[1].equalsIgnoreCase("preview")) {
                     var runtime = plugin.chronicle();
-                    var rows = runtime == null ? List.<com.prosperitysmp.npc.publication.ChronicleRuntime.HeldAdmission>of()
+                    var rows = runtime == null ? List.<ChronicleRuntime.HeldAdmission>of()
                             : runtime.heldAdmissions();
                     send(sender, NamedTextColor.GRAY, "Chronicle " + plugin.chronicleStatus() + " | current preview page " + rows.size());
                     for (var row : rows) {
@@ -71,27 +86,31 @@ public final class NpcAdminCommand implements TabExecutor {
                 } else if (args.length == 1 || (args.length == 2 && args[1].equalsIgnoreCase("status")))
                     send(sender, NamedTextColor.GRAY, "Chronicle: " + plugin.chronicleStatus());
                 else if (args.length == 2 && (args[1].equalsIgnoreCase("bootstrap") || args[1].equalsIgnoreCase("dispatch"))) {
-                    if (!(sender instanceof org.bukkit.command.ConsoleCommandSender)
-                            && !(sender instanceof org.bukkit.command.RemoteConsoleCommandSender)) {
+                    if (!(sender instanceof ConsoleCommandSender)
+                            && !(sender instanceof RemoteConsoleCommandSender)) {
                         send(sender, NamedTextColor.RED, "Chronicle delivery provisioning is console-only.");
                     } else if (args[1].equalsIgnoreCase("bootstrap")) {
-                        var evidence = com.prosperitysmp.npc.publication.ChronicleProvisioning.bootstrapStatus();
-                        if (evidence.isEmpty()) send(sender, NamedTextColor.YELLOW, "Chronicle clean-start bootstrap: unavailable; delivery held. Phase="
-                                + com.prosperitysmp.npc.publication.ChronicleProvisioning.bootstrapDiagnosticStatus());
+                        var evidence = ChronicleProvisioning.bootstrapStatus();
+                        if (evidence.isEmpty()) send(sender, NamedTextColor.YELLOW,
+                                "Chronicle clean-start bootstrap: unavailable; delivery held. Phase="
+                                + ChronicleProvisioning.bootstrapDiagnosticStatus());
                         else {
                             var proof = evidence.get();
                             send(sender, NamedTextColor.GRAY, "Chronicle bootstrap pid=" + proof.process().pid()
                                     + " start=" + proof.process().startedAt() + " java=" + proof.javaVersion());
-                            send(sender, NamedTextColor.DARK_GRAY, "agent=" + proof.artifactSha256() + " startup=" + proof.startupInputsSha256());
-                            send(sender, NamedTextColor.DARK_GRAY, "httpLog=" + proof.httpLogSha256() + " httpUtils=" + proof.httpUtilsSha256());
-                            send(sender, NamedTextColor.DARK_GRAY, "httpDebug=" + proof.httpDebugSha256() + " sslLogger=" + proof.sslLoggerSha256());
+                            send(sender, NamedTextColor.DARK_GRAY,
+                                    "agent=" + proof.artifactSha256() + " startup=" + proof.startupInputsSha256());
+                            send(sender, NamedTextColor.DARK_GRAY,
+                                    "httpLog=" + proof.httpLogSha256() + " httpUtils=" + proof.httpUtilsSha256());
+                            send(sender, NamedTextColor.DARK_GRAY,
+                                    "httpDebug=" + proof.httpDebugSha256() + " sslLogger=" + proof.sslLoggerSha256());
                         }
                     } else if (plugin.chronicle() == null) {
                         send(sender, NamedTextColor.YELLOW, "Chronicle is not configured; no delivery started.");
                     } else {
-                        var result = com.prosperitysmp.npc.publication.ChronicleProvisioning.tryEnable(
+                        var result = ChronicleProvisioning.tryEnable(
                                 plugin.chronicle(), plugin.getDataFolder().toPath());
-                        send(sender, result == com.prosperitysmp.npc.publication.ChronicleProvisioning.Result.ENABLED
+                        send(sender, result == ChronicleProvisioning.Result.ENABLED
                                 ? NamedTextColor.GREEN : NamedTextColor.YELLOW, "Chronicle provisioning: " + result);
                     }
                 } else send(sender, NamedTextColor.RED, "Usage: /npcadmin chronicle <status|preview|bootstrap|dispatch>");
@@ -101,24 +120,25 @@ public final class NpcAdminCommand implements TabExecutor {
             case "rent" -> {
                 // Due rent changes apply first when housing.rent-change-delay-days is in use; off: the batch directly.
                 boolean accepted=plugin.requestStaffRent(
-                        ()->sender.hasPermission("prosperitynpc.admin"),message->send(sender,NamedTextColor.YELLOW,message));
-                send(sender,accepted?NamedTextColor.YELLOW:NamedTextColor.RED,accepted
-                        ?"Reserving today's utility-backed rent. Wait for the verified result."
-                        :"Rent settlement unavailable or busy; no batch was started.");
+                        () -> sender.hasPermission("prosperitynpc.admin"), message -> send(sender, NamedTextColor.YELLOW, message));
+                send(sender, accepted ? NamedTextColor.YELLOW : NamedTextColor.RED, accepted
+                        ? "Reserving today's utility-backed rent. Wait for the verified result."
+                        : "Rent settlement unavailable or busy; no batch was started.");
             }
             case "match" -> {
                 boolean accepted = plugin.requestStaffMatch(
                         () -> sender.hasPermission("prosperitynpc.admin")
-                                && (!(sender instanceof org.bukkit.entity.Player p) || p.isOnline()),
+                                && (!(sender instanceof Player p) || p.isOnline()),
                         message -> send(sender, NamedTextColor.YELLOW, message));
                 send(sender, accepted ? NamedTextColor.YELLOW : NamedTextColor.RED,
-                        accepted ? "Planning resident matches..." : "Matching unavailable or busy; system, moves and ownership coordination must be ready.");
+                        accepted ? "Planning resident matches..."
+                                : "Matching unavailable or busy; system, moves and ownership coordination must be ready.");
             }
             case "incidents" -> {
-                boolean accepted=plugin.housingRuntime()!=null && plugin.housingRuntime().requestIncidents(
-                        ()->sender.hasPermission("prosperitynpc.admin"),message->send(sender,NamedTextColor.YELLOW,message));
-                send(sender,accepted?NamedTextColor.YELLOW:NamedTextColor.RED,accepted
-                        ?"Running today's property checks...":"Property checks unavailable or busy.");
+                boolean accepted = plugin.housingRuntime() != null && plugin.housingRuntime().requestIncidents(
+                        () -> sender.hasPermission("prosperitynpc.admin"), message -> send(sender, NamedTextColor.YELLOW, message));
+                send(sender, accepted ? NamedTextColor.YELLOW : NamedTextColor.RED, accepted
+                        ? "Running today's property checks..." : "Property checks unavailable or busy.");
             }
             case "roster" -> {
                 if (args.length != 5 || plugin.housingRuntime() == null) {
@@ -126,14 +146,15 @@ public final class NpcAdminCommand implements TabExecutor {
                     break;
                 }
                 World world = Bukkit.getWorld(args[1]);
-                long budget = com.prosperitysmp.npc.util.Money.parseDollarsToCents(args[4]);
+                long budget = Money.parseDollarsToCents(args[4]);
                 if (world == null || budget < 1 || budget > Integer.MAX_VALUE
                         || !plugin.getConfig().getStringList("enrollment.markets").contains(args[2])
                         || !plugin.getConfig().getStringList("enrollment.classes").contains(args[3])) {
-                    send(sender, NamedTextColor.RED, "Invalid world, market, class or budget."); break;
+                    send(sender, NamedTextColor.RED, "Invalid world, market, class or budget.");
+                    break;
                 }
-                var policy = new com.prosperitysmp.npc.market.HousingPolicy(world.getUID(), args[2], args[3],
-                        com.prosperitysmp.npc.market.HousingPolicy.Tier.STANDARD, budget, 60);
+                var policy = new HousingPolicy(world.getUID(), args[2], args[3],
+                        HousingPolicy.Tier.STANDARD, budget, 60);
                 boolean accepted = plugin.housingRuntime().registerCast(policy, plugin.residentCast(),
                         plugin.residentAppearances()::hasEveryday,
                         () -> sender.hasPermission("prosperitynpc.admin"), message -> send(sender, NamedTextColor.YELLOW, message));
@@ -142,22 +163,24 @@ public final class NpcAdminCommand implements TabExecutor {
             }
             case "roster-one" -> {
                 if (args.length != 7 || plugin.housingRuntime() == null) {
-                    send(sender, NamedTextColor.RED, "Usage: /npcadmin roster-one <resident-uuid> <world> <market> <class> <max-daily-rent> <standard|premium>");
+                    send(sender, NamedTextColor.RED,
+                            "Usage: /npcadmin roster-one <resident-uuid> <world> <market> <class> <max-daily-rent> <standard|premium>");
                     break;
                 }
                 try {
-                    java.util.UUID resident = java.util.UUID.fromString(args[1]);
+                    UUID resident = UUID.fromString(args[1]);
                     World world = Bukkit.getWorld(args[2]);
-                    long budget = com.prosperitysmp.npc.util.Money.parseDollarsToCents(args[5]);
-                    var tier = com.prosperitysmp.npc.market.HousingPolicy.Tier.valueOf(args[6].toUpperCase(Locale.ROOT));
+                    long budget = Money.parseDollarsToCents(args[5]);
+                    var tier = HousingPolicy.Tier.valueOf(args[6].toUpperCase(Locale.ROOT));
                     if (world == null || budget < 1 || budget > Integer.MAX_VALUE
                             || !plugin.getConfig().getStringList("enrollment.markets").contains(args[3])
-                            || !plugin.getConfig().getStringList("enrollment.classes").contains(args[4])) throw new IllegalArgumentException();
-                    var policy = new com.prosperitysmp.npc.market.HousingPolicy(world.getUID(), args[3], args[4], tier,
-                            budget, tier == com.prosperitysmp.npc.market.HousingPolicy.Tier.PREMIUM ? 80 : 60);
+                            || !plugin.getConfig().getStringList("enrollment.classes").contains(args[4]))
+                        throw new IllegalArgumentException();
+                    var policy = new HousingPolicy(world.getUID(), args[3], args[4], tier,
+                            budget, tier == HousingPolicy.Tier.PREMIUM ? 80 : 60);
                     boolean held = com.prosperitysmp.npc.market.HousingRuntime.heldForSkin(resident, plugin.residentCast(),
                             person -> plugin.residentAppearances().hasEveryday(person), () -> plugin.getConfig().getBoolean(
-                                    com.prosperitysmp.npc.market.HousingRuntime.REQUIRE_SKIN_FOR_ROSTER, true));
+                                    HousingRuntime.REQUIRE_SKIN_FOR_ROSTER, true));
                     boolean accepted = plugin.housingRuntime().registerResident(resident, policy, held,
                             () -> sender.hasPermission("prosperitynpc.admin"), message -> send(sender, NamedTextColor.YELLOW, message));
                     send(sender, accepted ? NamedTextColor.YELLOW : NamedTextColor.RED,
@@ -171,10 +194,14 @@ public final class NpcAdminCommand implements TabExecutor {
             case "itemrepair" -> {
                 // Read-only. Held hand-ins are resolved only with the offline ItemRepairRecoveryTool.
                 if (args.length != 2 || !args[1].equalsIgnoreCase("list")) {
-                    send(sender, NamedTextColor.GRAY, "Usage: /npcadmin itemrepair list"); return true;
+                    send(sender, NamedTextColor.GRAY, "Usage: /npcadmin itemrepair list");
+                    return true;
                 }
                 var runtime = plugin.itemRepairs() == null ? plugin.itemRepairReturns() : plugin.itemRepairs();
-                if (runtime == null) { send(sender, NamedTextColor.GRAY, "No item hand-ins are open, held or waiting to give items back."); return true; }
+                if (runtime == null) {
+                    send(sender, NamedTextColor.GRAY, "No item hand-ins are open, held or waiting to give items back.");
+                    return true;
+                }
                 if (!runtime.staffList(lines -> lines.forEach(line -> send(sender, NamedTextColor.GRAY, line))))
                     send(sender, NamedTextColor.RED, "Item repairs are busy. Try again.");
             }
@@ -185,6 +212,7 @@ public final class NpcAdminCommand implements TabExecutor {
                     send(sender, appearances.hasEveryday(resident) ? NamedTextColor.GRAY : NamedTextColor.GOLD,
                             appearances.reportLine(resident));
             }
+
             default -> send(sender, NamedTextColor.RED,
                     "Unknown subcommand. Use /npcadmin <" + String.join("|", SUBCOMMANDS) + ">.");
         }
@@ -200,18 +228,24 @@ public final class NpcAdminCommand implements TabExecutor {
         var links = plugin.accountLinks();
         String sub = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "";
         if (sub.equals("show") && args.length == 3) {
-            if (links == null) { send(sender, NamedTextColor.RED, "Linked accounts need the database."); return; }
-            java.util.UUID account = account(args[2]);
-            if (account == null) { send(sender, NamedTextColor.RED, "Unknown player: " + args[2]); return; }
+            if (links == null) {
+                send(sender, NamedTextColor.RED, "Linked accounts need the database.");
+                return;
+            }
+            UUID account = account(args[2]);
+            if (account == null) {
+                send(sender, NamedTextColor.RED, "Unknown player: " + args[2]);
+                return;
+            }
             var day = plugin.economyToday();
             String asked = args[2];
             if (!plugin.submitLinkWork(() -> {
                 // SQL on the link worker; names come from the offline player cache on the main thread.
                 try {
                     var group = links.show(account, day);
-                    runMain(() -> com.prosperitysmp.npc.economy.LinkedAccounts.showLines(group, asked, NpcAdminCommand::name)
+                    runMain(() -> LinkedAccounts.showLines(group, asked, NpcAdminCommand::name)
                             .forEach(line -> send(sender, NamedTextColor.AQUA, line)));
-                } catch (java.sql.SQLException | RuntimeException failure) {
+                } catch (SQLException | RuntimeException failure) {
                     String reply = "Linked accounts unavailable: " + failure.getClass().getSimpleName();
                     runMain(() -> send(sender, NamedTextColor.RED, reply));
                 }
@@ -219,25 +253,38 @@ public final class NpcAdminCommand implements TabExecutor {
             return;
         }
         if (sub.equals("split") && args.length >= 5) {
-            if (!plugin.linkedAccountsEnabled()) { send(sender, NamedTextColor.RED, com.prosperitysmp.npc.economy.LinkedAccounts.STAFF_OFF); return; }
-            if (links == null) { send(sender, NamedTextColor.RED, "Linked accounts need the database."); return; }
-            java.util.UUID a = uuid(args[2]), b = uuid(args[3]);
-            if (a == null || b == null) { send(sender, NamedTextColor.RED, "Use two account UUIDs. /npcadmin links show <player> lists them."); return; }
-            String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 4, args.length)).strip();
-            if (reason.isEmpty() || reason.length() > 160) { send(sender, NamedTextColor.RED, "Give a reason of up to 160 characters."); return; }
+            if (!plugin.linkedAccountsEnabled()) {
+                send(sender, NamedTextColor.RED, LinkedAccounts.STAFF_OFF);
+                return;
+            }
+            if (links == null) {
+                send(sender, NamedTextColor.RED, "Linked accounts need the database.");
+                return;
+            }
+            UUID a = uuid(args[2]), b = uuid(args[3]);
+            if (a == null || b == null) {
+                send(sender, NamedTextColor.RED, "Use two account UUIDs. /npcadmin links show <player> lists them.");
+                return;
+            }
+            String reason = String.join(" ", Arrays.copyOfRange(args, 4, args.length)).strip();
+            if (reason.isEmpty() || reason.length() > 160) {
+                send(sender, NamedTextColor.RED, "Give a reason of up to 160 characters.");
+                return;
+            }
             String actor = sender.getName().length() > 64 ? sender.getName().substring(0, 64) : sender.getName();
-            // The save reads the day itself, inside its transaction: a task that stalls across the daily reset still splits from the next day.
+            // The save reads the day itself, inside its transaction: a task that stalls across the daily reset still
+            // splits from the next day.
             var economyClock = plugin.economyClock();
             if (!plugin.submitLinkWork(() -> {
                 String reply;
                 try {
                     var split = links.staffSplit(a, b, actor, reason, economyClock);
                     reply = switch (split.outcome()) {
-                        case SAVED -> com.prosperitysmp.npc.economy.LinkedAccounts.splitSaved(split.effectiveDay());
-                        case ALREADY_SPLIT -> com.prosperitysmp.npc.economy.LinkedAccounts.splitAlready(split.effectiveDay());
-                        case NOT_LINKED -> com.prosperitysmp.npc.economy.LinkedAccounts.SPLIT_REFUSED;
+                        case SAVED -> LinkedAccounts.splitSaved(split.effectiveDay());
+                        case ALREADY_SPLIT -> LinkedAccounts.splitAlready(split.effectiveDay());
+                        case NOT_LINKED -> LinkedAccounts.SPLIT_REFUSED;
                     };
-                } catch (java.sql.SQLException | RuntimeException failure) {
+                } catch (SQLException | RuntimeException failure) {
                     reply = "Split not saved: " + failure.getClass().getSimpleName();
                 }
                 String done = reply;
@@ -251,12 +298,16 @@ public final class NpcAdminCommand implements TabExecutor {
         send(sender, NamedTextColor.GRAY, "Usage: /npcadmin links show <player|uuid> | /npcadmin links split <uuidA> <uuidB> <reason>");
     }
 
-    private static java.util.UUID uuid(String text) {
-        try { return java.util.UUID.fromString(text); } catch (IllegalArgumentException invalid) { return null; }
+    private static UUID uuid(String text) {
+        try {
+            return UUID.fromString(text);
+        } catch (IllegalArgumentException invalid) {
+            return null;
+        }
     }
 
     /** A UUID, or a player name the server has seen before. */
-    private static java.util.UUID account(String text) {
+    private static UUID account(String text) {
         var id = uuid(text);
         if (id != null) return id;
         var known = Bukkit.getOfflinePlayerIfCached(text);
@@ -264,14 +315,17 @@ public final class NpcAdminCommand implements TabExecutor {
     }
 
     /** Main thread only (the offline player cache). Falls back to the UUID. */
-    private static String name(java.util.UUID account) {
+    private static String name(UUID account) {
         var known = Bukkit.getOfflinePlayer(account).getName();
         return known == null || known.isBlank() ? account.toString() : known;
     }
 
     private void runMain(Runnable task) {
-        try { Bukkit.getScheduler().runTask(plugin, task); }
-        catch (RuntimeException stopping) { /* Plugin stopping: no reply. */ }
+        try {
+            Bukkit.getScheduler().runTask(plugin, task);
+        } catch (RuntimeException stopping) {
+            /* Plugin stopping: no reply. */
+        }
     }
 
     private void doSwitch(CommandSender sender, String[] args) {
@@ -296,7 +350,7 @@ public final class NpcAdminCommand implements TabExecutor {
     }
 
     private void doRenderTest(CommandSender sender, String[] args) {
-        com.prosperitysmp.npc.render.RenderManager rm = plugin.renderManager();
+        RenderManager rm = plugin.renderManager();
         if (rm == null) {
             send(sender, NamedTextColor.RED, "Renderer unavailable (Citizens not installed / not started).");
             return;
@@ -324,11 +378,14 @@ public final class NpcAdminCommand implements TabExecutor {
 
     /** Current-day coordinated cycle. Old force/day rewinds are deliberately not supported. */
     private void doSettle(CommandSender sender, String[] args) {
-        if(args.length!=1){send(sender,NamedTextColor.RED,"Usage: /npcadmin settle (current day only; no force/backdating)");return;}
-        boolean accepted=plugin.requestDailyCycle(()->sender.hasPermission("prosperitynpc.admin"),
-                message->send(sender,NamedTextColor.YELLOW,message));
-        send(sender,accepted?NamedTextColor.YELLOW:NamedTextColor.RED,accepted
-                ?"Daily cycle started; wait for phase outcomes.":"Daily cycle unavailable or already running.");
+        if (args.length != 1) {
+            send(sender, NamedTextColor.RED, "Usage: /npcadmin settle (current day only; no force/backdating)");
+            return;
+        }
+        boolean accepted = plugin.requestDailyCycle(() -> sender.hasPermission("prosperitynpc.admin"),
+                message -> send(sender, NamedTextColor.YELLOW, message));
+        send(sender, accepted ? NamedTextColor.YELLOW : NamedTextColor.RED, accepted
+                ? "Daily cycle started; wait for phase outcomes." : "Daily cycle unavailable or already running.");
     }
 
     /** Null when nothing was skipped. */
@@ -346,7 +403,7 @@ public final class NpcAdminCommand implements TabExecutor {
         send(sender, operational ? NamedTextColor.GREEN : NamedTextColor.GOLD,
                 "State: " + (operational ? "ACTIVE" : "STANDBY (system-enabled=false)"));
         send(sender, NamedTextColor.GRAY, "Appearance: " + plugin.appearanceStatus());
-        send(sender, plugin.residentCast().source() == com.prosperitysmp.npc.resident.ResidentCast.Source.FILE_REJECTED
+        send(sender, plugin.residentCast().source() == ResidentCast.Source.FILE_REJECTED
                 ? NamedTextColor.GOLD : NamedTextColor.GRAY, plugin.residentCast().healthLine());
         String skipped = skippedSkinsLine(plugin.skippedSkinEntries());
         if (skipped != null) send(sender, NamedTextColor.GOLD, skipped);
@@ -392,12 +449,14 @@ public final class NpcAdminCommand implements TabExecutor {
         String reserve = bridge == null ? "" : bridge.centralBankUuid();
         send(sender, NamedTextColor.GOLD, "Payments: economy.payments-enabled="
                 + plugin.getConfig().getBoolean("economy.payments-enabled", false)
-                + "; reserve account " + (com.prosperitysmp.npc.economy.ReserveAccount.isCanonical(reserve) ? "set" : "NOT SET"));
-        send(sender,NamedTextColor.GOLD,"Receipt runtime: "+(plugin.utilityPayments()==null?"unavailable":plugin.utilityPayments().status()));
-        String rentHeld=plugin.utilityPayments()==null?null:plugin.utilityPayments().rentHeldStatus();
-        if(rentHeld!=null)send(sender,NamedTextColor.GOLD,rentHeld);
-        send(sender,NamedTextColor.GOLD,"Accounting projection: "+(plugin.accountingProjection()!=null && plugin.accountingProjection().ready()
-                ?"acknowledged":"waiting for verified snapshot and Skript acknowledgement"));
+                + "; reserve account " + (ReserveAccount.isCanonical(reserve) ? "set" : "NOT SET"));
+        send(sender, NamedTextColor.GOLD,
+                "Receipt runtime: " + (plugin.utilityPayments() == null ? "unavailable" : plugin.utilityPayments().status()));
+        String rentHeld = plugin.utilityPayments() == null ? null : plugin.utilityPayments().rentHeldStatus();
+        if (rentHeld != null) send(sender, NamedTextColor.GOLD, rentHeld);
+        send(sender, NamedTextColor.GOLD, "Accounting projection: " + (plugin.accountingProjection() != null
+                && plugin.accountingProjection().ready()
+                ? "acknowledged" : "waiting for verified snapshot and Skript acknowledgement"));
 
         send(sender, NamedTextColor.GRAY, "Switches:");
         for (KillSwitches.Switch sw : KillSwitches.Switch.values()) {
@@ -417,9 +476,9 @@ public final class NpcAdminCommand implements TabExecutor {
         send(sender, NamedTextColor.DARK_GRAY,
                 "Town residents, relationships, commerce and property; independently gated modules.");
         send(sender, NamedTextColor.GRAY, "Chronicle: " + plugin.chronicleStatus());
-        // Only while on, so the flag-off health output stays as it was.
+        // Shown only while on, so health output with the flag off has no extra line.
         if (plugin.linkedAccountsEnabled()) send(sender, NamedTextColor.GRAY, "Linked accounts: " + plugin.linkedAccountsStatus());
-        // Contracts and partnerships: only while one is on or a hand-over is held, so flag-off output is unchanged.
+        // Contracts and partnerships: shown only while one is on or a hand-over is held.
         for (String line : plugin.contractHealthLines()) send(sender, NamedTextColor.GRAY, line);
     }
 
@@ -451,7 +510,8 @@ public final class NpcAdminCommand implements TabExecutor {
                 }
             }
         } else if (args.length == 2 && args[0].equalsIgnoreCase("chronicle")) {
-            for (String s : List.of("status", "preview", "bootstrap", "dispatch")) if (s.startsWith(args[1].toLowerCase(Locale.ROOT))) out.add(s);
+            for (String s : List.of("status", "preview", "bootstrap", "dispatch"))
+                if (s.startsWith(args[1].toLowerCase(Locale.ROOT))) out.add(s);
         } else if (args.length == 2 && args[0].equalsIgnoreCase("switch")) {
             for (KillSwitches.Switch sw : KillSwitches.Switch.values()) {
                 if (sw.key().startsWith(args[1].toLowerCase(Locale.ROOT))) {

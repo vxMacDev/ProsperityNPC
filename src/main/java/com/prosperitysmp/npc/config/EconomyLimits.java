@@ -83,21 +83,39 @@ public final class EconomyLimits {
         }
     }
 
-    public long serverDailyCapCents() { return serverDailyCapCents; }
+    public long serverDailyCapCents() {
+        return serverDailyCapCents;
+    }
 
-    public long benefitUnitDailyCapCents() { return benefitUnitDailyCapCents; }
+    public long benefitUnitDailyCapCents() {
+        return benefitUnitDailyCapCents;
+    }
 
-    public long propertyDailyCapCents() { return propertyDailyCapCents; }
+    public long propertyDailyCapCents() {
+        return propertyDailyCapCents;
+    }
 
-    public long tenantDailyCapCents() { return tenantDailyCapCents; }
+    public long tenantDailyCapCents() {
+        return tenantDailyCapCents;
+    }
 
-    public long appreciationDailyCapCents() { return appreciationDailyCapCents; }
+    public long appreciationDailyCapCents() {
+        return appreciationDailyCapCents;
+    }
 
-    public long centralBankFloorCents() { return centralBankFloorCents; }
+    public long centralBankFloorCents() {
+        return centralBankFloorCents;
+    }
 
-    public long propertySeedCents() { return propertySeedCents; }
+    public long propertySeedCents() {
+        return propertySeedCents;
+    }
 
-    public long rolloutSeedPoolCents() { return rolloutSeedPoolCents; }
+    public long rolloutSeedPoolCents() {
+        return rolloutSeedPoolCents;
+    }
 
-    public double lifetimeSinkFundingRatio() { return lifetimeSinkFundingRatio; }
+    public double lifetimeSinkFundingRatio() {
+        return lifetimeSinkFundingRatio;
+    }
 }

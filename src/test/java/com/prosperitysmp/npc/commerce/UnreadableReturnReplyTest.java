@@ -25,7 +25,7 @@ class UnreadableReturnReplyTest {
         assertFalse(ItemDeliveryRuntime.nothingStarted(java.util.Optional.empty()));
     }
 
-    /** After the player left only a return's caller is told, so its claim clears and a held alert goes out. Commerce as dev.58. */
+    /** After the player left only a return's caller is told, so its claim clears and a held alert goes out. Commerce is never told. */
     @Test void onlyAReturnCallerIsToldAfterThePlayerLeft() {
         for (var source : ItemCustody.Source.values()) {
             assertTrue(ItemDeliveryRuntime.tellsCaller(false, source), source.name());

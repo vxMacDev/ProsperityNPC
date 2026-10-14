@@ -190,7 +190,7 @@ class OwnershipReconcilePumpTest {
         assertEquals(1,h.results.getFirst().checked());
     }
 
-    // ---- ownership fence: never replace the cached record of a home whose lease is held (Codex P1 round 3)
+    // ---- ownership fence: never replace the cached record of a home whose lease is held
 
     private static com.prosperitysmp.npc.arm.OwnershipFence.Lease hold(Harness h, Property p) {
         return h.fence.acquireExclusive(p.worldUuid(), p.regionId());
@@ -262,7 +262,7 @@ class OwnershipReconcilePumpTest {
         assertTrue(free(h, admitted));
     }
 
-    /** Negative control: the same pass with nothing held rebases on the first pass and defers nothing. */
+    /** With nothing held, the same pass rebases on the first pass and defers nothing. */
     @Test void unheldHomeIsRebasedOnTheFirstPass() {
         Harness h = new Harness(1); h.fence = new com.prosperitysmp.npc.arm.OwnershipFence(() -> true);
         Property cached = h.cache.get(property(1).propertyId());
@@ -274,14 +274,14 @@ class OwnershipReconcilePumpTest {
         assertTrue(free(h, cached));
     }
 
-    /** Positive control: without the fence (the old pump) the same interleaving swaps the record under the lease. */
+    /** Without a fence the same interleaving does swap the record under the lease, so the fenced tests above are real. */
     @Test void unfencedPumpSwapsTheRecordUnderAPaymentLease() {
         Harness h = new Harness(1);
         var fence = new com.prosperitysmp.npc.arm.OwnershipFence(() -> true);
         Property admitted = h.cache.get(property(1).propertyId());
         var payment = fence.acquireExclusive(admitted.worldUuid(), admitted.regionId());
         h.request(); h.pump.tick(); h.complete(); h.pump.tick();
-        assertNotSame(admitted, h.cache.get(admitted.propertyId()), "the hazard this fix closes");
+        assertNotSame(admitted, h.cache.get(admitted.propertyId()), "without a fence the record is swapped under the lease");
         assertNotEquals(admitted, h.cache.get(admitted.propertyId()));
         payment.releaseReconciled();
     }
@@ -336,7 +336,7 @@ class OwnershipReconcilePumpTest {
         assertEquals(-1, ticksUntilWork(h, 3 * RETRY), "no stale retry afterwards");
     }
 
-    // ---- F4: a deferred home leaves the retry set only when a pass reaches it
+    // ---- a deferred home leaves the retry set only when a pass reaches it
 
     @Test void cancelledPassBeforeReachingADeferredHomeKeepsItForTheRetry() {
         Harness h = new Harness(2); h.fence = new com.prosperitysmp.npc.arm.OwnershipFence(() -> true);
@@ -369,7 +369,7 @@ class OwnershipReconcilePumpTest {
         assertTrue(h.pump.deferredIds().isEmpty(), "reached (skipped), so not retried");
     }
 
-    // ---- F1: writing(id) covers the in-flight SQL write exactly
+    // ---- writing(id) covers the in-flight SQL write exactly
 
     @Test void writingCoversTheSqlHopUntilItsCompletionIsConsumed() {
         Harness h = new Harness(2); h.fence = new com.prosperitysmp.npc.arm.OwnershipFence(() -> true);
@@ -505,7 +505,7 @@ class OwnershipReconcilePumpTest {
         h.presence = OwnershipReconcilePump.Presence.UNAVAILABLE;
         h.request(); h.pump.tick(); h.pump.tick();
         assertFalse(h.pump.writing(id));
-        assertTrue(h.pump.deferredIds().isEmpty(), "an ordinary unavailable read waits for the next scheduled pass, as before");
+        assertTrue(h.pump.deferredIds().isEmpty(), "an ordinary unavailable read waits for the next scheduled pass");
     }
 
     @Test void markAheadHoldsAdmissionsUntilAPassInstallsTheRow() {
@@ -530,7 +530,7 @@ class OwnershipReconcilePumpTest {
         assertFalse(h.pump.writing(id), "drained");
     }
 
-    // ---- F5 (d): a home automatic retries keep finding busy is named once
+    // ---- a home automatic retries keep finding busy is named once
 
     /** Ticks until stuck is told or the limit. */
     private static void ticksUntilStuck(Harness h, int limit) {

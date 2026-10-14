@@ -78,7 +78,8 @@ final class TownOfferPresentation {
             case ACTIVE_CONFLICT -> "Finish or cancel your current errand before taking another.";
             case RELATIONSHIP_TOO_LOW -> "That introduction needs a Trusted relationship first.";
             case WRONG_RECIPIENT -> "That note is addressed to someone else.";
-            case UNKNOWN_GIVER, UNKNOWN_RECIPIENT, TIME_REGRESSION, NOT_ACTIVE, NOT_FOUND -> "This errand is unavailable. Nothing new was granted.";
+            case UNKNOWN_GIVER, UNKNOWN_RECIPIENT, TIME_REGRESSION, NOT_ACTIVE,
+                    NOT_FOUND -> "This errand is unavailable. Nothing new was granted.";
         };
     }
 }

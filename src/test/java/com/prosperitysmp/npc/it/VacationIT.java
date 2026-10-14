@@ -185,7 +185,7 @@ class VacationIT {
 
         // The owner logs in, then the server restarts the same economy day. The new process starts empty.
         seen.put(awayOwner, new OwnerAway.Seen(true, clock.instant().toEpochMilli(), clock.instant().toEpochMilli()));
-        // Control: this is the old in-memory behavior, which reclassified the returning owner as present.
+        // In memory alone, the returning owner counts as present, so nobody is away. The saved decisions keep them away.
         assertEquals(Set.of(), new OwnerAway(() -> 7, () -> DAY, () -> NOW.toEpochMilli(), seen::get)
                 .awayAmong(enrolled(awayHome, presentHome)));
         var after = durable(seen);
@@ -222,7 +222,7 @@ class VacationIT {
         assertEquals(List.of(), off.unsaved(enrolled(home)));
         assertEquals(Optional.of(Set.of()), off.held(enrolled(home)));
         assertEquals(0L, count("npc_owner_away_decisions WHERE property_id=?", home));
-        // Positive control: the same home with the flag on is saved.
+        // With the flag on, the same home is saved, so the empty result above comes from the flag.
         assertTrue(save(durable(seen), DAY, enrolled(home)));
         assertEquals(1L, count("npc_owner_away_decisions WHERE property_id=?", home));
     }

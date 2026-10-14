@@ -13,9 +13,13 @@ public record ItemCustody(UUID requestNonce, UUID playerId, UUID offerId, Source
     public static final int MAX_RESERVATION_SECONDS = 900;
 
     public ItemCustody {
-        Objects.requireNonNull(requestNonce); Objects.requireNonNull(playerId); Objects.requireNonNull(offerId);
-        Objects.requireNonNull(source); Objects.requireNonNull(payload);
-        reservedAt = normalize(reservedAt); expiresAt = normalize(expiresAt);
+        Objects.requireNonNull(requestNonce);
+        Objects.requireNonNull(playerId);
+        Objects.requireNonNull(offerId);
+        Objects.requireNonNull(source);
+        Objects.requireNonNull(payload);
+        reservedAt = normalize(reservedAt);
+        expiresAt = normalize(expiresAt);
         if (reservedAt.toEpochMilli() < 0 || quantity < 1 || quantity > MAX_QUANTITY
                 || !expiresAt.isAfter(reservedAt)
                 || expiresAt.isAfter(reservedAt.plusSeconds(MAX_RESERVATION_SECONDS)))

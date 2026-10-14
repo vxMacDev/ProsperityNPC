@@ -76,7 +76,9 @@ public final class FloodgateLinkListener implements Listener {
             if (today.equals(unlinkedChecked.get(player))) return;
             prune(unlinkedChecked, today);
             unlinkedChecked.put(player, today);
-            host.inSavedGroup(player, grouped -> { if (Boolean.TRUE.equals(grouped)) host.tell(player, host.unlinkedNotice()); });
+            host.inSavedGroup(player, grouped -> {
+                if (Boolean.TRUE.equals(grouped)) host.tell(player, host.unlinkedNotice());
+            });
             return;
         }
         LinkedPlayer lp = fp.getLinkedPlayer();

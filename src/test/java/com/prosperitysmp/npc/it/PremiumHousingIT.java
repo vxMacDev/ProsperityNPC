@@ -116,7 +116,7 @@ class PremiumHousingIT {
         assertEquals(PremiumHousingEligibility.evaluate(targetFacts, services, ZONE, 4), view.premium());
         assertEquals(HousingDecisionPlan.RankStatus.RATED, view.rating().status());
         assertEquals(services.operatorScore(), view.rating().planningOperatorScore());
-        // Appreciation reads the same rated score inside its own reservation transaction (positive control).
+        // Appreciation reads the same rated score inside its own reservation transaction.
         var ratedHome = new PropertyRepository(db).findById(target).orElseThrow();
         try (var c = db.getConnection()) {
             c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ); c.setAutoCommit(false);

@@ -80,7 +80,7 @@ class GuardedRentStepIT {
         fence = new OwnershipFence(() -> true);
     }
 
-    // ---- 3) inert unless a change is due
+    // ---- inert unless a change is due
 
     @Test void nothingDueTakesNoLeaseWritesNothingAndRepliesLikeTheUnguardedStep() throws Exception {
         Property later = property(1000), none = property(1000);
@@ -116,7 +116,7 @@ class GuardedRentStepIT {
         assertEquals(host.pending, unguarded.stillPending() > 0);
         assertEquals(rows, rowState());
 
-        // Positive control: on its day the same change is due, the homes ARE held during the step, and it applies.
+        // On its day the same change is due, the homes are held during the step, and it applies, so the probe can see a hold.
         var due = new GuardedRentHarness();
         due.cache.putAll(host.cache);
         int[] heldSeen = {0};
@@ -146,7 +146,7 @@ class GuardedRentStepIT {
         assertEquals(rows, rowState());
     }
 
-    // ---- 1) the DB-outage hold ends on the first successful re-read
+    // ---- the DB-outage hold ends on the first successful re-read
 
     @Test void outageHoldKeepsLeasesBacksOffAndReleasesOnTheFirstGoodReread() throws Exception {
         Property p = property(1000), q = property(1000);
@@ -274,7 +274,7 @@ class GuardedRentStepIT {
         assertEquals(0, busyCount());
     }
 
-    // ---- 2) coordinator failure aborts instead of excluding everything
+    // ---- coordinator failure aborts instead of excluding everything
 
     @Test void stoppedCoordinatorAbortsTheAttemptWithoutRetrying() throws Exception {
         Property p = property(1000);
@@ -334,7 +334,7 @@ class GuardedRentStepIT {
         assertFalse(code.contains("private boolean attemptLeased("), "no second copy of the guarded step");
     }
 
-    // ---- never release a held home over a record SQL contradicts (Codex P1 round 3)
+    // ---- never release a held home over a record SQL contradicts
 
     /**
      * Records a violation whenever a home the step held is free again while its cached record differs from its SQL
@@ -386,8 +386,8 @@ class GuardedRentStepIT {
         assertTrue(host.finished);
         assertEquals(0, busyCount());
 
-        // Negative control: the old cache side on the same SQL result left the entry stale and called it drift,
-        // and the old step released the lease over it anyway.
+        // rebaseDueRent on the same SQL result leaves the entry stale and reports drift,
+        // which is why the guarded step installs the full row before it releases.
         var old = new HashMap<UUID, Property>(Map.of(p.propertyId(), p));
         var outcome = PropertyService.rebaseDueRent(old, sql.applied.getFirst(), List.of(), id -> true);
         assertTrue(outcome.drift());

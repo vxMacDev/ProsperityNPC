@@ -11,6 +11,7 @@ import com.prosperitysmp.npc.market.HousingMarketSnapshot.Status;
 import com.prosperitysmp.npc.market.HousingMoveRepository.Receipt;
 import com.prosperitysmp.npc.market.HousingMoveRequest.Policy;
 import com.prosperitysmp.npc.resident.ResidentProfile;
+import com.prosperitysmp.npc.town.PartnershipRepository;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -50,7 +51,8 @@ public final class HousingMarketRepository {
     public HousingMarketRepository(Database database, Clock clock, ZoneId zone, int resetHour, int evictedSlotLockDays) {
         if (evictedSlotLockDays < 0 || evictedSlotLockDays > 30) throw new IllegalArgumentException("Invalid evicted slot lock days");
         this.evictedSlotLockDays = evictedSlotLockDays;
-        this.database = Objects.requireNonNull(database); this.clock = Objects.requireNonNull(clock);
+        this.database = Objects.requireNonNull(database);
+        this.clock = Objects.requireNonNull(clock);
         days = new EconomyClock(clock, zone, resetHour);
         receipts = new HousingMoveRepository(database, clock, zone, resetHour, false, evictedSlotLockDays);
     }
@@ -69,12 +71,14 @@ public final class HousingMarketRepository {
 
     /**
      * partnerRankCaps (town.partnerships rank perk, current config points per resident): empty reads no partnership
-     * table and leaves every home at 0 partner points, exactly as before. Otherwise each home gets its cached owner's
+     * table and leaves every home at 0 partner points. Otherwise each home gets its cached owner's
      * partner points for the day, min(row, cap), from a plain read in this same view.
      */
     public HousingMarketSnapshot read(ReadSnapshot shared, LocalDate day, Policy proposedPolicy,
                                       Map<UUID, Integer> partnerRankCaps) throws SQLException {
-        Objects.requireNonNull(day); Objects.requireNonNull(proposedPolicy); Objects.requireNonNull(partnerRankCaps);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(proposedPolicy);
+        Objects.requireNonNull(partnerRankCaps);
         require(day.equals(days.today()), "Housing snapshot requires current economy day");
         try {
             Connection c = shared.connection(database);
@@ -152,7 +156,8 @@ public final class HousingMarketRepository {
                 && latest.put(a.request().residentId(), a) == null, "Invalid housing history membership");
         List<Receipt> chronological = query(c, "SELECT m.*," + policyColumns + " FROM npc_housing_members h "
                 + "JOIN npc_housing_moves m ON m.request_id=(SELECT prior.request_id FROM npc_housing_moves prior "
-                + "WHERE prior.resident_id=h.resident_id ORDER BY prior.economy_day DESC,prior.applied_at_millis DESC,prior.request_id DESC LIMIT 1) "
+                + "WHERE prior.resident_id=h.resident_id ORDER BY prior.economy_day DESC,prior.applied_at_millis DESC,"
+                + "prior.request_id DESC LIMIT 1) "
                 + "LEFT JOIN npc_housing_days d ON d.economy_day=m.economy_day ORDER BY h.resident_id",
                 512, rs -> receipts.readReceipt(rs, policy(rs)));
         require(chronological.size() == latest.size(), "Housing receipt chronology disagrees with revision");
@@ -177,7 +182,7 @@ public final class HousingMarketRepository {
             require(facilities.put(f.property(), f) == null, "Duplicate housing facilities");
         // Partnership rank perk: no read at all while it is off (empty caps).
         Map<UUID, Integer> partnerPoints = partnerRankCaps.isEmpty() ? Map.of()
-                : com.prosperitysmp.npc.town.PartnershipRepository.rankBonusByOwner(c, day, partnerRankCaps);
+                : PartnershipRepository.rankBonusByOwner(c, day, partnerRankCaps);
         List<Home> homes = new ArrayList<>();
         for (PropertyRow p : properties) if (p.enabled() && p.owner() != null) {
             List<Integer> free = new ArrayList<>();
@@ -228,7 +233,8 @@ public final class HousingMarketRepository {
         byte[] ownerBytes = rs.getBytes("owner_uuid");
         UUID owner = ownerBytes == null ? null : Uuids.fromBytes(ownerBytes);
         String market = rs.getString("market_id"), kind = rs.getString("class_key"), region = rs.getString("region_id");
-        HousingPolicy.key(market); HousingPolicy.key(kind);
+        HousingPolicy.key(market);
+        HousingPolicy.key(kind);
         int epoch = integer(rs, "ownership_epoch"), capacity = integer(rs, "capacity"), condition = integer(rs, "condition_score");
         long revision = number(rs, "row_version"), reference = number(rs, "reference_rent_cents"), asking = number(rs, "asking_rent_cents");
         int enabled = integer(rs, "enabled");
@@ -236,12 +242,15 @@ public final class HousingMarketRepository {
                 && revision < Long.MAX_VALUE && capacity >= 1 && capacity <= 4 && condition >= 0 && condition <= 100
                 && reference > 0 && reference <= Integer.MAX_VALUE && asking > 0 && asking <= Integer.MAX_VALUE
                 && enabled >= 0 && enabled <= 1, "Invalid housing snapshot property");
-        return new PropertyRow(id, owner, world, region, market, kind, epoch, revision, capacity, reference, asking, condition, enabled == 1);
+        return new PropertyRow(id, owner, world, region, market, kind, epoch, revision, capacity, reference, asking, condition,
+                enabled == 1);
     }
     private static Tenancy tenancy(ResultSet rs) throws SQLException {
-        UUID id = uuid(rs, "tenant_id"); byte[] bytes = rs.getBytes("property_id");
+        UUID id = uuid(rs, "tenant_id");
+        byte[] bytes = rs.getBytes("property_id");
         UUID property = bytes == null ? null : Uuids.fromBytes(bytes);
-        Long rawSlot = nullableLong(rs, "slot"); Integer slot = rawSlot == null ? null : Math.toIntExact(rawSlot);
+        Long rawSlot = nullableLong(rs, "slot");
+        Integer slot = rawSlot == null ? null : Math.toIntExact(rawSlot);
         long revision = number(rs, "row_version");
         require((property == null) == (slot == null) && (slot == null || slot >= 0 && slot < 4)
                 && revision >= 0 && revision < Long.MAX_VALUE, "Invalid housing snapshot tenancy");
@@ -250,7 +259,8 @@ public final class HousingMarketRepository {
                 cooldown == null ? null : day(cooldown));
     }
     private static Policy policy(ResultSet rs) throws SQLException {
-        return new Policy(integer(rs, "server_limit"), integer(rs, "market_limit"), integer(rs, "property_limit"), integer(rs, "cooldown_days"));
+        return new Policy(integer(rs, "server_limit"), integer(rs, "market_limit"), integer(rs, "property_limit"),
+                integer(rs, "cooldown_days"));
     }
     private static LocalDate day(String text) {
         LocalDate day = LocalDate.parse(text);
@@ -259,14 +269,20 @@ public final class HousingMarketRepository {
         return day;
     }
     private static UUID uuid(ResultSet rs, String column) throws SQLException { return Uuids.fromBytes(rs.getBytes(column)); }
-    private static Long nullableLong(ResultSet rs, String column) throws SQLException { long n = rs.getLong(column); return rs.wasNull() ? null : n; }
+    private static Long nullableLong(ResultSet rs, String column) throws SQLException {
+        long n = rs.getLong(column);
+        return rs.wasNull() ? null : n;
+    }
     private static long number(ResultSet rs, String column) throws SQLException {
-        Long n = nullableLong(rs, column); require(n != null, "Missing housing snapshot number"); return n;
+        Long n = nullableLong(rs, column);
+        require(n != null, "Missing housing snapshot number");
+        return n;
     }
     private static int integer(ResultSet rs, String column) throws SQLException { return Math.toIntExact(number(rs, column)); }
     private static void require(boolean valid, String message) throws SQLException { if (!valid) throw new SQLException(message); }
     private static void warnings(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        require(c.getWarnings() == null && ps.getWarnings() == null && (rs == null || rs.getWarnings() == null), "Incomplete housing snapshot query");
+        require(c.getWarnings() == null && ps.getWarnings() == null && (rs == null || rs.getWarnings() == null),
+                "Incomplete housing snapshot query");
     }
     private interface Row<T> { T read(ResultSet rs) throws SQLException; }
     private static <T> List<T> query(Connection c, String sql, int maximum, Row<T> row, Object... args) throws SQLException {
@@ -276,7 +292,9 @@ public final class HousingMarketRepository {
             try (ResultSet rs = ps.executeQuery()) {
                 List<T> result = new ArrayList<>();
                 while (true) {
-                    warnings(c, ps, rs); boolean next = rs.next(); warnings(c, ps, rs);
+                    warnings(c, ps, rs);
+                    boolean next = rs.next();
+                    warnings(c, ps, rs);
                     if (!next) return List.copyOf(result);
                     require(result.size() < maximum, "Housing snapshot exceeds query bound");
                     result.add(row.read(rs));

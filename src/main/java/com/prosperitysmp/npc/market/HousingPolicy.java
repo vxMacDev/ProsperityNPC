@@ -8,8 +8,10 @@ public record HousingPolicy(UUID worldId, String marketId, String classKey, Tier
                             long maxDailyRentCents, int minimumCondition) {
     public enum Tier { STANDARD, PREMIUM }
     public HousingPolicy {
-        Objects.requireNonNull(worldId); Objects.requireNonNull(tier);
-        key(marketId); key(classKey);
+        Objects.requireNonNull(worldId);
+        Objects.requireNonNull(tier);
+        key(marketId);
+        key(classKey);
         if (maxDailyRentCents < 1 || maxDailyRentCents > Integer.MAX_VALUE || minimumCondition < 0 || minimumCondition > 100)
             throw new IllegalArgumentException("Invalid housing eligibility");
     }

@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * A step that changed SQL rows under its leases installs the re-read rows before it releases them
- * (PropertyService.installLeasedRows), plus the reconcile bookkeeping helpers (Codex round 4: F3, F5).
+ * (PropertyService.installLeasedRows), plus the reconcile bookkeeping helpers.
  */
 class LeasedRowInstallTest {
     private static final UUID OWNER = new UUID(2, 1);
@@ -87,7 +87,7 @@ class LeasedRowInstallTest {
         assertEquals(Set.of(leased.propertyId()), out.unsettled());
     }
 
-    // ---- F5 helpers
+    // ---- reconcile bookkeeping helpers
 
     private static OwnershipReconcilePump.Result result(int checked, int failed, boolean cancelled, int deferred) {
         return new OwnershipReconcilePump.Result(checked, 0, 0, 0, failed, cancelled, deferred);
@@ -96,9 +96,9 @@ class LeasedRowInstallTest {
     @Test void aPassThatOnlyDeferredIsNotAReconcile() {
         assertFalse(PropertyService.reconciled(result(0, 0, false, 2)), "only deferred");
         assertTrue(PropertyService.reconciled(result(1, 0, false, 2)), "verified one home");
-        assertTrue(PropertyService.reconciled(result(0, 0, false, 0)), "no deferrals (as before)");
-        assertTrue(PropertyService.reconciled(result(0, 1, false, 0)), "failures alone still count, as before");
-        assertFalse(PropertyService.reconciled(result(3, 0, true, 0)), "cancelled, as before");
+        assertTrue(PropertyService.reconciled(result(0, 0, false, 0)), "no deferrals");
+        assertTrue(PropertyService.reconciled(result(0, 1, false, 0)), "failures alone still count");
+        assertFalse(PropertyService.reconciled(result(3, 0, true, 0)), "cancelled");
     }
 
     @Test void deferredHomesMakeTheScheduledPassWarnAndAreCounted() {
@@ -108,7 +108,7 @@ class LeasedRowInstallTest {
                 PropertyService.reconcileIncompleteText(deferredOnly));
         assertFalse(PropertyService.reconcileIncomplete(result(4, 0, false, 0)));
         assertEquals("ARM reconcile incomplete: verified=4 skipped=0 missing=0 unverified=1",
-                PropertyService.reconcileIncompleteText(result(4, 1, false, 0)), "unchanged wording without deferrals");
+                PropertyService.reconcileIncompleteText(result(4, 1, false, 0)), "no waiting-on-busy-home part without deferrals");
     }
 
     @Test void healthLineNamesHomesWaitingOnABusyHome() {

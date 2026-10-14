@@ -2,6 +2,11 @@ package com.prosperitysmp.npc.economy;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
 import com.prosperitysmp.npc.util.Money;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -50,20 +55,26 @@ public final class PurchaseService implements AutoCloseable {
         this(plugin, purchases, (collection, player) -> Optional.empty());
     }
 
-    /** itemRepairs is asked only when no purchase receipt matches, so purchase receipts read exactly as before. */
+    /** itemRepairs is asked only when no purchase receipt matches, so a purchase receipt always wins. */
     public PurchaseService(ProsperityNpcPlugin plugin, ReceiptReader purchases, ItemReceiptReader itemRepairs) {
         this.plugin = plugin;
-        if(plugin!=null)plugin.trackDatabaseWorker(worker);
+        if (plugin != null) plugin.trackDatabaseWorker(worker);
         this.purchases = purchases;
-        this.itemRepairs = java.util.Objects.requireNonNull(itemRepairs);
+        this.itemRepairs = Objects.requireNonNull(itemRepairs);
     }
 
     /** Receipts remain readable during a hold and after sale, but only by their payer. */
     public void showReceipt(Player player, UUID request) {
         requireMain();
-        if (closed || !player.hasPermission("prosperitynpc.use")) { unavailable(player); return; }
+        if (closed || !player.hasPermission("prosperitynpc.use")) {
+            unavailable(player);
+            return;
+        }
         UUID actor = player.getUniqueId();
-        if (!admit(actor)) { busy(player); return; }
+        if (!admit(actor)) {
+            busy(player);
+            return;
+        }
         try {
             worker.execute(() -> {
                 try {
@@ -80,7 +91,10 @@ public final class PurchaseService implements AutoCloseable {
                     deliver(player, () -> send(player, NamedTextColor.RED, "Receipts are temporarily unavailable. Keep your reference."));
                 } finally { pending.remove(actor); }
             });
-        } catch (RejectedExecutionException full) { pending.remove(actor); busy(player); }
+        } catch (RejectedExecutionException full) {
+            pending.remove(actor);
+            busy(player);
+        }
     }
 
     private boolean admit(UUID actor) {
@@ -114,7 +128,7 @@ public final class PurchaseService implements AutoCloseable {
         send(player, NamedTextColor.GRAY, "/property receipt " + receipt.request().requestId());
     }
     /** Item repair receipt: the incident, the items handed in, the time, no money moved, and the state. */
-    static java.util.List<String> itemLines(ItemRepairRepository.Stored stored) {
+    static List<String> itemLines(ItemRepairRepository.Stored stored) {
         var q = stored.quote();
         String state = switch (stored.state()) {
             case APPLIED -> "Repair done.";
@@ -124,9 +138,9 @@ public final class PurchaseService implements AutoCloseable {
             case AMBIGUOUS -> "Held for a staff check. Do not try again.";
             case INTENT -> "Still being checked.";
         };
-        String when = stored.updatedAt() == null ? "" : " " + java.time.format.DateTimeFormatter.ofPattern("MMM d HH:mm 'UTC'", java.util.Locale.US)
-                .withZone(java.time.ZoneOffset.UTC).format(stored.updatedAt()) + ".";
-        return java.util.List.of("Item repair for problem #" + q.repair().incidentId() + "." + when,
+        String when = stored.updatedAt() == null ? "" : " " + DateTimeFormatter.ofPattern("MMM d HH:mm 'UTC'", Locale.US)
+                .withZone(ZoneOffset.UTC).format(stored.updatedAt()) + ".";
+        return List.of("Item repair for problem #" + q.repair().incidentId() + "." + when,
                 "Items: " + ItemRepairRecipes.describe(q.lines()) + ". No money moved.", state);
     }
     public static void unavailable(Player player) {
@@ -134,8 +148,13 @@ public final class PurchaseService implements AutoCloseable {
     }
     private static void busy(Player player) { send(player, NamedTextColor.GRAY, "Please wait for the current request."); }
     private static void send(Player player, NamedTextColor color, String message) { player.sendMessage(Component.text(message, color)); }
-    private static void requireMain() { if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Purchase admission requires the main thread"); }
+    private static void requireMain() {
+        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Purchase admission requires the main thread");
+    }
     @Override public void close() {
-        closed = true; worker.shutdownNow(); pending.clear(); cooldowns.clear();
+        closed = true;
+        worker.shutdownNow();
+        pending.clear();
+        cooldowns.clear();
     }
 }

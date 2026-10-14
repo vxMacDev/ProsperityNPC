@@ -19,7 +19,7 @@ class PayoutRetirementParentGateTest {
 
     @Test
     void activeOnlyWithTheFlagBothSwitchesAndPaymentsOptedIn() {
-        // Positive control: every gate on.
+        // With every gate on, retirement is active, so the refusals below are real.
         assertTrue(UtilityPaymentRuntime.payoutRetirementActive(Boolean.TRUE, true, true, Boolean.TRUE, null));
         assertTrue(UtilityPaymentRuntime.payoutRetirementActive(Boolean.TRUE, true, true, null, Boolean.TRUE),
                 "payments-enabled unset falls back to the legacy smoke opt-in, as ready() does");
@@ -43,7 +43,7 @@ class PayoutRetirementParentGateTest {
         assertNull(PropertyService.resumeRetirement(Boolean.TRUE, false, HOME, DAY, line -> fail(line)));
         assertNull(PropertyService.resumeRetirement(Boolean.FALSE, true, HOME, DAY, line -> fail(line)));
         assertNull(PropertyService.resumeRetirement(null, false, HOME, DAY, line -> fail(line)));
-        // Positive control: flag and parent on yields a preparation.
+        // With the flag and the parent both on, a preparation is returned, so the nulls above are real.
         assertNotNull(PropertyService.resumeRetirement(Boolean.TRUE, true, HOME, DAY, line -> { }));
     }
 }

@@ -10,7 +10,7 @@ import java.util.Objects;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 
-/** Proposed DEV sample policy only; no production approval, admission or current-state authority. */
+/** Proposed development sample policy only; no production approval, admission or current-state authority. */
 public final class PremiumHousingEligibility {
     public static final String POLICY_VERSION = "premium-housing-dev-v1";
 
@@ -26,7 +26,9 @@ public final class PremiumHousingEligibility {
                          int distinctUtilityBillDays, int incidentAssessedCount, int retentionAssessedCount,
                          OptionalInt operatorScore, OptionalDouble propertyScore) {
         public Result {
-            Objects.requireNonNull(reason); Objects.requireNonNull(operatorScore); Objects.requireNonNull(propertyScore);
+            Objects.requireNonNull(reason);
+            Objects.requireNonNull(operatorScore);
+            Objects.requireNonNull(propertyScore);
             if (eligible != (reason == Reason.ELIGIBLE) || utilityAssessedCount < 0 || distinctUtilityBillDays < 0
                     || distinctUtilityBillDays > utilityAssessedCount || incidentAssessedCount < 0 || retentionAssessedCount < 0
                     || operatorScore.isPresent() != propertyScore.isPresent()
@@ -46,7 +48,9 @@ public final class PremiumHousingEligibility {
     /** Uses actual rates only, with seven distinct utility labels under one exact zone/reset policy. */
     public static Result evaluate(HousingMarketSnapshot.Home home, ServiceAssessment assessment,
                                   ZoneId zone, int resetHour) {
-        Objects.requireNonNull(home); Objects.requireNonNull(assessment); Objects.requireNonNull(zone);
+        Objects.requireNonNull(home);
+        Objects.requireNonNull(assessment);
+        Objects.requireNonNull(zone);
         if (resetHour < 0 || resetHour > 23) throw new IllegalArgumentException("Invalid premium reset hour");
         var utilities = assessment.utilities();
         var incidents = assessment.incidents();

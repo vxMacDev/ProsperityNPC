@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -47,7 +48,9 @@ public final class PublicOccupancySnapshot {
     private record SourceKey(UUID world, String region) { }
 
     private PublicOccupancySnapshot(String json, Instant capturedAt, boolean empty) {
-        this.json = json; this.capturedAt = capturedAt; this.empty = empty;
+        this.json = json;
+        this.capturedAt = capturedAt;
+        this.empty = empty;
     }
 
     public String json() { return json; }
@@ -61,8 +64,8 @@ public final class PublicOccupancySnapshot {
                 || !capturedAt.isBefore(Instant.parse("+10000-01-01T00:00:00Z"))
                 || rows == null || approvals == null
                 || rows.size() > MAX_INPUTS || approvals.size() > MAX_INPUTS) throw invalid();
-        if (rows.stream().anyMatch(java.util.Objects::isNull)
-                || approvals.stream().anyMatch(java.util.Objects::isNull)) throw invalid();
+        if (rows.stream().anyMatch(Objects::isNull)
+                || approvals.stream().anyMatch(Objects::isNull)) throw invalid();
         var rowCopy = List.copyOf(rows);
         var approvalCopy = List.copyOf(approvals);
         var byId = new HashMap<UUID, Row>();

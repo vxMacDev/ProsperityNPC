@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 import static com.prosperitysmp.npc.resident.ResidentProfile.*;
@@ -26,7 +27,7 @@ public final class ResidentCatalogue {
         String name = existingName == null
                 ? FIRST[pick(id, "given-name", FIRST.length)] + " " + HOUSEHOLDS[family] : existingName;
         Occupation job = Occupation.values()[pick(id, "occupation", Occupation.values().length)];
-        String outfit = "resident/v1/" + job.name().toLowerCase(java.util.Locale.ROOT);
+        String outfit = "resident/v1/" + job.name().toLowerCase(Locale.ROOT);
         return new ResidentProfile(id, name, HOUSEHOLDS[family], 1 + pick(id, "generation", 3), job,
                 Means.values()[pick(id, "means", Means.values().length)],
                 LifeStage.values()[pick(id, "life-stage", LifeStage.values().length)],
@@ -35,7 +36,7 @@ public final class ResidentCatalogue {
                 new Wardrobe(outfit + "/everyday", outfit + "/work", outfit + "/leisure"));
     }
 
-    /** Fictional DEV cast; not automatically enrolled or inserted anywhere. */
+    /** The built-in cast of three fictional residents. Calling this does not enroll or insert them anywhere. */
     public static List<ResidentProfile> betaCast() {
         return List.of(
                 authored("mara-vale", "Mara Vale", "Vale", 2, Occupation.RESTORER, Means.STEADY,

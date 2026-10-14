@@ -9,26 +9,37 @@ import java.util.function.BooleanSupplier;
 /** Main-thread cooperative exclusion; not protection against uninstrumented WG writers. */
 public final class OwnershipFence {
     private record Key(UUID world, String region) {
-        Key { Objects.requireNonNull(world); Objects.requireNonNull(region); if (region.isBlank()) throw new IllegalArgumentException("Missing region"); }
+        Key {
+            Objects.requireNonNull(world);
+            Objects.requireNonNull(region);
+            if (region.isBlank()) throw new IllegalArgumentException("Missing region");
+        }
     }
+
     private static final class State {
         long generation;
         int writers;
         Lease lease;
     }
+
     /**
      * The region is held right now by another lease or an ARM write. The only refusal that means "busy";
      * every other IllegalStateException (stopped coordinator, wrong thread) is a coordinator failure.
      */
     public static final class Busy extends IllegalStateException {
         private static final long serialVersionUID = 1L;
-        private Busy() { super("Property is busy"); }
+        private Busy() {
+            super("Property is busy");
+        }
     }
+
     private final Map<Key, State> states = new HashMap<>();
     private final BooleanSupplier mainThread;
     private boolean stopped;
 
-    public OwnershipFence(BooleanSupplier mainThread) { this.mainThread = Objects.requireNonNull(mainThread); }
+    public OwnershipFence(BooleanSupplier mainThread) {
+        this.mainThread = Objects.requireNonNull(mainThread);
+    }
 
     /** ARM hook must wrap the entire synchronous operation with this callback in finally. */
     public Runnable beginWrite(UUID world, String region) {
@@ -53,7 +64,8 @@ public final class OwnershipFence {
 
     /** Acquire only from a freshly captured strict OwnerRead after hook registration is verified. */
     public Lease acquire(ArmAdapter.OwnerRead owner) {
-        check(); Objects.requireNonNull(owner);
+        check();
+        Objects.requireNonNull(owner);
         Key key = new Key(owner.worldId(), owner.regionId());
         State state = states.computeIfAbsent(key, ignored -> new State());
         if (state.writers != 0 || state.lease != null) throw new Busy();
@@ -79,7 +91,10 @@ public final class OwnershipFence {
     }
 
     /** Stop new work without releasing a lease whose worker may still commit. */
-    public void stop() { requireMain(); stopped = true; }
+    public void stop() {
+        requireMain();
+        stopped = true;
+    }
 
     public final class Lease {
         private final Key key;
@@ -88,14 +103,19 @@ public final class OwnershipFence {
         private final long generation;
         private boolean released;
         private Lease(Key key, State state, ArmAdapter.OwnerRead owner) {
-            this.key = key; this.state = state; this.owner = owner; this.generation = state.generation;
+            this.key = key;
+            this.state = state;
+            this.owner = owner;
+            this.generation = state.generation;
         }
+
         public void validate(ArmAdapter.OwnerRead current) {
             check();
             if (released || states.get(key) != state || state.lease != this || state.writers != 0
                     || generation != state.generation || owner == null || !owner.sameIncarnation(current))
                 throw new IllegalStateException("Property authority changed");
         }
+
         /** Call only after the worker has ended and its committed result is reconciled. */
         public void releaseReconciled() {
             requireMain();
@@ -107,6 +127,12 @@ public final class OwnershipFence {
         }
     }
 
-    private void check() { requireMain(); if (stopped) throw new IllegalStateException("Ownership coordinator stopped"); }
-    private void requireMain() { if (!mainThread.getAsBoolean()) throw new IllegalStateException("Ownership fence requires main thread"); }
+    private void check() {
+        requireMain();
+        if (stopped) throw new IllegalStateException("Ownership coordinator stopped");
+    }
+
+    private void requireMain() {
+        if (!mainThread.getAsBoolean()) throw new IllegalStateException("Ownership fence requires main thread");
+    }
 }

@@ -23,7 +23,8 @@ public final class ReadSnapshot implements AutoCloseable {
     }
 
     public static ReadSnapshot open(Database database, Clock clock) throws SQLException {
-        Objects.requireNonNull(database); Objects.requireNonNull(clock);
+        Objects.requireNonNull(database);
+        Objects.requireNonNull(clock);
         Connection c = database.getConnection();
         try {
             c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
@@ -37,15 +38,18 @@ public final class ReadSnapshot implements AutoCloseable {
             }
             return new ReadSnapshot(database, c, at);
         } catch (SQLException | RuntimeException | Error failure) {
-            try (c) { c.rollback(); }
-            catch (SQLException | RuntimeException | Error cleanup) {
+            try (c) {
+                c.rollback();
+            } catch (SQLException | RuntimeException | Error cleanup) {
                 if (cleanup != failure) failure.addSuppressed(cleanup);
             }
             throw failure;
         }
     }
 
-    public Instant capturedAt() { return capturedAt; }
+    public Instant capturedAt() {
+        return capturedAt;
+    }
 
     /** Trusted write-transaction readers borrow only; they never own commit/rollback. */
     public static void requireTransaction(Connection connection) throws SQLException {
@@ -68,6 +72,8 @@ public final class ReadSnapshot implements AutoCloseable {
     @Override public void close() throws SQLException {
         if (closed) return;
         closed = true;
-        try (Connection owned = connection) { owned.rollback(); }
+        try (Connection owned = connection) {
+            owned.rollback();
+        }
     }
 }

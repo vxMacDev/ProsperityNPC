@@ -1,7 +1,7 @@
 package com.prosperitysmp.npc.formulas;
 
 /**
- * Upgrade types with their fixed level costs (§7.6). Costs are configured
+ * Upgrade types with their fixed level costs. Costs are configured
  * integer cents, never {@code getWorth()}. Index 0 is the cost to reach level 1.
  */
 public enum UpgradeType {

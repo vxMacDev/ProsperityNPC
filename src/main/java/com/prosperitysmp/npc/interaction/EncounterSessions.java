@@ -10,36 +10,19 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * Pure encounter admission state. Main-thread-only: every call, including reads and
- * completions, must run on the owning thread. There are deliberately no locks.
+ * Pure encounter admission state. Main thread only, with no locks and no IO.
  *
- * <p>Exactly one ticket per player is either pending or ready. A successful open is
- * already the initial admission: it starts the cooldown and returns a PENDING ticket
- * so the controller starts its initial DB read directly, without calling admit.
- * Only complete changes pending to ready, rotating the token without extending the
- * original expiry. Only admit changes ready to pending, preserving that token for
- * the callback and starting another cooldown. Duplicate actions/callbacks cannot
- * cross these transitions. Backend results still require controller revalidation of
- * player, resident, avatar, world and authorization; this class does not perform IO.
+ * <p>A player has at most one ticket, pending or ready. open starts it pending and starts the cooldown, so the
+ * controller begins its first read without calling admit. complete makes it ready under a new token but keeps the
+ * original expiry. admit makes it pending again under the same token and starts another cooldown. That keeps a
+ * duplicate click or callback from crossing a transition. The controller still revalidates player, resident,
+ * avatar, world and authorization when a backend result arrives.
  *
- * <p>Expiry and cooldown deadlines are exclusive: now equal to expiry is expired;
- * now equal to a cooldown deadline is eligible. Timed calls prune all expired
- * sessions and elapsed cooldowns. Untimed reads describe the last observed state.
- * Callers must supply nondecreasing, nonnegative times, including after clear.
- *
- * <p>Cooldown history has at most twice maxSessions entries. Close, quit and despawn
- * retain live cooldowns; a full history fails closed instead of evicting them.
- * Collision tracking retains issued UUIDs only until their ticket's original
- * expiry, including tokens retired by complete, replacement, close or clear.
- * Collisions within that window fail closed without changing the current ticket.
- * Older tokens are not remembered: the supplier must produce cryptographically
- * unpredictable UUIDs with negligible reuse probability (as UUID.randomUUID does).
- * There is no lifetime issuance limit or ever-joined-player registry.
- *
- * <p>Null inputs (including a null supplied UUID) throw NullPointerException;
- * invalid bounds, negative/regressing times and deadline overflow throw
- * IllegalArgumentException. Supplier exceptions propagate without publishing a
- * replacement. Tracked UUID collisions and exhausted capacity return Optional.empty().
+ * <p>Close, quit and despawn keep live cooldowns, and a full session table or cooldown list refuses new opens rather
+ * than evicting one. Issued tokens are remembered until their ticket's original expiry, and a collision in that
+ * window is refused without changing the current ticket, so the supplier must give unpredictable UUIDs (as
+ * UUID.randomUUID does). Expiry and cooldown deadlines are exclusive, and callers must pass nonnegative,
+ * nondecreasing times. Bad arguments throw; a collision or a full table returns Optional.empty().
  */
 public final class EncounterSessions {
     public record Ticket(UUID playerId, UUID residentId, UUID avatarId, UUID worldId,

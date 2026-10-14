@@ -97,7 +97,7 @@ class CitizensAuthoredSpawnTest {
             var foreign = new ResidentAppearanceCatalogue.Applied(otto, ResidentAppearanceCatalogue.citizensKey(otto), appearance.skin());
             assertNull(h.adapter.spawnAuthored("Otto Marsh", h.location, foreign));
             assertEquals(0, h.createCalls);
-            assertSame(h.npc, h.spawn(), "positive control: a built-in key still spawns");
+            assertSame(h.npc, h.spawn(), "a built-in key still spawns");
         }
     }
 

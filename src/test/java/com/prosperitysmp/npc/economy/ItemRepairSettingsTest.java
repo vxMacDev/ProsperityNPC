@@ -43,7 +43,7 @@ class ItemRepairSettingsTest {
         assertEquals(Set.of(), settings.priceMaterials(), "off: the price book keeps exactly its own list");
         // The shipped recipes match the legacy incident text they replace.
         assertEquals("16 paper + 8 baked_potato", IncidentType.PESTS.itemRepairSpec());
-        // Positive control: turning it on publishes the recipe materials.
+        // With the feature on, the recipe materials are published.
         config.set(ItemRepairSettings.ENABLED, true);
         var on = ItemRepairSettings.load(config::get, STACKS);
         assertTrue(on.active());
@@ -113,7 +113,7 @@ class ItemRepairSettingsTest {
         assertEquals(ItemRepairCopy.OFF, ItemRepairRuntime.admissionRefusal(off, true, true, true));
         config.set(ItemRepairSettings.ENABLED, true);
         var on = ItemRepairSettings.load(config::get, STACKS);
-        assertNull(ItemRepairRuntime.admissionRefusal(on, true, true, true), "positive control: on and ready goes on");
+        assertNull(ItemRepairRuntime.admissionRefusal(on, true, true, true), "on and ready goes on");
         assertEquals(ItemRepairCopy.UNAVAILABLE, ItemRepairRuntime.admissionRefusal(on, false, true, true));
         assertEquals(ItemRepairCopy.UNAVAILABLE, ItemRepairRuntime.admissionRefusal(on, true, false, true));
         assertEquals(ItemRepairCopy.UNAVAILABLE, ItemRepairRuntime.admissionRefusal(on, true, true, false));

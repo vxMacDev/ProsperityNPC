@@ -54,7 +54,11 @@ public final class TenantMood {
     }
 
     public static int billTerm(Bill bill) {
-        return switch (bill) { case PAID -> 5; case UNPAID -> -10; case NONE -> 0; };
+        return switch (bill) {
+            case PAID -> 5;
+            case UNPAID -> -10;
+            case NONE -> 0;
+        };
     }
 
     /** Asking as a percent of reference. Cheaper than reference pleases; dearer annoys. No reference means no signal. */

@@ -2,6 +2,7 @@ package com.prosperitysmp.npc.town;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
@@ -50,7 +51,7 @@ public record TownContract(UUID contractId, UUID playerId, ContractDefinition de
     public boolean open() { return OPEN.contains(status); }
 
     static Instant normalize(Instant at) {
-        Instant result = Objects.requireNonNull(at).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        Instant result = Objects.requireNonNull(at).truncatedTo(ChronoUnit.MILLIS);
         try { result.toEpochMilli(); }
         catch (ArithmeticException e) { throw new IllegalArgumentException("Contract time is outside epoch-millisecond range", e); }
         return result;

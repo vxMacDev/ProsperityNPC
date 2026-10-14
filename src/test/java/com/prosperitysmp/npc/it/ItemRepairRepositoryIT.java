@@ -61,8 +61,9 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Real MariaDB, every registered migration. Item repairs move no money: the same IT runs a cash repair as the
- * positive control for every ledger counter. No Bukkit, Vault or inventory; evidence is supplied as the runtime would.
+ * Real MariaDB, every registered migration. Item repairs move no money. The same IT runs a cash repair to show every
+ * ledger counter can move, so the zero counts mean something. No Bukkit, Vault or inventory; evidence is supplied as
+ * the runtime would supply it.
  */
 @Timeout(60)
 class ItemRepairRepositoryIT {
@@ -208,7 +209,7 @@ class ItemRepairRepositoryIT {
         var delivery = new ItemCustody(UUID.randomUUID(), owner, UUID.randomUUID(), ItemCustody.Source.MERCHANT_GOODS, 4,
                 new CustodyBytes(new byte[]{1, 2}), AT, AT.plusSeconds(900));
         custody.reserve(delivery, AT);
-        assertTrue(repository.begin(quote(), run, AT, COMPLETION).started(), "positive control: a RESERVED offer does not block");
+        assertTrue(repository.begin(quote(), run, AT, COMPLETION).started(), "a RESERVED offer does not block");
         execute("DELETE FROM npc_item_repair_return_plans"); execute("DELETE FROM npc_item_repair_lines");
         execute("DELETE FROM npc_item_repair_collections");
         assertTrue(custody.beginDelivery(delivery, run, AT).newlyStarted());
@@ -230,7 +231,7 @@ class ItemRepairRepositoryIT {
         execute("UPDATE npc_town_contracts SET status='AMBIGUOUS' WHERE contract_id=?", contract);
         assertEquals(Refusal.PLAYER_ITEMS_HELD, repository.begin(quote(), run, AT, COMPLETION).refusal());
         assertEquals(0, count("npc_item_repair_collections"));
-        // Positive control: once settled, the same hand-in starts.
+        // Once settled, the same hand-in starts.
         execute("UPDATE npc_town_contracts SET status='RESOLVED_NOT_CONSUMED', closed_at_millis=? WHERE contract_id=?", at + 5, contract);
         assertTrue(repository.begin(quote(), run, AT, COMPLETION).started());
     }
@@ -245,7 +246,7 @@ class ItemRepairRepositoryIT {
         repository.markAmbiguous(q.collectionId(), owner, run, Uncertainty.TAKE_FAILED);
         assertFalse(custody.beginDelivery(goods, run, AT).newlyStarted(), "AMBIGUOUS holds it too");
         execute("UPDATE npc_item_repair_collections SET state='CANCELLED'");
-        assertTrue(custody.beginDelivery(goods, run, AT).newlyStarted(), "positive control: a closed hand-in releases it");
+        assertTrue(custody.beginDelivery(goods, run, AT).newlyStarted(), "a closed hand-in releases it");
     }
 
     @Test void beginIsRefusedWithReturnsWaitingOrACashRepairInProgress() throws SQLException {
@@ -373,7 +374,7 @@ class ItemRepairRepositoryIT {
         var q = started();
         var settled = repository.settle(q.collectionId(), owner, run, confirmed(q), false, AT, COMPLETION);
         assertEquals(List.of(16, 8), settled.returns().stream().map(ItemCustody::quantity).toList());
-        assertTrue(repository.hasOpenWork(), "positive control: items still to give back");
+        assertTrue(repository.hasOpenWork(), "items still to give back");
         assertEquals(List.of(owner), repository.playersWithPendingReturns(10));
         assertTrue(repository.heldDelivery(owner).isEmpty());
         // The first stack's delivery becomes unclear: every delivery for this player now waits for staff.
@@ -527,7 +528,7 @@ class ItemRepairRepositoryIT {
         var unclear = new ItemCollectionEvidence(owner, q.collectionId(), "a".repeat(64), "b".repeat(64), q.beforeUnits(),
                 confirmed(q).afterUnits(), true, false);
         assertEquals(State.AMBIGUOUS, repository.settle(q.collectionId(), owner, run, unclear, true, AT, COMPLETION).state());
-        assertEquals(java.util.Optional.of(unclear), repository.takeEvidence(q.collectionId()), "positive control: the counts as written");
+        assertEquals(java.util.Optional.of(unclear), repository.takeEvidence(q.collectionId()), "the counts as written");
         assertTrue(repository.takeEvidence(UUID.randomUUID()).isEmpty(), "another hand-in has none");
     }
 
@@ -536,7 +537,7 @@ class ItemRepairRepositoryIT {
         var q = started();
         var first = repository.settle(q.collectionId(), owner, run, confirmed(q), false, AT, COMPLETION).returns().getFirst();
         var waiting = repository.listOpen(10).getFirst();
-        assertEquals(2, waiting.undeliveredReturns(), "positive control: the row is listed");
+        assertEquals(2, waiting.undeliveredReturns(), "the row is listed");
         assertNull(waiting.heldReturn(), "stacks only waiting to be collected are not held");
         assertTrue(custody.beginDelivery(first, run, AT).newlyStarted());
         var started = repository.listOpen(10).getFirst();
@@ -553,7 +554,7 @@ class ItemRepairRepositoryIT {
         var first = heldFirstReturn(custody);
         var shop = goods(1);
         custody.reserve(shop, AT);
-        assertFalse(custody.beginDelivery(shop, run, AT).newlyStarted(), "positive control: the held return stops every delivery");
+        assertFalse(custody.beginDelivery(shop, run, AT).newlyStarted(), "the held return stops every delivery");
         assertEquals(java.util.Optional.of(first.requestNonce()), repository.heldDelivery(owner));
         var binding = repository.returnBinding(first.requestNonce()).orElseThrow();
         assertEquals(0, binding.stackNo());
@@ -656,16 +657,16 @@ class ItemRepairRepositoryIT {
         assertEquals("AMBIGUOUS", scalar("SELECT state FROM npc_item_custody WHERE request_nonce=?", stray));
         assertEquals(0, count("npc_item_custody_resolutions"), "no refusal left a decision behind");
         assertEquals(3, count("npc_item_custody"), "two return stacks and the stray row: no stack was issued");
-        // Positive control: the real held stack still settles.
+        // The real held stack does settle, so the refusals above are real.
         assertNotNull(repository.resolveReturn(first, run, decision, AT).reissued());
     }
 
     // ---- a return whose stored items cannot be read ----------------------------------------------------------
 
     /**
-     * The runtime could not read the first stack's items back. It is held in the database in the same step: AMBIGUOUS
-     * PAYLOAD_UNREADABLE for this run, so every delivery for the player waits, staff see it and the startup alert names it.
-     * Staff gave the items back by hand: RETURNED_BY_STAFF closes it, records the decision and issues nothing again.
+     * The runtime could not read the first stack's items back, so the return is held at once as AMBIGUOUS
+     * (PAYLOAD_UNREADABLE). Every delivery for the player waits, and staff and the startup alert see it.
+     * RETURNED_BY_STAFF closes it, records the decision and issues nothing again.
      */
     @Test void anUnreadableReturnIsHeldAndStaffCloseItAsReturnedByHand() throws SQLException {
         var custody = new ItemCustodyRepository(database);
@@ -673,7 +674,7 @@ class ItemRepairRepositoryIT {
         var first = repository.settle(q.collectionId(), owner, run, confirmed(q), false, AT, COMPLETION).returns().getFirst();
         var shop = goods(9);
         custody.reserve(shop, AT);
-        assertEquals(List.of(owner), repository.playersWithPendingReturns(10), "positive control: the returns are waiting");
+        assertEquals(List.of(owner), repository.playersWithPendingReturns(10), "the returns are waiting");
         var held = custody.holdUnreadableReturn(first, run);
         assertEquals(ItemCustodyRepository.State.AMBIGUOUS, held.state());
         assertEquals(List.of("AMBIGUOUS", ItemCustodyRepository.PAYLOAD_UNREADABLE),
@@ -715,7 +716,7 @@ class ItemRepairRepositoryIT {
         assertThrows(SQLException.class, () -> custody.reconcile(first, run, byHand), "the commerce path never takes it");
         assertEquals(0, count("npc_item_custody_resolutions"));
         assertEquals("AMBIGUOUS", scalar("SELECT state FROM npc_item_custody WHERE request_nonce=?", first.requestNonce()));
-        // Positive control: the same held stack settles with a decision that fits it.
+        // The same held stack does settle with a decision that fits, so the refusals above are real.
         assertEquals(ItemCustodyRepository.State.DELIVERED,
                 repository.resolveReturn(first, run, staff(ItemCustodyRepository.Decision.VERIFIED_DELIVERED, 24), AT).state());
     }
@@ -764,14 +765,14 @@ class ItemRepairRepositoryIT {
         assertEquals(ItemCustodyRepository.State.DELIVERED, custody.holdUnreadableReturn(first, run).state());
         assertEquals(delivered, rows("SELECT state,outcome_code FROM npc_item_custody WHERE request_nonce=?", first.requestNonce()).getFirst());
         assertTrue(repository.heldDelivery(owner).isEmpty());
-        // Positive control: the stack still waiting is held by the same call.
+        // The stack still waiting is held by the same call.
         assertEquals(ItemCustodyRepository.State.AMBIGUOUS, custody.holdUnreadableReturn(returns.get(1), run).state());
     }
 
     /**
-     * Codex re-check: the last waiting return's start commits but the runtime never hears back. A bare started intent is
-     * neither waiting nor held, so the desk would say nothing is waiting while it blocks every delivery. The runtime reads
-     * the row back (not RESERVED, so it began) and holds it as uncertain, which the desk and staff then list.
+     * The last waiting return's start commits but the runtime never hears back. A bare started intent is neither
+     * waiting nor held, so the desk would show nothing while every delivery stays blocked. The runtime reads the row
+     * back, sees it is no longer RESERVED, and holds it as uncertain so the desk and staff list it.
      */
     @Test void aReturnWhoseStartCommittedUnheardIsHeldWhereTheDeskAndStaffSeeIt() throws SQLException {
         var custody = new ItemCustodyRepository(database);
@@ -781,7 +782,7 @@ class ItemRepairRepositoryIT {
         assertTrue(custody.beginDelivery(first, run, AT).newlyStarted());
         custody.recordDelivery(first, run, new com.prosperitysmp.npc.commerce.ItemDeliveryEvidence(owner, first.payload().sha256(),
                 "b".repeat(64), "c".repeat(64), 0, first.quantity(), 0, true));
-        // Positive control: before the start the last stack reads back RESERVED and is offered.
+        // Before the start, the last stack reads back RESERVED and is offered.
         assertEquals(ItemCustodyRepository.State.RESERVED, custody.find(owner, last.requestNonce(), AT).orElseThrow().state());
         assertEquals(List.of(last.requestNonce()), repository.pendingReturns(owner).stream().map(ItemCustody::requestNonce).toList());
         assertTrue(custody.beginDelivery(last, run, AT).newlyStarted(), "committed; the runtime never heard");
@@ -793,7 +794,7 @@ class ItemRepairRepositoryIT {
         assertEquals(java.util.Optional.of(last.requestNonce()), repository.heldDelivery(owner), "now held where staff see it");
     }
 
-    // ---- money: zero rows, with a cash repair as the positive control ---------------------------------------
+    // ---- money: zero rows, with a cash repair showing the counters can move -----------------------------------
 
     @Test void itemRepairWritesNoMoneyRowsWhileACashRepairWritesOneOfEach() throws Exception {
         var before = ledgerCounts();
@@ -802,7 +803,7 @@ class ItemRepairRepositoryIT {
         assertEquals(State.APPLIED, repository.settle(q.collectionId(), owner, run, confirmed(q), true, AT, COMPLETION).state());
         assertEquals(before, ledgerCounts(), "item repair: no economy event, intent, transfer attempt or observation");
         assertArrayEquals(funding, properties.fundingOf(property));
-        // Positive control on a second home: the same counters see the cash repair.
+        // A cash repair on a second home: the same counters do move.
         UUID cashHome = UUID.randomUUID();
         long cashIncident = home(cashHome, owner);
         var purchases = purchases(() -> true);

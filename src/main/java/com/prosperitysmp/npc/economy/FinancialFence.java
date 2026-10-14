@@ -17,14 +17,20 @@ public final class FinancialFence {
     public final class Lease {
         private final UUID id;
         private final String owner;
-        private Lease(UUID id, String owner) { this.id = id; this.owner = owner; }
+        private Lease(UUID id, String owner) {
+            this.id = id;
+            this.owner = owner;
+        }
         public void validate() {
             synchronized (FinancialFence.this) {
                 if (active != this) throw new IllegalStateException("NPC payment lease no longer active");
             }
         }
         public void releaseVerified() {
-            synchronized (FinancialFence.this) { validate(); active = null; }
+            synchronized (FinancialFence.this) {
+                validate();
+                active = null;
+            }
         }
         public UUID id() { return id; }
         public String owner() { return owner; }

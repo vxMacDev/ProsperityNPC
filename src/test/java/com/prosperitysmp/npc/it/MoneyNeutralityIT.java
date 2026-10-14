@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Contracts and partnerships move no money: accept, hand over, start and renew leave every money table as it was.
- * Positive control: one commerce order in the same run does write money rows, so the counters can move.
+ * One commerce order in the same run does write money rows, so the counters can move.
  */
 @Timeout(120)
 class MoneyNeutralityIT extends ContractItBase {
@@ -60,7 +60,7 @@ class MoneyNeutralityIT extends ContractItBase {
         assertEquals(fundingBefore, rows("SELECT * FROM npc_property_funding"), "home funding untouched");
         assertTrue(count("npc_resident_memory") > 3, "the reward is memory only");
 
-        // Positive control: a commerce order in the same database moves the counters.
+        // A commerce order in the same database does move the counters, so the unchanged counts above are real.
         var entry = CommerceCatalogue.entries(ResidentProfile.Occupation.SHOPKEEPER).getFirst();
         UUID nonce = UUID.randomUUID(), reserve = UUID.randomUUID();
         var order = new CommerceOrder(CommerceOrder.idFor(nonce, player, entry.source(), DAY), nonce, player, ELLIS, entry.source(),

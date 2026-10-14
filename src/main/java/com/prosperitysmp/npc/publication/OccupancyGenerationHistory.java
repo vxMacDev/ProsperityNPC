@@ -9,13 +9,13 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * Immutable, private selection metadata: current plus two predecessors. No filesystem or authorization
- * source. The caller owns the current authorization generation, must replace it on configuration change
- * and restart, and must commit metadata atomically before treating a proposed history as published.
- * Retention protection is not permission to serve history; expiry never falls back to a predecessor.
- * This immutable value cannot remember clock observations or revoke references already handed out.
- * The runtime must apply the refresh pump's monotonic expiry/clock-rollback gate on every serve;
- * this class's wall-time eligibility check alone is not a cache, lease or HTTP authorization check.
+ * Immutable, private selection metadata: the current generation plus two predecessors. It touches no
+ * files and grants no authorization: its wall-time eligibility check alone is not a cache, lease or HTTP
+ * authorization check. The caller owns the authorization generation, replaces it on every
+ * configuration change and restart, and commits the metadata atomically before treating a proposed
+ * history as published. Retention protection is not permission to serve a predecessor, and expiry never
+ * falls back to one. This value cannot remember clock observations or revoke what it has handed out, so
+ * the runtime must also apply the refresh pump's monotonic expiry and clock-rollback gate on every serve.
  */
 public final class OccupancyGenerationHistory {
     public record Entry(Receipt receipt, Instant selectedAt, Instant expiresAt) { }
@@ -30,7 +30,9 @@ public final class OccupancyGenerationHistory {
         for (Entry entry : entries) {
             if (entry == null || entry.receipt() == null) throw invalid();
             Receipt r = entry.receipt();
-            validTime(r.capturedAt()); validTime(entry.selectedAt()); validTime(entry.expiresAt());
+            validTime(r.capturedAt());
+            validTime(entry.selectedAt());
+            validTime(entry.expiresAt());
             if (r.sha256() == null || !r.sha256().matches("[0-9a-f]{64}")
                     || !(r.sha256() + ".json").equals(r.name()) || r.bytes() < 1 || r.bytes() > 128 * 1024
                     || r.capturedAt().getNano() % 1_000_000 != 0 || !names.add(r.name())
@@ -55,7 +57,8 @@ public final class OccupancyGenerationHistory {
     public OccupancyGenerationHistory advance(UUID expectedAuthorization, PublicOccupancySnapshot snapshot,
                                               Receipt receipt, Duration maxAge, Instant now) {
         authorized(expectedAuthorization);
-        Objects.requireNonNull(snapshot); Objects.requireNonNull(receipt);
+        Objects.requireNonNull(snapshot);
+        Objects.requireNonNull(receipt);
         validTime(now);
         if (snapshot.isEmpty() || maxAge == null || maxAge.isNegative() || maxAge.isZero())
             throw invalid();
@@ -67,7 +70,10 @@ public final class OccupancyGenerationHistory {
                 || payload.length != receipt.bytes() || !snapshot.capturedAt().equals(receipt.capturedAt()))
             throw invalid();
         Instant expires;
-        try { expires = snapshot.capturedAt().plus(maxAge); validTime(expires); }
+        try {
+            expires = snapshot.capturedAt().plus(maxAge);
+            validTime(expires);
+        }
         catch (RuntimeException invalid) { throw invalid(); }
         if (snapshot.capturedAt().isAfter(now) || !now.isBefore(expires)) throw invalid();
         if (!entries.isEmpty()) {
@@ -90,7 +96,8 @@ public final class OccupancyGenerationHistory {
 
     /** Wall-time eligibility only; caller must also enforce live monotonic expiry and revocation. */
     public Optional<Receipt> current(UUID expectedAuthorization, Instant now) {
-        authorized(expectedAuthorization); validTime(now);
+        authorized(expectedAuthorization);
+        validTime(now);
         if (entries.isEmpty()) return Optional.empty();
         Entry current = entries.getFirst();
         return now.isBefore(current.selectedAt()) || !now.isBefore(current.expiresAt())
@@ -109,7 +116,8 @@ public final class OccupancyGenerationHistory {
     }
 
     private void authorized(UUID expected) {
-        if (!authorizationGeneration.equals(expected)) throw new IllegalArgumentException("Occupancy authorization generation changed");
+        if (!authorizationGeneration.equals(expected))
+            throw new IllegalArgumentException("Occupancy authorization generation changed");
     }
     private static void validTime(Instant time) {
         if (time == null || time.isBefore(Instant.parse("0001-01-01T00:00:00Z"))

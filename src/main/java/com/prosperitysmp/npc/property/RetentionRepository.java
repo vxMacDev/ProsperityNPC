@@ -20,6 +20,8 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -61,8 +63,10 @@ public final class RetentionRepository {
     }
 
     /** Trusted admission revalidation; caller owns the transaction and its captured cutoff. */
-    public RetentionAssessment readInTransaction(Connection c, Instant at, UUID owner, Instant admittedFrom, int horizonDays) throws SQLException {
-        Objects.requireNonNull(owner); Objects.requireNonNull(admittedFrom);
+    public RetentionAssessment readInTransaction(Connection c, Instant at, UUID owner, Instant admittedFrom,
+                                                 int horizonDays) throws SQLException {
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(admittedFrom);
         ReadSnapshot.requireTransaction(c);
         try {
             new RetentionAssessment(owner, at, admittedFrom, horizonDays, List.of());
@@ -92,7 +96,8 @@ public final class RetentionRepository {
             var residentIds = new LinkedHashSet<UUID>();
             var episodes = new LinkedHashSet<Episode>();
             for (Receipt a : admissions) {
-                propertyIds.add(a.request().propertyId()); residentIds.add(a.request().residentId());
+                propertyIds.add(a.request().propertyId());
+                residentIds.add(a.request().residentId());
                 require(episodes.add(new Episode(a.request().residentId(), a.tenancyRevisionAfter())), "Duplicate retention episode");
             }
             Map<UUID, Home> homes = homes(c, propertyIds.stream().toList());
@@ -120,8 +125,8 @@ public final class RetentionRepository {
         require(home.epoch() >= r.ownershipEpoch(), "Retention ownership epoch regressed");
         require(tenant.revision() >= a.tenancyRevisionAfter(), "Retention occupancy revision regressed");
         require(admissions != null, "Retention resident admission history missing");
-        int position = java.util.Collections.binarySearch(admissions, a,
-                java.util.Comparator.comparingLong(Receipt::tenancyRevisionAfter));
+        int position = Collections.binarySearch(admissions, a,
+                Comparator.comparingLong(Receipt::tenancyRevisionAfter));
         require(position >= 0 && admissions.get(position).equals(a), "Retention admission missing from resident history");
         require(tenant.revision() >= admissions.getLast().tenancyRevisionAfter(), "Retention resident admission exceeds current revision");
         if (departure != null && position + 1 < admissions.size()) {
@@ -129,7 +134,7 @@ public final class RetentionRepository {
             require(successor.tenancyRevisionAfter() > departure.occupancyRevisionAfter()
                     && !successor.appliedAt().isBefore(departure.departedAt()), "Retention departure overlaps successor admission");
         }
-        // Histories are validated once per property; epoch is now an exact list index.
+        // Histories are validated once per property, so the epoch is an exact list index here.
         Ownership original = history.get(r.ownershipEpoch());
         Instant handover = r.ownershipEpoch() + 1 < history.size() ? history.get(r.ownershipEpoch() + 1).at() : null;
         require(r.ownerId().equals(original.after()) && !original.at().isAfter(a.appliedAt())
@@ -141,7 +146,8 @@ public final class RetentionRepository {
         } else {
             require(departure.residentId().equals(r.residentId()) && departure.propertyId().equals(r.propertyId())
                     && departure.slot() == r.slot() && departure.occupancyRevisionBefore() == a.tenancyRevisionAfter()
-                    && !departure.departedAt().isBefore(a.appliedAt()) && !departure.departedAt().isAfter(at), "Retention departure binding/time mismatch");
+                    && !departure.departedAt().isBefore(a.appliedAt()) && !departure.departedAt().isAfter(at),
+                    "Retention departure binding/time mismatch");
             require(departure.ownershipEpoch() < history.size(), "Retention departure ownership mismatch");
             Ownership departureOwner = history.get(departure.ownershipEpoch());
             require(Objects.equals(departureOwner.after(), departure.ownerAtDeparture())
@@ -154,7 +160,8 @@ public final class RetentionRepository {
                     "Retention departure revision still occupied");
             occupancyProven = true;
         }
-        var occupancy = tenant.property() == null ? null : new RetentionAssessment.Occupancy(tenant.property(), tenant.slot(), tenant.revision());
+        var occupancy = tenant.property() == null ? null
+                : new RetentionAssessment.Occupancy(tenant.property(), tenant.slot(), tenant.revision());
         if (!occupancyProven) return new Case(a, Outcome.EVIDENCE_GAP, departure, handover, occupancy);
         if (horizon.isAfter(at)) return new Case(a, Outcome.NOT_MATURED, departure, handover, occupancy);
         Instant end = departure != null && departure.departedAt().isBefore(horizon) ? departure.departedAt() : horizon;
@@ -165,11 +172,14 @@ public final class RetentionRepository {
 
     private static Map<UUID, Home> homes(Connection c, List<UUID> ids) throws SQLException {
         var result = new HashMap<UUID, Home>();
-        try (PreparedStatement ps = prepare(c, "SELECT property_id,owner_uuid,ownership_epoch FROM npc_properties WHERE property_id IN (" + marks(ids.size()) + ")", ids.toArray());
+        try (PreparedStatement ps = prepare(c, "SELECT property_id,owner_uuid,ownership_epoch FROM npc_properties "
+                + "WHERE property_id IN (" + marks(ids.size()) + ")", ids.toArray());
              ResultSet rs = ps.executeQuery()) {
             while (next(c, ps, rs)) {
-                int epoch = integer(rs, "ownership_epoch"); require(epoch >= 0, "Invalid retention property epoch");
-                require(result.put(uuid(rs, "property_id", false), new Home(uuid(rs, "owner_uuid", true), epoch)) == null, "Duplicate retention property");
+                int epoch = integer(rs, "ownership_epoch");
+                require(epoch >= 0, "Invalid retention property epoch");
+                require(result.put(uuid(rs, "property_id", false), new Home(uuid(rs, "owner_uuid", true), epoch)) == null,
+                        "Duplicate retention property");
             }
         }
         return result;
@@ -182,9 +192,11 @@ public final class RetentionRepository {
             int count = 0;
             while (next(c, ps, rs)) {
                 require(++count <= 16384, "Retention ownership history exceeds bound");
-                int epoch = integer(rs, "ownership_epoch"); require(epoch >= 0, "Invalid retention history epoch");
+                int epoch = integer(rs, "ownership_epoch");
+                require(epoch >= 0, "Invalid retention history epoch");
                 Instant observed = rs.getObject("observed_at", LocalDateTime.class).toInstant(ZoneOffset.UTC);
-                RetentionAssessment.time(observed); require(!observed.isAfter(at), "Retention ownership observation is in future");
+                RetentionAssessment.time(observed);
+                require(!observed.isAfter(at), "Retention ownership observation is in future");
                 var h = new Ownership(epoch, uuid(rs, "old_owner_uuid", true), uuid(rs, "new_owner_uuid", true), observed);
                 var list = result.computeIfAbsent(uuid(rs, "property_id", false), ignored -> new ArrayList<>());
                 require(list.isEmpty() || list.getLast().epoch() < epoch, "Duplicate retention ownership epoch");
@@ -212,14 +224,17 @@ public final class RetentionRepository {
     }
     private static Map<UUID, Tenant> tenants(Connection c, List<UUID> ids) throws SQLException {
         var result = new HashMap<UUID, Tenant>();
-        try (PreparedStatement ps = prepare(c, "SELECT tenant_id,property_id,slot,row_version FROM npc_tenants WHERE tenant_id IN (" + marks(ids.size()) + ")", ids.toArray());
+        try (PreparedStatement ps = prepare(c, "SELECT tenant_id,property_id,slot,row_version FROM npc_tenants "
+                + "WHERE tenant_id IN (" + marks(ids.size()) + ")", ids.toArray());
              ResultSet rs = ps.executeQuery()) {
             while (next(c, ps, rs)) {
                 UUID property = uuid(rs, "property_id", true);
                 Integer slot = rs.getObject("slot") == null ? null : integer(rs, "slot");
                 long revision = number(rs, "row_version");
-                require(revision >= 0 && (property == null) == (slot == null) && (slot == null || slot >= 0 && slot <= 3), "Invalid retention tenant");
-                require(result.put(uuid(rs, "tenant_id", false), new Tenant(property, slot, revision)) == null, "Duplicate retention tenant");
+                require(revision >= 0 && (property == null) == (slot == null) && (slot == null || slot >= 0 && slot <= 3),
+                        "Invalid retention tenant");
+                require(result.put(uuid(rs, "tenant_id", false), new Tenant(property, slot, revision)) == null,
+                        "Duplicate retention tenant");
             }
         }
         return result;
@@ -227,9 +242,12 @@ public final class RetentionRepository {
     private static Map<Episode, TenancyDeparture> departures(Connection c, List<Episode> keys) throws SQLException {
         var result = new HashMap<Episode, TenancyDeparture>();
         var args = new ArrayList<Object>();
-        for (Episode key : keys) { args.add(key.resident()); args.add(key.revision()); }
+        for (Episode key : keys) {
+            args.add(key.resident());
+            args.add(key.revision());
+        }
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_tenancy_departures WHERE (resident_id,occupancy_revision_before) IN ("
-                + String.join(",", java.util.Collections.nCopies(keys.size(), "(?,?)")) + ")", args.toArray()); ResultSet rs = ps.executeQuery()) {
+                + String.join(",", Collections.nCopies(keys.size(), "(?,?)")) + ")", args.toArray()); ResultSet rs = ps.executeQuery()) {
             while (next(c, ps, rs)) {
                 TenancyDeparture d = TenantRepository.readDeparture(rs);
                 require(result.put(new Episode(d.residentId(), d.occupancyRevisionBefore()), d) == null, "Duplicate retention departure");
@@ -243,7 +261,8 @@ public final class RetentionRepository {
         var result = new HashMap<UUID, List<Receipt>>();
         try (PreparedStatement ps = prepare(c, "SELECT m.*,d.server_limit,d.market_limit,d.property_limit,d.cooldown_days "
                 + "FROM npc_housing_moves m LEFT JOIN npc_housing_days d ON d.economy_day=m.economy_day "
-                + "WHERE m.resident_id IN (" + marks(ids.size()) + ") ORDER BY m.resident_id,m.tenancy_revision_after,m.request_id LIMIT 16385", ids.toArray());
+                + "WHERE m.resident_id IN (" + marks(ids.size()) + ") "
+                + "ORDER BY m.resident_id,m.tenancy_revision_after,m.request_id LIMIT 16385", ids.toArray());
              ResultSet rs = ps.executeQuery()) {
             int count = 0;
             while (next(c, ps, rs)) {
@@ -259,13 +278,15 @@ public final class RetentionRepository {
         return result;
     }
 
-    private static String marks(int size) { return String.join(",", java.util.Collections.nCopies(size, "?")); }
+    private static String marks(int size) { return String.join(",", Collections.nCopies(size, "?")); }
     private static UUID uuid(ResultSet rs, String name, boolean nullable) throws SQLException {
         byte[] bytes = rs.getBytes(name);
         return nullable && bytes == null ? null : Uuids.fromBytes(bytes);
     }
     private static long number(ResultSet rs, String name) throws SQLException {
-        long value = rs.getLong(name); require(!rs.wasNull(), "Missing retention number: " + name); return value;
+        long value = rs.getLong(name);
+        require(!rs.wasNull(), "Missing retention number: " + name);
+        return value;
     }
     private static int integer(ResultSet rs, String name) throws SQLException { return Math.toIntExact(number(rs, name)); }
     private static void require(boolean yes, String message) throws SQLException { if (!yes) throw new SQLException(message); }
@@ -274,15 +295,23 @@ public final class RetentionRepository {
         try {
             ps.setQueryTimeout(5);
             for (int i = 0; i < args.length; i++) {
-                if (args[i] instanceof UUID id) ps.setBytes(i + 1, Uuids.toBytes(id)); else ps.setObject(i + 1, args[i]);
+                if (args[i] instanceof UUID id) ps.setBytes(i + 1, Uuids.toBytes(id));
+                else ps.setObject(i + 1, args[i]);
             }
             return ps;
-        } catch (SQLException | RuntimeException failure) { ps.close(); throw failure; }
+        } catch (SQLException | RuntimeException failure) {
+            ps.close();
+            throw failure;
+        }
     }
     private static void warnings(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        require(c.getWarnings() == null && ps.getWarnings() == null && (rs == null || rs.getWarnings() == null), "Incomplete retention read");
+        require(c.getWarnings() == null && ps.getWarnings() == null && (rs == null || rs.getWarnings() == null),
+                "Incomplete retention read");
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        warnings(c, ps, rs); boolean value = rs.next(); warnings(c, ps, rs); return value;
+        warnings(c, ps, rs);
+        boolean value = rs.next();
+        warnings(c, ps, rs);
+        return value;
     }
 }

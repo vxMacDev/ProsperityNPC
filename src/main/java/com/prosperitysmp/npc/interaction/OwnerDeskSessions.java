@@ -60,6 +60,12 @@ final class OwnerDeskSessions {
     }
     Optional<Ticket> current(UUID actor) { return Optional.ofNullable(current.get(actor)); }
     List<Ticket> all() { return List.copyOf(current.values()); }
-    void quit(UUID actor) { current.remove(actor); cooldowns.remove(actor); }
-    void clear() { current.clear(); cooldowns.clear(); }
+    void quit(UUID actor) {
+        current.remove(actor);
+        cooldowns.remove(actor);
+    }
+    void clear() {
+        current.clear();
+        cooldowns.clear();
+    }
 }

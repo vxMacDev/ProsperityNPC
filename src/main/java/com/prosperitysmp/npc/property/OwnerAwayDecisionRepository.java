@@ -41,7 +41,8 @@ public final class OwnerAwayDecisionRepository {
      * caller never treats an unsaved decision as saved.
      */
     public List<OwnerAway.Choice> recordFirst(LocalDate day, Collection<OwnerAway.Choice> choices) throws SQLException {
-        Objects.requireNonNull(day); Objects.requireNonNull(choices);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(choices);
         if (choices.size() > MAX_ROWS) throw new IllegalArgumentException("Too many owner-away decisions");
         if (choices.isEmpty()) return List.of();
         String today = day.toString();
@@ -57,9 +58,15 @@ public final class OwnerAwayDecisionRepository {
             for (int from = 0; from < keys.size(); from += CHUNK) {
                 var part = keys.subList(from, Math.min(keys.size(), from + CHUNK));
                 var args = new ArrayList<Object>();
-                for (Key k : part) { args.add(today); args.add(k.property()); args.add(k.owner()); args.add(offered.get(k)); }
+                for (Key k : part) {
+                    args.add(today);
+                    args.add(k.property());
+                    args.add(k.owner());
+                    args.add(offered.get(k));
+                }
                 // away=away keeps the stored value: the first decision of the day is never overwritten.
-                try (PreparedStatement ps = prepare(c, "INSERT INTO npc_owner_away_decisions (economy_day,property_id,owner_uuid,away) VALUES "
+                try (PreparedStatement ps = prepare(c,
+                        "INSERT INTO npc_owner_away_decisions (economy_day,property_id,owner_uuid,away) VALUES "
                         + "(?,?,?,?),".repeat(part.size() - 1) + "(?,?,?,?) ON DUPLICATE KEY UPDATE away=away", args.toArray())) {
                     ps.executeUpdate();
                 }
@@ -106,7 +113,11 @@ public final class OwnerAwayDecisionRepository {
             }
             return ps;
         } catch (SQLException failure) {
-            try { ps.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+            try {
+                ps.close();
+            } catch (SQLException close) {
+                failure.addSuppressed(close);
+            }
             throw failure;
         }
     }

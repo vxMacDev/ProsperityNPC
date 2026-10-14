@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -108,7 +109,7 @@ public final class RelationshipMemory {
                 : score >= 12 && positiveDays.size() >= 3 ? Stage.TRUSTED : Stage.ACQUAINTANCE;
         int from = Math.max(0, events.size() - MAX_VISIBLE_MEMORIES);
         List<Event> recent = new ArrayList<>(events.subList(from, events.size()));
-        java.util.Collections.reverse(recent);
+        Collections.reverse(recent);
         return new State(resident, player, stage, score, positiveDays.size(), recent);
     }
 }

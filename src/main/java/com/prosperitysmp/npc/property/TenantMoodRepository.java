@@ -42,12 +42,15 @@ public final class TenantMoodRepository {
      * as they were and their day marker is not advanced, so they simply continue once the owner is back.
      */
     public int updateDay(LocalDate day, int limit, Set<UUID> paused) throws SQLException {
-        Objects.requireNonNull(day); Objects.requireNonNull(paused);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(paused);
         if (limit < 1 || limit > MAX_BATCH) throw new IllegalArgumentException("Invalid mood batch size");
         if (paused.size() > MAX_BATCH) throw new IllegalArgumentException("Too many paused homes");
         String today = day.toString();
         List<Object> args = new ArrayList<>();
-        args.add(today); args.addAll(paused.stream().sorted().toList()); args.add(limit);
+        args.add(today);
+        args.addAll(paused.stream().sorted().toList());
+        args.add(limit);
         String skip = paused.isEmpty() ? "" : " AND t.property_id NOT IN (" + "?,".repeat(paused.size() - 1) + "?)";
         try (Connection c = database.getConnection()) {
             List<Housed> housed = new ArrayList<>();
@@ -87,7 +90,8 @@ public final class TenantMoodRepository {
     /** The resident's stored band, or empty when the resident has no row or has never been updated. */
     public Optional<TenantMood.Band> band(UUID tenant) throws SQLException {
         try (Connection c = database.getConnection();
-             PreparedStatement ps = prepare(c, "SELECT mood FROM npc_tenants WHERE tenant_id=? AND property_id IS NOT NULL AND mood_day IS NOT NULL", tenant);
+             PreparedStatement ps = prepare(c, "SELECT mood FROM npc_tenants "
+                     + "WHERE tenant_id=? AND property_id IS NOT NULL AND mood_day IS NOT NULL", tenant);
              ResultSet rs = ps.executeQuery()) {
             if (!rs.next()) return Optional.empty();
             try { return Optional.of(TenantMood.Band.valueOf(rs.getString(1))); }
@@ -132,7 +136,11 @@ public final class TenantMoodRepository {
             }
             return ps;
         } catch (SQLException failure) {
-            try { ps.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+            try {
+                ps.close();
+            } catch (SQLException close) {
+                failure.addSuppressed(close);
+            }
             throw failure;
         }
     }

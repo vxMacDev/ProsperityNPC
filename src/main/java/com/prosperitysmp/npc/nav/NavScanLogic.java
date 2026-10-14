@@ -4,18 +4,19 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
- * The pure node/edge derivation for a material scan (§10.1), with no world or
- * Bukkit coupling — terrain facts arrive through {@link Terrain}. A node is placed
- * at the standing position above the topmost walkable support in each column that
- * has enough headroom. Cardinal edges connect columns at most {@code maxStep}
- * apart in height; a diagonal edge is added only when both shared orthogonal
- * neighbours are also walkable within step (no corner-cutting through a wall).
+ * Derives nodes and edges for a material scan. Pure: no world or Bukkit access,
+ * terrain facts arrive through {@link Terrain}. A node sits at the standing
+ * position above the topmost walkable support in each column that has enough
+ * headroom. Cardinal edges join columns at most {@code maxStep} apart in height.
+ * A diagonal edge is added only when both shared orthogonal neighbours are also
+ * walkable within step, so a path never cuts a corner through a wall.
  *
- * <p>Material scanning is "a seed, not unquestioned truth": stacked floors and
- * doors are not inferred (one surface per column), and semantic tags are added
- * later by an admin. {@link NavGraphValidator} checks the result before publish.
+ * <p>A scan is only a starting point: stacked floors and doors are not inferred
+ * (one surface per column), and an admin adds semantic tags later.
+ * {@link NavGraphValidator} checks the result before publish.
  */
 public final class NavScanLogic {
 
@@ -24,7 +25,7 @@ public final class NavScanLogic {
         /** True if (x,y,z) is a walkable support block (its material is in the palette). */
         boolean isSupport(int x, int y, int z);
 
-        /** True if (x,y,z) is clear (passable) — used for headroom above a support. */
+        /** True if (x,y,z) is clear (passable): used for headroom above a support. */
         boolean isClear(int x, int y, int z);
     }
 
@@ -39,7 +40,7 @@ public final class NavScanLogic {
         }
     }
 
-    /** Safety bound — districts are small; refuse world-wide scans (§ non-goals). */
+    /** Districts are small, so world-wide scans are refused. */
     public static final long MAX_COLUMNS = 200_000L;
     public static final long MAX_TERRAIN_READS = 4_000_000L;
     public static final int CARDINAL_COST = 10;
@@ -77,7 +78,7 @@ public final class NavScanLogic {
 
     /** Reject before touching Terrain, including integer-loop wrap and unbounded vertical work. */
     public static void validate(Bounds b, int headroom, int maxStep) {
-        java.util.Objects.requireNonNull(b);
+        Objects.requireNonNull(b);
         if (headroom < 1 || headroom > 8 || maxStep < 0 || maxStep > 1) {
             throw new IllegalArgumentException("headroom must be 1..8 and step 0..1");
         }

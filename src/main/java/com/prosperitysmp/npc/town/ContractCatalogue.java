@@ -4,6 +4,7 @@ import com.prosperitysmp.npc.resident.RelationshipMemory;
 import com.prosperitysmp.npc.resident.ResidentCast;
 import com.prosperitysmp.npc.resident.ResidentCatalogue;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -93,7 +94,9 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
     public Map<UUID, Integer> rankCaps() {
         if (!partnershipsEnabled || !rankBonusEnabled) return Map.of();
         var out = new LinkedHashMap<UUID, Integer>();
-        offersByResident.forEach((resident, o) -> { if (o.rankBonusPoints() > 0) out.put(resident, o.rankBonusPoints()); });
+        offersByResident.forEach((resident, o) -> {
+            if (o.rankBonusPoints() > 0) out.put(resident, o.rankBonusPoints());
+        });
         return Map.copyOf(out);
     }
 
@@ -104,13 +107,19 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
 
     /** get reads one config path (null when absent: the shipped default). itemMaterial says a name is a current item. */
     public static ContractCatalogue load(Function<String, Object> get, ResidentCast cast, Predicate<String> itemMaterial) {
-        Objects.requireNonNull(get); Objects.requireNonNull(cast); Objects.requireNonNull(itemMaterial);
+        Objects.requireNonNull(get);
+        Objects.requireNonNull(cast);
+        Objects.requireNonNull(itemMaterial);
         var warnings = new ArrayList<String>();
         boolean contracts = flag(get.apply(P + "enabled"), P + "enabled", warnings);
         boolean partnerships = flag(get.apply(Q + "enabled"), Q + "enabled", warnings);
         boolean contractsHeld = false, partnersHeld = false;
         int perDay = integer(get.apply(P + "per-player-per-day"), 1);
-        if (perDay < 1 || perDay > 3) { warnings.add(P + "per-player-per-day must be 1 to 3; contracts are held off."); contractsHeld = true; perDay = 1; }
+        if (perDay < 1 || perDay > 3) {
+            warnings.add(P + "per-player-per-day must be 1 to 3; contracts are held off.");
+            contractsHeld = true;
+            perDay = 1;
+        }
         boolean survival = safety(get.apply(P + "require-survival"), P + "require-survival", warnings);
         Set<String> worlds = new HashSet<>();
         Object rawWorlds = get.apply(P + "handover-worlds");
@@ -118,15 +127,28 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
             if (!(rawWorlds instanceof List<?> list) || list.size() > MAX_WORLDS
                     || list.stream().anyMatch(w -> !(w instanceof String s) || !s.matches("[A-Za-z0-9_./-]{1,64}"))) {
                 warnings.add(P + "handover-worlds must be a list of world names; contracts and partnerships are held off.");
-                contractsHeld = true; partnersHeld = true;
+                contractsHeld = true;
+                partnersHeld = true;
             } else for (Object w : list) worlds.add((String) w);
         }
         int term = integer(get.apply(Q + "term-days"), 7);
-        if (term < 1 || term > 30) { warnings.add(Q + "term-days must be 1 to 30; partnerships are held off."); partnersHeld = true; term = 7; }
+        if (term < 1 || term > 30) {
+            warnings.add(Q + "term-days must be 1 to 30; partnerships are held off.");
+            partnersHeld = true;
+            term = 7;
+        }
         int window = integer(get.apply(Q + "renew-window-days"), 2);
-        if (window < 1 || window > term) { warnings.add(Q + "renew-window-days must be 1 to term-days; partnerships are held off."); partnersHeld = true; window = 1; }
+        if (window < 1 || window > term) {
+            warnings.add(Q + "renew-window-days must be 1 to term-days; partnerships are held off.");
+            partnersHeld = true;
+            window = 1;
+        }
         int seats = integer(get.apply(Q + "max-partners-per-resident"), 4);
-        if (seats < 1 || seats > 16) { warnings.add(Q + "max-partners-per-resident must be 1 to 16; partnerships are held off."); partnersHeld = true; seats = 4; }
+        if (seats < 1 || seats > 16) {
+            warnings.add(Q + "max-partners-per-resident must be 1 to 16; partnerships are held off.");
+            partnersHeld = true;
+            seats = 4;
+        }
         RelationshipMemory.Stage stage = RelationshipMemory.Stage.TRUSTED;
         Object rawStage = get.apply(Q + "minimum-stage");
         if (rawStage != null) {
@@ -135,11 +157,16 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
                 if (stage == RelationshipMemory.Stage.STRANGER) throw new IllegalArgumentException();
             } catch (IllegalArgumentException invalid) {
                 warnings.add(Q + "minimum-stage must be ACQUAINTANCE, TRUSTED or ESTABLISHED; partnerships are held off.");
-                partnersHeld = true; stage = RelationshipMemory.Stage.TRUSTED;
+                partnersHeld = true;
+                stage = RelationshipMemory.Stage.TRUSTED;
             }
         }
         int minContracts = integer(get.apply(Q + "min-contracts"), 2);
-        if (minContracts < 0 || minContracts > 10) { warnings.add(Q + "min-contracts must be 0 to 10; partnerships are held off."); partnersHeld = true; minContracts = 2; }
+        if (minContracts < 0 || minContracts > 10) {
+            warnings.add(Q + "min-contracts must be 0 to 10; partnerships are held off.");
+            partnersHeld = true;
+            minContracts = 2;
+        }
         boolean rank = flag(get.apply(Q + "rank-bonus-enabled"), Q + "rank-bonus-enabled", warnings);
         int[] skipped = {0};
         var definitions = definitions(get.apply(P + "definitions"), cast, itemMaterial, warnings, skipped);
@@ -151,7 +178,10 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
     private static List<ContractDefinition> definitions(Object raw, ResidentCast cast, Predicate<String> item,
                                                         List<String> warnings, int[] skipped) {
         List<?> list = raw == null ? DEFAULT_DEFINITIONS : raw instanceof List<?> l ? l : null;
-        if (list == null) { warnings.add(P + "definitions is not a list; no contracts are loaded."); return List.of(); }
+        if (list == null) {
+            warnings.add(P + "definitions is not a list; no contracts are loaded.");
+            return List.of();
+        }
         var out = new ArrayList<ContractDefinition>();
         var ids = new HashSet<String>();
         int index = 0;
@@ -194,7 +224,10 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
     private static Map<UUID, PartnerOffer> offers(Object raw, ResidentCast cast, Predicate<String> item,
                                                   List<String> warnings, int[] skipped) {
         List<?> list = raw == null ? DEFAULT_OFFERS : raw instanceof List<?> l ? l : null;
-        if (list == null) { warnings.add(Q + "offers is not a list; no partnership offers are loaded."); return Map.of(); }
+        if (list == null) {
+            warnings.add(Q + "offers is not a list; no partnership offers are loaded.");
+            return Map.of();
+        }
         var out = new LinkedHashMap<UUID, PartnerOffer>();
         int index = 0;
         for (Object entry : list) {
@@ -204,7 +237,8 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
                 UUID resident = resident(map.get("resident"), cast, "resident");
                 if (out.containsKey(resident)) throw new IllegalArgumentException("a second offer for one resident");
                 out.put(resident, new PartnerOffer(resident, material(map.get("material"), item), whole(map.get("quantity"), "quantity"),
-                        whole(map.get("fee-discount-percent"), "fee-discount-percent"), whole(map.get("rank-bonus-points"), "rank-bonus-points"),
+                        whole(map.get("fee-discount-percent"), "fee-discount-percent"),
+                        whole(map.get("rank-bonus-points"), "rank-bonus-points"),
                         text(map.get("pitch"), "pitch")));
             } catch (IllegalArgumentException | ClassCastException invalid) {
                 skipped[0]++;
@@ -223,9 +257,14 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
     }
 
     private static String material(Object raw, Predicate<String> item) {
-        if (!(raw instanceof String name) || !name.matches("[A-Z][A-Z0-9_]{0,63}")) throw new IllegalArgumentException("material is not an item name");
+        if (!(raw instanceof String name) || !name.matches("[A-Z][A-Z0-9_]{0,63}"))
+            throw new IllegalArgumentException("material is not an item name");
         boolean ok;
-        try { ok = item.test(name); } catch (RuntimeException unknown) { ok = false; }
+        try {
+            ok = item.test(name);
+        } catch (RuntimeException unknown) {
+            ok = false;
+        }
         if (!ok) throw new IllegalArgumentException("material " + name + " is not an item");
         return name;
     }
@@ -267,17 +306,26 @@ public record ContractCatalogue(boolean contractsEnabled, boolean partnershipsEn
     private static Map<String, Object> entry(String id, String giver, String recipient, String title, String description,
                                              String material, int quantity, String stage, int minutes) {
         var map = new LinkedHashMap<String, Object>();
-        map.put("id", id); map.put("giver", giver);
+        map.put("id", id);
+        map.put("giver", giver);
         if (recipient != null) map.put("recipient", recipient);
-        map.put("title", title); map.put("description", description); map.put("material", material);
-        map.put("quantity", quantity); map.put("minimum-stage", stage); map.put("duration-minutes", minutes);
-        return java.util.Collections.unmodifiableMap(map);
+        map.put("title", title);
+        map.put("description", description);
+        map.put("material", material);
+        map.put("quantity", quantity);
+        map.put("minimum-stage", stage);
+        map.put("duration-minutes", minutes);
+        return Collections.unmodifiableMap(map);
     }
 
     private static Map<String, Object> offer(String resident, String material, int quantity, int fee, int rank, String pitch) {
         var map = new LinkedHashMap<String, Object>();
-        map.put("resident", resident); map.put("material", material); map.put("quantity", quantity);
-        map.put("fee-discount-percent", fee); map.put("rank-bonus-points", rank); map.put("pitch", pitch);
-        return java.util.Collections.unmodifiableMap(map);
+        map.put("resident", resident);
+        map.put("material", material);
+        map.put("quantity", quantity);
+        map.put("fee-discount-percent", fee);
+        map.put("rank-bonus-points", rank);
+        map.put("pitch", pitch);
+        return Collections.unmodifiableMap(map);
     }
 }

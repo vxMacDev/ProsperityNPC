@@ -21,7 +21,8 @@ public final class PremiumMoveBroadcast {
         String line = line(residentName, marketId);
         if (line == null) return Optional.empty();
         if (any && nowMillis - lastMillis < WINDOW_MILLIS && nowMillis >= lastMillis) return Optional.empty();
-        any = true; lastMillis = nowMillis;
+        any = true;
+        lastMillis = nowMillis;
         return Optional.of(line);
     }
 

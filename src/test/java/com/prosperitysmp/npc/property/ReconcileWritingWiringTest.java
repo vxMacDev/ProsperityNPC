@@ -6,9 +6,9 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Wiring of the Codex round 4 fixes in classes that need a live server (Bukkit) to run, checked in their source:
- * which admissions refuse while the ownership check is writing a home (F1), the install-before-release order of
- * the steps that change a home's SQL row under its lease (F3), and the health and warning lines (F5).
+ * Wiring in classes that need a live server (Bukkit) to run, checked in their source: which admissions refuse
+ * while the ownership check is writing a home, the install-before-release order of the steps that change a home's
+ * SQL row under its lease, and the health and warning lines.
  * The decisions themselves are unit tested (OwnershipReconcilePumpTest, LeasedRowInstallTest).
  */
 class ReconcileWritingWiringTest {

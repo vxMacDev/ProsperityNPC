@@ -62,7 +62,8 @@ final class JournaledTransfer {
      * view cannot cancel an in-flight provider call or release its ownership lock.
      */
     CompletionStage<Receipt> submit(Handle handle, Lease lease) {
-        Objects.requireNonNull(handle); Objects.requireNonNull(lease);
+        Objects.requireNonNull(handle);
+        Objects.requireNonNull(lease);
         if (!occupied.compareAndSet(false, true))
             return CompletableFuture.<Receipt>failedFuture(new IllegalStateException("Transfer busy or recovery required"))
                     .minimalCompletionStage();

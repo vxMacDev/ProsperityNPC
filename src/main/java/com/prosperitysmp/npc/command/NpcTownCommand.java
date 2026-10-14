@@ -7,6 +7,10 @@ import com.prosperitysmp.npc.resident.ResidentProfile;
 import com.prosperitysmp.npc.resident.ResidentRepository;
 import com.prosperitysmp.npc.town.CivicPlacement;
 import com.prosperitysmp.npc.town.CivicPlacementRepository;
+import com.prosperitysmp.npc.town.ContractDefinition;
+import com.prosperitysmp.npc.town.Partnership;
+import com.prosperitysmp.npc.town.PartnershipRepository;
+import com.prosperitysmp.npc.town.TownContractRepository;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -20,6 +24,8 @@ import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.sql.SQLException;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -63,14 +69,23 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
         PARTNERS, PARTNER_END, CONTRACT_RESOLVE }
     /** extra: the further arguments of the staff contract verbs, already checked. */
     record Input(Verb verb, String resident, String district, List<String> extra) {
-        Input(Verb verb, String resident, String district) { this(verb, resident, district, List.of()); }
-        Input { extra = List.copyOf(extra); }
+        Input(Verb verb, String resident, String district) {
+            this(verb, resident, district, List.of());
+        }
+
+        Input {
+            extra = List.copyOf(extra);
+        }
     }
     record Actor(CommandSender login, UUID playerId, UUID worldId, Set<UUID> displayWorlds, String key) {
-        Actor { displayWorlds = Set.copyOf(displayWorlds); }
+        Actor {
+            displayWorlds = Set.copyOf(displayWorlds);
+        }
     }
     record Request(Actor actor, Input input, AtomicReference<Set<UUID>> attempted) {
-        Request(Actor actor, Input input) { this(actor, input, new AtomicReference<>(Set.of())); }
+        Request(Actor actor, Input input) {
+            this(actor, input, new AtomicReference<>(Set.of()));
+        }
 
         void beforeMutation(UUID resident) {
             Set<UUID> next = new HashSet<>(attempted.get());
@@ -79,8 +94,12 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
         }
     }
     record Reply(List<String> lines, Set<UUID> invalidate, NamedTextColor color, String errorType) {
-        Reply { lines = List.copyOf(lines); invalidate = Set.copyOf(invalidate); }
+        Reply {
+            lines = List.copyOf(lines);
+            invalidate = Set.copyOf(invalidate);
+        }
     }
+
     private record Completion(Request request, Reply reply) { }
 
     /** Holds admission through response consumption, not merely SQL completion. */
@@ -93,9 +112,17 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
             return true;
         }
 
-        synchronized void release(Request request) { requests.remove(request.actor().key(), request); }
-        synchronized List<Request> snapshot() { return List.copyOf(requests.values()); }
-        synchronized void clear() { requests.clear(); }
+        synchronized void release(Request request) {
+            requests.remove(request.actor().key(), request);
+        }
+
+        synchronized List<Request> snapshot() {
+            return List.copyOf(requests.values());
+        }
+
+        synchronized void clear() {
+            requests.clear();
+        }
     }
 
     public NpcTownCommand(ProsperityNpcPlugin plugin, CivicPlacementRepository placements,
@@ -134,6 +161,7 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
             send(sender, NamedTextColor.RED, "Place requires an in-game player in the target world.");
             return true;
         }
+
         final Actor actor;
         try {
             Player player = sender instanceof Player p ? p : null;
@@ -226,7 +254,10 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
                 for (ResidentProfile profile : cast.profiles()) {
                     request.beforeMutation(profile.id());
                     if (!admit(request) || closed || Thread.currentThread().isInterrupted()) return cancelled(invalidate);
-                    if (residents.register(profile)) { created++; invalidate.add(profile.id()); }
+                    if (residents.register(profile)) {
+                        created++;
+                        invalidate.add(profile.id());
+                    }
                 }
                 return success("Original catalogue: " + created + " registered, "
                         + (cast.profiles().size() - created) + " unchanged.", invalidate);
@@ -248,7 +279,9 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
                 invalidate.add(resident.id());
                 return success(resident.name() + (changed ? " civic placement disabled." : " has no enabled civic placement."), invalidate);
             }
-            case PARTNERS, PARTNER_END, CONTRACT_RESOLVE -> { return contractStaff(request); }
+            case PARTNERS, PARTNER_END, CONTRACT_RESOLVE -> {
+                return contractStaff(request);
+            }
             case LIST -> {
                 List<ResidentProfile> profiles = residents.list(LIST_LIMIT);
                 Map<UUID, CivicPlacement> visible = new HashMap<>();
@@ -274,12 +307,12 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
      * already recorded. operator_ref is the staff UUID (or "console"). Nothing here returns items or money.
      */
     private Reply contractStaff(Request request) throws Exception {
-        var contracts = new com.prosperitysmp.npc.town.TownContractRepository(plugin.database());
-        var partnerships = new com.prosperitysmp.npc.town.PartnershipRepository(plugin.database());
+        var contracts = new TownContractRepository(plugin.database());
+        var partnerships = new PartnershipRepository(plugin.database());
         var clock = plugin.economyClock();
         var catalogue = plugin.contractCatalogue();
-        java.time.Instant now = java.time.Instant.now();
-        java.time.LocalDate today = clock.dayAt(now);
+        Instant now = Instant.now();
+        LocalDate today = clock.dayAt(now);
         String operator = request.actor().playerId() == null ? "console" : request.actor().playerId().toString();
         switch (request.input().verb()) {
             case PARTNERS -> {
@@ -289,7 +322,7 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
                     if (profile == null) return new Reply(List.of("No matching resident."), Set.of(), NamedTextColor.RED, null);
                     resident = profile.id();
                 }
-                var rows = partnerships.listActive(resident, today, com.prosperitysmp.npc.town.PartnershipRepository.MAX_LIST);
+                var rows = partnerships.listActive(resident, today, PartnershipRepository.MAX_LIST);
                 return new Reply(partnerLines(rows, id -> cast.byId(id).map(ResidentProfile::name).orElse(id.toString()),
                         catalogue.maxPartners()), Set.of(), NamedTextColor.AQUA, null);
             }
@@ -297,9 +330,11 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
                 UUID player = UUID.fromString(request.input().extra().get(0));
                 String caseRef = request.input().extra().get(1);
                 if (!admit(request) || closed) return cancelled(Set.of());
-                var ended = partnerships.end(player, com.prosperitysmp.npc.town.Partnership.EndReason.STAFF_ENDED, now, today);
-                if (ended.isEmpty()) return new Reply(List.of("That player has no active partnership."), Set.of(), NamedTextColor.GRAY, null);
-                plugin.getLogger().info("Staff " + operator + " ended partnership " + ended.get().partnershipId() + " (case " + caseRef + ").");
+                var ended = partnerships.end(player, Partnership.EndReason.STAFF_ENDED, now, today);
+                if (ended.isEmpty())
+                    return new Reply(List.of("That player has no active partnership."), Set.of(), NamedTextColor.GRAY, null);
+                plugin.getLogger().info("Staff " + operator + " ended partnership " + ended.get().partnershipId()
+                        + " (case " + caseRef + ").");
                 return success("Partnership ended for " + player + ". Nothing was refunded. Case " + caseRef + ".", Set.of());
             }
             case CONTRACT_RESOLVE -> {
@@ -311,24 +346,26 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
                 var giver = found.get().definition().giverId();
                 var terms = plugin.partnershipsOn() ? catalogue.partnerOffer(giver).map(catalogue::terms).orElse(null) : null;
                 if (!admit(request) || closed) return cancelled(Set.of());
-                var outcome = contracts.resolve(contractId, consumed ? com.prosperitysmp.npc.town.TownContractRepository.Decision.VERIFIED_CONSUMED
-                        : com.prosperitysmp.npc.town.TownContractRepository.Decision.VERIFIED_NOT_CONSUMED, operator, caseRef, now, today, terms);
+                var outcome = contracts.resolve(contractId, consumed ? TownContractRepository.Decision.VERIFIED_CONSUMED
+                        : TownContractRepository.Decision.VERIFIED_NOT_CONSUMED, operator, caseRef, now, today, terms);
                 plugin.getLogger().info("Staff " + operator + " resolved handover " + contractId + " as "
                         + (consumed ? "consumed" : "not consumed") + " (case " + caseRef + "): " + outcome.code());
                 return switch (outcome.code()) {
                     case RESOLVED_CONSUMED, RESOLVED_NOT_CONSUMED -> success(resolveLine(contractId, consumed, caseRef,
-                            found.get().definition().kind() == com.prosperitysmp.npc.town.ContractDefinition.Kind.PARTNERSHIP,
+                            found.get().definition().kind() == ContractDefinition.Kind.PARTNERSHIP,
                             outcome.partnership().isPresent(), outcome.noPartnership()), Set.of());
-                    case NOT_HELD -> new Reply(List.of("Handover " + contractId + " is not held for review."), Set.of(), NamedTextColor.GRAY, null);
+                    case NOT_HELD -> new Reply(List.of("Handover " + contractId + " is not held for review."), Set.of(),
+                            NamedTextColor.GRAY, null);
                     default -> new Reply(List.of("No handover with that ID."), Set.of(), NamedTextColor.RED, null);
                 };
             }
+
             default -> throw new IllegalStateException("Not a contract verb");
         }
     }
 
     /** "<player> | <resident> | until <day> | seats <used>/<max>", one row per active partnership. */
-    static List<String> partnerLines(List<com.prosperitysmp.npc.town.Partnership> rows, Function<UUID, String> residentName, int max) {
+    static List<String> partnerLines(List<Partnership> rows, Function<UUID, String> residentName, int max) {
         if (rows.isEmpty()) return List.of("No active partnerships.");
         var seats = new HashMap<UUID, Integer>();
         for (var row : rows) seats.merge(row.residentId(), 1, Integer::sum);
@@ -343,7 +380,7 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
      * repository gave for starting none. why is null when nothing was decided by this call (a repeat of an earlier one).
      */
     static String resolveLine(UUID contractId, boolean consumed, String caseRef, boolean partnership, boolean started,
-                              com.prosperitysmp.npc.town.TownContractRepository.NoPartnership why) {
+                              TownContractRepository.NoPartnership why) {
         String line = "Handover " + contractId + " marked " + (consumed ? "consumed" : "not consumed") + ". Case " + caseRef + ".";
         if (consumed && partnership) line += started ? " The partnership is active." : why == null
                 ? " No new partnership started. If this handover was resolved before, the first reply says what happened."
@@ -384,7 +421,10 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
 
     /** Counts one seed pass. A saved profile that differs is kept and reported, never overwritten. */
     public static final class SeedTally {
-        public interface Register { boolean run() throws SQLException; }
+        public interface Register {
+            boolean run() throws SQLException;
+        }
+
         private int registered;
         private int unchanged;
         private final List<String> kept = new ArrayList<>();
@@ -393,8 +433,10 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
         public void record(ResidentProfile profile, Register register) throws SQLException {
             lastRegistered = false;
             try {
-                if (register.run()) { registered++; lastRegistered = true; }
-                else unchanged++;
+                if (register.run()) {
+                    registered++;
+                    lastRegistered = true;
+                } else unchanged++;
             } catch (ResidentRepository.ProfileMismatchException mismatch) {
                 kept.add(profile.name());
             }
@@ -438,7 +480,8 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
             if (first.equals("partners")) {
                 if (args.length > 3) throw new IllegalArgumentException("Unexpected arguments");
                 String resident = args.length == 1 ? null : String.join(" ", Arrays.copyOfRange(args, 1, args.length)).strip();
-                if (resident != null && (resident.isEmpty() || resident.length() > 64 || resident.codePoints().anyMatch(Character::isISOControl)))
+                if (resident != null
+                        && (resident.isEmpty() || resident.length() > 64 || resident.codePoints().anyMatch(Character::isISOControl)))
                     throw new IllegalArgumentException("Invalid resident key");
                 return new Input(Verb.PARTNERS, resident, null);
             }
@@ -457,8 +500,11 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
             if (Set.of("partner_end", "contract_resolve").contains(first)) throw new IllegalArgumentException("Unknown town operation");
         }
         Verb verb;
-        try { verb = args.length == 0 ? Verb.LIST : Verb.valueOf(args[0].toUpperCase(Locale.ROOT)); }
-        catch (IllegalArgumentException invalid) { throw new IllegalArgumentException("Unknown town operation"); }
+        try {
+            verb = args.length == 0 ? Verb.LIST : Verb.valueOf(args[0].toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("Unknown town operation");
+        }
         if (verb == Verb.SEED || verb == Verb.LIST) {
             if (args.length > 1) throw new IllegalArgumentException("Unexpected arguments");
             return new Input(verb, null, null);
@@ -476,7 +522,9 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
         return new Input(verb, resident, district);
     }
 
-    static boolean caseRef(String value) { return value != null && value.matches("[A-Za-z0-9_.:@-]{1,96}"); }
+    static boolean caseRef(String value) {
+        return value != null && value.matches("[A-Za-z0-9_.:@-]{1,96}");
+    }
 
     private boolean authorized(Actor actor, Verb verb) {
         requireMainThread();
@@ -515,7 +563,10 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
                 pending.release(request);
             }
         }
-        if (pending.snapshot().isEmpty() && pump != null) { pump.cancel(); pump = null; }
+        if (pending.snapshot().isEmpty() && pump != null) {
+            pump.cancel();
+            pump = null;
+        }
     }
 
     static void publish(Reply reply, Consumer<UUID> invalidate, BooleanSupplier authorized, Consumer<Reply> deliver) {
@@ -543,7 +594,7 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
         return new Reply(List.of(text), request.attempted().get(), NamedTextColor.RED, errorType(failure));
     }
 
-    /** The log label for a failed request. A profile mismatch still logs as SQLException, as in dev.58. */
+    /** The log label for a failed request. A profile mismatch is logged as SQLException, not under its own class name. */
     static String errorType(Exception failure) {
         return failure instanceof ResidentRepository.ProfileMismatchException ? "SQLException" : failure.getClass().getSimpleName();
     }
@@ -579,8 +630,11 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
         Set<UUID> uncertain = new HashSet<>();
         for (Request request : pending.snapshot()) uncertain.addAll(request.attempted().get());
         for (UUID id : uncertain) {
-            try { renderer.civicChanged(id); }
-            catch (RuntimeException failure) { plugin.getLogger().warning("Town shutdown invalidation requires staff review."); }
+            try {
+                renderer.civicChanged(id);
+            } catch (RuntimeException failure) {
+                plugin.getLogger().warning("Town shutdown invalidation requires staff review.");
+            }
         }
         pending.clear();
         completions.clear();
@@ -606,5 +660,7 @@ public final class NpcTownCommand implements TabExecutor, AutoCloseable {
     }
 
     /** The contract verbs always work; help and tab-complete list them while contracts or partnerships are on. */
-    private boolean contractVerbsShown() { return plugin.contractCatalogue().anyOn(); }
+    private boolean contractVerbsShown() {
+        return plugin.contractCatalogue().anyOn();
+    }
 }

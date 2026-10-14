@@ -26,13 +26,16 @@ public final class HousingDecisionPlan {
     public record HomeRank(RankStatus status, OptionalInt planningOperatorScore, OptionalDouble rankingScore,
                            Set<Component> provisionalComponents) {
         public HomeRank {
-            Objects.requireNonNull(status); Objects.requireNonNull(planningOperatorScore); Objects.requireNonNull(rankingScore);
+            Objects.requireNonNull(status);
+            Objects.requireNonNull(planningOperatorScore);
+            Objects.requireNonNull(rankingScore);
             provisionalComponents = Set.copyOf(provisionalComponents);
             boolean ranked = status == RankStatus.RATED || status == RankStatus.PROVISIONAL;
             if (ranked != planningOperatorScore.isPresent() || ranked != rankingScore.isPresent()
                     || (status == RankStatus.PROVISIONAL) != !provisionalComponents.isEmpty()
                     || planningOperatorScore.isPresent() && (planningOperatorScore.getAsInt() < 25 || planningOperatorScore.getAsInt() > 75)
-                    || rankingScore.isPresent() && (!Double.isFinite(rankingScore.getAsDouble()) || rankingScore.getAsDouble() < 0 || rankingScore.getAsDouble() > 100))
+                    || rankingScore.isPresent() && (!Double.isFinite(rankingScore.getAsDouble()) || rankingScore.getAsDouble() < 0
+                    || rankingScore.getAsDouble() > 100))
                 throw new IllegalArgumentException("Invalid planning rank");
         }
     }
@@ -47,9 +50,12 @@ public final class HousingDecisionPlan {
     private HousingDecisionPlan(HousingMarketSnapshot snapshot, ColdStartPolicy coldStartPolicy,
                                 Map<UUID, ServiceAssessment> evidence, Map<UUID, HomeRank> ranks,
                                 FiniteHousingPlanner.Plan matching, List<HousingMoveRequest> requests) {
-        this.snapshot = snapshot; this.coldStartPolicy = coldStartPolicy;
-        this.evidence = Map.copyOf(evidence); this.ranks = Map.copyOf(ranks);
-        this.matching = matching; this.requests = List.copyOf(requests);
+        this.snapshot = snapshot;
+        this.coldStartPolicy = coldStartPolicy;
+        this.evidence = Map.copyOf(evidence);
+        this.ranks = Map.copyOf(ranks);
+        this.matching = matching;
+        this.requests = List.copyOf(requests);
     }
 
     /** Advertising points, plus partner points while both flags are on, capped at 12. Zero with advertising rank off. */
@@ -86,7 +92,8 @@ public final class HousingDecisionPlan {
                                               ColdStartPolicy coldStartPolicy, boolean premiumEnabled,
                                               ZoneId zone, int resetHour, boolean advertisingRankEnabled,
                                               boolean partnerRankEnabled) {
-        Objects.requireNonNull(snapshot); Objects.requireNonNull(coldStartPolicy);
+        Objects.requireNonNull(snapshot);
+        Objects.requireNonNull(coldStartPolicy);
         Map<UUID, ServiceAssessment> evidence = Map.copyOf(assessments);
         var owners = new HashSet<UUID>();
         for (var home : snapshot.homes()) owners.add(home.ownerId());
@@ -99,7 +106,8 @@ public final class HousingDecisionPlan {
                     || from != null && !from.equals(assessment.windowFrom())
                     || horizon != null && horizon != assessment.retention().horizonDays())
                 throw new IllegalArgumentException("Housing service scope or calendar mismatch");
-            from = assessment.windowFrom(); horizon = assessment.retention().horizonDays();
+            from = assessment.windowFrom();
+            horizon = assessment.retention().horizonDays();
         }
         var ranks = new HashMap<UUID, HomeRank>();
         var homes = new ArrayList<FiniteHousingPlanner.Home>();
@@ -117,7 +125,8 @@ public final class HousingDecisionPlan {
             var origin = participant.origin();
             if (participant.status() != HousingMarketSnapshot.Status.OCCUPIED || origin == null
                     || participant.member().policy().tier() != HousingPolicy.Tier.PREMIUM
-                    || snapshot.admissions().stream().anyMatch(a -> a.request().residentId().equals(participant.member().residentId()))) continue;
+                    || snapshot.admissions().stream()
+                            .anyMatch(a -> a.request().residentId().equals(participant.member().residentId()))) continue;
             HomeRank source = ranks.get(origin.propertyId());
             // Missing/review evidence cannot be used to manufacture a favourable score difference.
             if (source == null || source.status() != RankStatus.RATED) continue;
@@ -144,7 +153,8 @@ public final class HousingDecisionPlan {
         if (review) return new HomeRank(RankStatus.SERVICE_REVIEW, OptionalInt.empty(), OptionalDouble.empty(), Set.of());
         if (!missing.isEmpty() && policy == ColdStartPolicy.HOLD_UNRATED)
             return new HomeRank(RankStatus.UNRATED_HELD, OptionalInt.empty(), OptionalDouble.empty(), Set.of());
-        // Owner-approved decision prior ONLY: known component rates still count. Public evidence stays unchanged.
+        // Owner-approved decision prior only: a missing component rate counts as 0.5, known rates still count.
+        // Public evidence stays unchanged.
         int operator = PropertyFormulas.operatorScore(assessment.utilities().onTimeRate().orElse(0.5),
                 assessment.incidents().onTimeRate().orElse(0.5), assessment.retention().retentionRate().orElse(0.5));
         double score = PropertyFormulas.propertyScore(home.condition(), PropertyFormulas.facilitiesScore(home.effectiveFacilities()),
@@ -155,7 +165,8 @@ public final class HousingDecisionPlan {
 
     /** One identity per resident/day, independent of process, iteration order, selected home or retry. */
     public static UUID requestId(LocalDate day, UUID resident) {
-        Objects.requireNonNull(day); Objects.requireNonNull(resident);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(resident);
         if (day.getYear() < 1 || day.getYear() > 9999) throw new IllegalArgumentException("Housing request day out of range");
         return UUID.nameUUIDFromBytes(("prosperitynpc:standard-admission:v1|" + day + "|" + resident).getBytes(StandardCharsets.UTF_8));
     }

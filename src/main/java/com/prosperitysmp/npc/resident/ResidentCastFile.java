@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Strict reader for plugins/ProsperityNPC/residents.yml. Read once at full startup and only while
@@ -42,7 +43,7 @@ public final class ResidentCastFile {
             "means", "life-stage", "temperament", "preference");
     private static final Set<String> OPTIONAL = Set.of("lines");
     private static final Set<String> LINE_KEYS = Set.of("greeting", "about", "home");
-    private static final java.util.regex.Pattern KEY = java.util.regex.Pattern.compile("[a-z0-9][a-z0-9-]{1,31}");
+    private static final Pattern KEY = Pattern.compile("[a-z0-9][a-z0-9-]{1,31}");
     private static final String MERGE_KEY = "<<";
 
     private ResidentCastFile() { }

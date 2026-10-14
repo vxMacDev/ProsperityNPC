@@ -17,7 +17,9 @@ public final class HousingCoordinator {
         private Interrupted(HousingDecisionPlan plan, List<HousingMoveRepository.Result> completed,
                             HousingMoveRequest unresolved, Exception cause) {
             super("Housing plan stopped; reconcile unresolved request " + unresolved.requestId(), cause);
-            this.plan = plan; this.completed = List.copyOf(completed); this.unresolved = unresolved;
+            this.plan = plan;
+            this.completed = List.copyOf(completed);
+            this.unresolved = unresolved;
         }
         public HousingDecisionPlan plan() { return plan; }
         public List<HousingMoveRepository.Result> completed() { return completed; }

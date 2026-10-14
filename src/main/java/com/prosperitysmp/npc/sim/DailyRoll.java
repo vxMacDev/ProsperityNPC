@@ -7,11 +7,11 @@ import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 
 /**
- * Deterministic per-(property, economy-day, purpose) rolls. Because a roll is a
- * pure hash of stable inputs plus a per-install seed, a server restart produces
- * the exact same roll — so a landlord can never restart to reroll a bad incident
- * or occupancy outcome ("restarts cannot reroll", §7.4 / §8.3). The install seed
- * makes outcomes unpredictable to players without persisting every roll.
+ * Deterministic per-(property, economy-day, purpose) rolls. A roll is a pure hash
+ * of stable inputs plus a per-install seed, so a server restart produces the exact
+ * same roll and a landlord can never restart to reroll a bad incident or occupancy
+ * outcome. The install seed keeps outcomes unpredictable to players without
+ * persisting every roll.
  */
 public final class DailyRoll {
 

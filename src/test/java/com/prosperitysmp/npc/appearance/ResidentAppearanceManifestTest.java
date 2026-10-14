@@ -283,7 +283,7 @@ class ResidentAppearanceManifestTest {
     }
 
     @Test void theBuiltInReaderNeverSkips() {
-        // With residents.yml off the file is read exactly as before: an unknown resident key rejects it.
+        // With residents.yml off, an unknown resident key rejects the file.
         assertThrows(IllegalArgumentException.class,
                 () -> readSynthetic(document(row(KEYS.getFirst()), row("resident/v1/otto-marsh/everyday"))));
     }

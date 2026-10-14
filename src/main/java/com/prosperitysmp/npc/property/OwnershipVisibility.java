@@ -14,15 +14,19 @@ public final class OwnershipVisibility {
     public void verified(UUID id) {
         Objects.requireNonNull(id);
         if (!leases.containsKey(id) && leases.size() >= 512) throw new IllegalStateException("Display lease limit");
-        long now = clock.getAsLong(); leases.put(id, new Lease(now, now));
+        long now = clock.getAsLong();
+        leases.put(id, new Lease(now, now));
     }
     public boolean unavailable(UUID id) {
-        Lease l = leases.get(id); if (l == null) return true;
+        Lease l = leases.get(id);
+        if (l == null) return true;
         long now = clock.getAsLong();
         if (now - l.lastRead < 0 || now - l.verified < 0 || now - l.verified >= LEASE_NANOS) {
-            leases.remove(id); return true;
+            leases.remove(id);
+            return true;
         }
-        leases.put(id, new Lease(l.verified, now)); return false;
+        leases.put(id, new Lease(l.verified, now));
+        return false;
     }
     public void invalidate(UUID id) { leases.remove(id); }
     public void clear() { leases.clear(); }

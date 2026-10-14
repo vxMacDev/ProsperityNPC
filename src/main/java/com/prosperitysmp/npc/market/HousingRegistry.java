@@ -6,6 +6,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -18,7 +19,9 @@ public final class HousingRegistry {
     public static final int MAX_MEMBERS = 512;
     public record Member(UUID residentId, HousingPolicy policy, LocalDate availableSince, long revision, boolean enabled) {
         public Member {
-            Objects.requireNonNull(residentId); Objects.requireNonNull(policy); day(availableSince);
+            Objects.requireNonNull(residentId);
+            Objects.requireNonNull(policy);
+            day(availableSince);
             if (revision < 0 || revision == Long.MAX_VALUE) throw new IllegalArgumentException("Invalid housing revision");
         }
     }
@@ -27,7 +30,9 @@ public final class HousingRegistry {
 
     /** Exact re-import is a no-op, not permission to reset policy, priority, revision, or enabled state. */
     public boolean admit(UUID residentId, HousingPolicy policy, LocalDate availableSince) throws SQLException {
-        Objects.requireNonNull(residentId); Objects.requireNonNull(policy); day(availableSince);
+        Objects.requireNonNull(residentId);
+        Objects.requireNonNull(policy);
+        day(availableSince);
         return transaction(c -> {
             lock(c);
             Optional<Member> prior = find(c, residentId, true);
@@ -37,7 +42,8 @@ public final class HousingRegistry {
                     throw new SQLException("Housing admission payload conflict");
                 return false;
             }
-            try (PreparedStatement ps = prepare(c, "SELECT resident_id FROM npc_resident_profiles WHERE resident_id=? FOR UPDATE", residentId);
+            try (PreparedStatement ps = prepare(c, "SELECT resident_id FROM npc_resident_profiles WHERE resident_id=? FOR UPDATE",
+                    residentId);
                  ResultSet rs = ps.executeQuery()) {
                 if (!next(c, ps, rs) || next(c, ps, rs)) throw new SQLException("Housing requires an existing resident");
             }
@@ -68,7 +74,8 @@ public final class HousingRegistry {
             if (old.revision() != expectedRevision) throw new SQLException("Housing membership changed");
             if (old.enabled() == enabled) return old;
             if (old.revision() >= Long.MAX_VALUE - 1) throw new SQLException("Housing revision exhausted");
-            try (PreparedStatement ps = prepare(c, "UPDATE npc_housing_members SET enabled=?,row_version=row_version+1 WHERE resident_id=? AND row_version=?",
+            try (PreparedStatement ps = prepare(c,
+                    "UPDATE npc_housing_members SET enabled=?,row_version=row_version+1 WHERE resident_id=? AND row_version=?",
                     enabled, residentId, expectedRevision)) { one(c, ps); }
             return new Member(residentId, old.policy(), old.availableSince(), old.revision() + 1, enabled);
         });
@@ -76,7 +83,8 @@ public final class HousingRegistry {
 
     /** Explicit staff policy edit, never an occupied lease rewrite or a cooldown reset. */
     public Member setVacantPolicy(UUID residentId, long expectedRevision, HousingPolicy policy) throws SQLException {
-        Objects.requireNonNull(residentId); Objects.requireNonNull(policy);
+        Objects.requireNonNull(residentId);
+        Objects.requireNonNull(policy);
         return transaction(c -> {
             lock(c);
             Member old = find(c, residentId, true).orElseThrow(() -> new SQLException("Housing member missing"));
@@ -94,7 +102,8 @@ public final class HousingRegistry {
                     """, policy.worldId(), policy.marketId(), policy.classKey(), policy.tier().name(),
                     policy.maxDailyRentCents(), policy.minimumCondition(), residentId, expectedRevision)) { one(c, ps); }
             try (var ps = prepare(c, "UPDATE npc_tenants SET tier=? WHERE tenant_id=? AND property_id IS NULL AND slot IS NULL",
-                    policy.tier().name(), residentId)) { ps.executeUpdate(); warnings(c, ps, null); }
+                    policy.tier().name(), residentId)) { ps.executeUpdate();
+            warnings(c, ps, null); }
             return new Member(residentId, policy, old.availableSince(), old.revision() + 1, old.enabled());
         });
     }
@@ -118,7 +127,8 @@ public final class HousingRegistry {
     }
 
     static Optional<Member> find(Connection c, UUID resident, boolean lock) throws SQLException {
-        try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_housing_members WHERE resident_id=?" + (lock ? " FOR UPDATE" : ""), resident);
+        try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_housing_members WHERE resident_id=?" + (lock ? " FOR UPDATE" : ""),
+                resident);
              ResultSet rs = ps.executeQuery()) {
             if (!next(c, ps, rs)) return Optional.empty();
             Member member = read(rs);
@@ -143,7 +153,7 @@ public final class HousingRegistry {
             HousingPolicy policy = new HousingPolicy(Uuids.fromBytes(rs.getBytes("world_uuid")), rs.getString("market_id"),
                     rs.getString("class_key"), HousingPolicy.Tier.valueOf(rs.getString("tier")), price, condition);
             return new Member(Uuids.fromBytes(rs.getBytes("resident_id")), policy, day, revision, enabled == 1);
-        } catch (IllegalArgumentException | java.time.DateTimeException failure) {
+        } catch (IllegalArgumentException | DateTimeException failure) {
             throw new SQLException("Invalid housing membership", failure);
         }
     }
@@ -166,10 +176,16 @@ public final class HousingRegistry {
                 else ps.setObject(i + 1, values[i]);
             }
             return ps;
-        } catch (SQLException | RuntimeException failure) { ps.close(); throw failure; }
+        } catch (SQLException | RuntimeException failure) {
+            ps.close();
+            throw failure;
+        }
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        warnings(c, ps, rs); boolean present = rs.next(); warnings(c, ps, rs); return present;
+        warnings(c, ps, rs);
+        boolean present = rs.next();
+        warnings(c, ps, rs);
+        return present;
     }
     private static void one(Connection c, PreparedStatement ps) throws SQLException {
         if (ps.executeUpdate() != 1) throw new SQLException("Housing write did not affect one member");
@@ -183,9 +199,17 @@ public final class HousingRegistry {
     private <T> T transaction(Work<T> work) throws SQLException {
         try (Connection c = database.getConnection()) {
             c.setAutoCommit(false);
-            try { T result = work.apply(c); c.commit(); return result; }
+            try {
+                T result = work.apply(c);
+                c.commit();
+                return result;
+            }
             catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }

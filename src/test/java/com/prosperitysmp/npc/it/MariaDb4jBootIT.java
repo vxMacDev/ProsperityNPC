@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Viability probe: confirms MariaDB4j can unpack + boot a real MariaDB on this
  * platform and answer a query through the mariadb-java-client. If this fails, the
- * repository integration suite cannot run here (pivot to another embedded DB).
+ * repository integration suite cannot run here.
  */
 class MariaDb4jBootIT {
 

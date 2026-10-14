@@ -1,7 +1,7 @@
 package com.prosperitysmp.npc.economy;
 
 /**
- * Lifecycle of an economy event (§4):
+ * Lifecycle of an economy event:
  * <pre>
  *   PENDING -&gt; CLAIMED -&gt; PAID
  *                       -&gt; FAILED

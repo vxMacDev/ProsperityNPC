@@ -15,6 +15,7 @@ import com.prosperitysmp.npc.commerce.ItemSaveProof;
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.formulas.IncidentType;
 import com.prosperitysmp.npc.property.Property;
+import java.util.Locale;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
@@ -59,7 +60,7 @@ public final class ItemRepairRuntime {
         public boolean available() { return reason == null && !lines.isEmpty() && priceVersion != null; }
         public String list() { return ItemRepairRecipes.describe(lines); }
         public String typeLabel() {
-            String s = type.name().replace('_', ' ').toLowerCase(java.util.Locale.ROOT);
+            String s = type.name().replace('_', ' ').toLowerCase(Locale.ROOT);
             return Character.toUpperCase(s.charAt(0)) + s.substring(1);
         }
     }
@@ -87,9 +88,17 @@ public final class ItemRepairRuntime {
         Flight(Player player, Property property, OwnershipFence.Lease lease, Preview shown, String priceVersion,
                List<ItemInventoryCustody.Take> takes, List<ItemRepairQuote.Line> lines, List<ItemRepairQuote.ReturnStack> plan,
                BooleanSupplier authorized, Consumer<String> reply, LocalDate quoteDay) {
-            this.player = player; this.property = property; this.lease = lease; this.shown = shown;
-            this.priceVersion = Objects.requireNonNull(priceVersion); this.takes = takes;
-            this.lines = lines; this.plan = plan; this.authorized = authorized; this.reply = reply; this.quoteDay = quoteDay;
+            this.player = player;
+            this.property = property;
+            this.lease = lease;
+            this.shown = shown;
+            this.priceVersion = Objects.requireNonNull(priceVersion);
+            this.takes = takes;
+            this.lines = lines;
+            this.plan = plan;
+            this.authorized = authorized;
+            this.reply = reply;
+            this.quoteDay = quoteDay;
         }
     }
     @FunctionalInterface private interface Work { void run() throws Exception; }
@@ -124,10 +133,12 @@ public final class ItemRepairRuntime {
         playerDataWorld = saveProof.mainWorldFolder(plugin.getServer()).orElse(null);
         days = new EconomyClock(Clock.systemUTC(), ZoneId.of(plugin.getConfig().getString("clock.timezone", "America/Chicago")),
                 plugin.getConfig().getInt("clock.daily-reset-hour", 4));
-        // DEV bot proof only: absent means no delay.
+        // Test hook: delays settlement so a test can stop the server mid hand-in. Absent means no delay.
         settleDelayMillis = Math.clamp(Long.getLong("prosperitynpc.dev.itemRepairSettleDelayMs", 0L), 0L, 30_000L);
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(16), r -> {
-            Thread thread = new Thread(r, "npc-item-repair-sql"); thread.setDaemon(true); return thread;
+            Thread thread = new Thread(r, "npc-item-repair-sql");
+            thread.setDaemon(true);
+            return thread;
         }, new ThreadPoolExecutor.AbortPolicy()) {
             @Override protected void terminated() { drained.complete(null); }
         };
@@ -135,7 +146,11 @@ public final class ItemRepairRuntime {
         try {
             plugin.trackDatabaseWorker(worker);
             scheduled = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-                for (int i = 0; i < 32; i++) { Runnable next = completions.poll(); if (next == null) break; next.run(); }
+                for (int i = 0; i < 32; i++) {
+                    Runnable next = completions.poll();
+                    if (next == null) break;
+                    next.run();
+                }
             }, 1, 1);
             ticker = scheduled;
             submit(() -> {
@@ -149,7 +164,10 @@ public final class ItemRepairRuntime {
                 });
             }, () -> plugin.getLogger().warning("Item repair startup recovery did not finish; item repairs stay held."));
         } catch (RuntimeException | Error failure) {
-            closed = true; if (scheduled != null) scheduled.cancel(); worker.shutdown(); throw failure;
+            closed = true;
+            if (scheduled != null) scheduled.cancel();
+            worker.shutdown();
+            throw failure;
         }
     }
 
@@ -160,13 +178,20 @@ public final class ItemRepairRuntime {
     }
 
     /** Main only: true while this player has items to collect (shown on the desk). */
-    public boolean hasReturnsPending(UUID player) { requireMain(); return returnsPending.contains(player); }
+    public boolean hasReturnsPending(UUID player) {
+        requireMain();
+        return returnsPending.contains(player);
+    }
 
     /** Main only: prices the incident's item list from the live price book. Never charges or takes anything. */
     public Preview preview(long incidentId, String incidentType, long cashCents) {
         requireMain();
         IncidentType type;
-        try { type = IncidentType.valueOf(incidentType); } catch (IllegalArgumentException | NullPointerException unknown) { return null; }
+        try {
+            type = IncidentType.valueOf(incidentType);
+        } catch (IllegalArgumentException | NullPointerException unknown) {
+            return null;
+        }
         var settings = plugin.itemRepairSettings();
         String version = plugin.commercePrices().version();
         if (!settings.active() || cashCents != type.cashRepairCents())
@@ -204,27 +229,61 @@ public final class ItemRepairRuntime {
      * already sent. True means the hand-in started and every later outcome is sent through reply.
      */
     public boolean request(Player player, long incidentId, Preview shown, BooleanSupplier authorized, Consumer<String> reply) {
-        requireMain(); Objects.requireNonNull(player); Objects.requireNonNull(authorized); Objects.requireNonNull(reply);
+        requireMain();
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(authorized);
+        Objects.requireNonNull(reply);
         var settings = plugin.itemRepairSettings();
         String closedReason = admissionRefusal(settings, plugin.killSwitches().isSystemEnabled(), plugin.killSwitches().isEconomyEnabled(),
                 ready() && plugin.armAdapter() != null && plugin.propertyService() != null && plugin.ownershipFence() != null);
-        if (closedReason != null) { reply.accept(closedReason); return false; }
-        if (flight != null) { reply.accept(ItemRepairCopy.HOME_BUSY); return false; }
-        if (returnsPending.contains(player.getUniqueId())) { reply.accept(ItemRepairCopy.RETURNS_FIRST); return false; }
-        if (settings.requireSurvival() && player.getGameMode() != GameMode.SURVIVAL) { reply.accept(ItemRepairCopy.SURVIVAL_ONLY); return false; }
-        if (!inventoryClear(player)) { reply.accept(ItemRepairCopy.CLOSE_INVENTORY); return false; }
-        if (!present(player) || !authorized.getAsBoolean()) { reply.accept(ItemRepairCopy.UNAVAILABLE); return false; }
+        if (closedReason != null) {
+            reply.accept(closedReason);
+            return false;
+        }
+        if (flight != null) {
+            reply.accept(ItemRepairCopy.HOME_BUSY);
+            return false;
+        }
+        if (returnsPending.contains(player.getUniqueId())) {
+            reply.accept(ItemRepairCopy.RETURNS_FIRST);
+            return false;
+        }
+        if (settings.requireSurvival() && player.getGameMode() != GameMode.SURVIVAL) {
+            reply.accept(ItemRepairCopy.SURVIVAL_ONLY);
+            return false;
+        }
+        if (!inventoryClear(player)) {
+            reply.accept(ItemRepairCopy.CLOSE_INVENTORY);
+            return false;
+        }
+        if (!present(player) || !authorized.getAsBoolean()) {
+            reply.accept(ItemRepairCopy.UNAVAILABLE);
+            return false;
+        }
         var owner = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
         Property property = owner == null ? null
                 : plugin.propertyService().findByWorldRegion(owner.worldId(), owner.regionId()).orElse(null);
         if (property == null || !property.enabled() || !player.getUniqueId().equals(property.ownerUuid())) {
-            reply.accept(ItemRepairCopy.NOT_HERE); return false;
+            reply.accept(ItemRepairCopy.NOT_HERE);
+            return false;
         }
-        if (plugin.propertyService().reconcileWriting(property.propertyId())) { reply.accept(ItemRepairCopy.HOME_BUSY); return false; }
-        if (shown == null || shown.incidentId() != incidentId || !shown.available()) { reply.accept(ItemRepairCopy.UNAVAILABLE); return false; }
+        if (plugin.propertyService().reconcileWriting(property.propertyId())) {
+            reply.accept(ItemRepairCopy.HOME_BUSY);
+            return false;
+        }
+        if (shown == null || shown.incidentId() != incidentId || !shown.available()) {
+            reply.accept(ItemRepairCopy.UNAVAILABLE);
+            return false;
+        }
         Preview current = preview(incidentId, shown.type().name(), shown.cashCents());
-        if (current == null || !current.available()) { reply.accept(ItemRepairCopy.UNAVAILABLE); return false; }
-        if (needsMore(current, shown)) { reply.accept(ItemRepairCopy.PRICES_CHANGED); return false; }
+        if (current == null || !current.available()) {
+            reply.accept(ItemRepairCopy.UNAVAILABLE);
+            return false;
+        }
+        if (needsMore(current, shown)) {
+            reply.accept(ItemRepairCopy.PRICES_CHANGED);
+            return false;
+        }
         // Freeze the shown quantities at today's prices: never fewer items than shown, never below the required value.
         var takes = new ArrayList<ItemInventoryCustody.Take>();
         var lines = new ArrayList<ItemRepairQuote.Line>();
@@ -235,33 +294,54 @@ public final class ItemRepairRuntime {
                 var line = shown.lines().get(i);
                 Material material = Material.getMaterial(line.material());
                 int stack = maxStack(line.material());
-                if (material == null || stack < 2) { reply.accept(ItemRepairCopy.UNAVAILABLE); return false; }
+                if (material == null || stack < 2) {
+                    reply.accept(ItemRepairCopy.UNAVAILABLE);
+                    return false;
+                }
                 int inStorage = ItemInventoryCustody.storageUnits(player, material);
-                if (inStorage < line.quantity()) { missing.add(new ItemRepairRecipes.Line(line.material(), line.quantity() - inStorage)); continue; }
+                if (inStorage < line.quantity()) {
+                    missing.add(new ItemRepairRecipes.Line(line.material(), line.quantity() - inStorage));
+                    continue;
+                }
                 long unit = current.lines().get(i).unitCents();
                 takes.add(new ItemInventoryCustody.Take(material, line.quantity()));
                 lines.add(new ItemRepairQuote.Line(line.material(), line.quantity(), unit,
                         new CustodyBytes(ItemInventoryCustody.prototype(material).serializeAsBytes()),
                         ItemInventoryCustody.totalUnits(player, material)));
                 for (int amount : ItemRepairRecipes.chunks(line.quantity(), stack))
-                    plan.add(new ItemRepairQuote.ReturnStack(i, amount, new CustodyBytes(new ItemStack(material, amount).serializeAsBytes())));
+                    plan.add(new ItemRepairQuote.ReturnStack(i, amount,
+                            new CustodyBytes(new ItemStack(material, amount).serializeAsBytes())));
             }
-        } catch (RuntimeException | LinkageError unavailable) { reply.accept(ItemRepairCopy.UNAVAILABLE); return false; }
-        if (!missing.isEmpty()) { reply.accept(ItemRepairCopy.missing(ItemRepairRecipes.describe(missing))); return false; }
+        } catch (RuntimeException | LinkageError unavailable) {
+            reply.accept(ItemRepairCopy.UNAVAILABLE);
+            return false;
+        }
+        if (!missing.isEmpty()) {
+            reply.accept(ItemRepairCopy.missing(ItemRepairRecipes.describe(missing)));
+            return false;
+        }
         final OwnershipFence.Lease lease;
         try {
             var fresh = plugin.armAdapter().ownerReadRegion(property.worldUuid(), property.regionId(), player.getUniqueId()).orElseThrow();
             lease = plugin.ownershipFence().acquire(fresh);
-        } catch (RuntimeException busy) { reply.accept(ItemRepairCopy.HOME_BUSY); return false; }
+        } catch (RuntimeException busy) {
+            reply.accept(ItemRepairCopy.HOME_BUSY);
+            return false;
+        }
         Flight next = new Flight(player, property, lease, shown, current.priceVersion(), List.copyOf(takes), List.copyOf(lines),
                 List.copyOf(plan), authorized, reply, days.today());
         if (!gate.tryHold(player.getUniqueId(), next)) {
-            lease.releaseReconciled(); reply.accept(ItemRepairCopy.HOME_BUSY); return false;
+            lease.releaseReconciled();
+            reply.accept(ItemRepairCopy.HOME_BUSY);
+            return false;
         }
         flight = next;
         // Save before the take so the removal proof has a file to compare the take's own save against.
         try { next.preState = ItemInventoryCustody.saveBeforeTake(player, next.collectionId); }
-        catch (RuntimeException | LinkageError unsaved) { abandonBeforeTake(next, ItemRepairCopy.UNAVAILABLE); return false; }
+        catch (RuntimeException | LinkageError unsaved) {
+            abandonBeforeTake(next, ItemRepairCopy.UNAVAILABLE);
+            return false;
+        }
         reply.accept(ItemRepairCopy.CHECKING);
         submit(() -> begin(next), () -> abandonBeforeTake(next, ItemRepairCopy.UNAVAILABLE));
         return true;
@@ -272,37 +352,56 @@ public final class ItemRepairRuntime {
      * runs the same hand-in with today's item list. The reply says what happened.
      */
     public void requestTyped(Player player, long incidentId, BooleanSupplier authorized, Consumer<String> reply) {
-        requireMain(); Objects.requireNonNull(player); Objects.requireNonNull(authorized); Objects.requireNonNull(reply);
-        if (!plugin.itemRepairSettings().enabled()) { reply.accept(ItemRepairCopy.OFF); return; }
-        if (!ready() || plugin.armAdapter() == null || plugin.propertyService() == null) { reply.accept(ItemRepairCopy.UNAVAILABLE); return; }
+        requireMain();
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(authorized);
+        Objects.requireNonNull(reply);
+        if (!plugin.itemRepairSettings().enabled()) {
+            reply.accept(ItemRepairCopy.OFF);
+            return;
+        }
+        if (!ready() || plugin.armAdapter() == null || plugin.propertyService() == null) {
+            reply.accept(ItemRepairCopy.UNAVAILABLE);
+            return;
+        }
         var owner = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
         Property property = owner == null ? null
                 : plugin.propertyService().findByWorldRegion(owner.worldId(), owner.regionId()).orElse(null);
         if (property == null || !property.enabled() || !player.getUniqueId().equals(property.ownerUuid())) {
-            reply.accept(ItemRepairCopy.NOT_HERE); return;
+            reply.accept(ItemRepairCopy.NOT_HERE);
+            return;
         }
         UUID propertyId = property.propertyId();
         submit(() -> {
             var type = repository.openIncidentType(propertyId, incidentId);
             post(() -> {
                 if (!present(player)) return;
-                if (type.isEmpty()) { reply.accept(ItemRepairCopy.NO_SUCH_PROBLEM); return; }
+                if (type.isEmpty()) {
+                    reply.accept(ItemRepairCopy.NO_SUCH_PROBLEM);
+                    return;
+                }
                 Preview shown = preview(incidentId, type.get().name(), type.get().cashRepairCents());
                 request(player, incidentId, shown, authorized, reply);
             });
-        }, () -> { if (present(player)) reply.accept(ItemRepairCopy.UNAVAILABLE); });
+        }, () -> {
+            if (present(player)) reply.accept(ItemRepairCopy.UNAVAILABLE);
+        });
     }
 
     /** Worker: read back the before-take save, read the incident snapshot, freeze the quote, write INTENT. */
     private void begin(Flight f) throws Exception {
         var baseline = saveProof.baseline(playerDataWorld, f.player.getUniqueId(), f.collectionId,
                 f.lines.stream().map(ItemRepairQuote.Line::prototype).toList());
-        if (baseline.isEmpty()) { post(() -> abandonBeforeTake(f, ItemRepairCopy.UNAVAILABLE)); return; }
+        if (baseline.isEmpty()) {
+            post(() -> abandonBeforeTake(f, ItemRepairCopy.UNAVAILABLE));
+            return;
+        }
         Instant at = Instant.now();
         var repair = repository.currentRepair(f.property.propertyId(), f.player.getUniqueId(), f.property.ownershipEpoch(),
                 f.shown.incidentId(), at, days.dayAt(at), f.quoteDay);
         if (repair.isEmpty() || repair.get().type() != f.shown.type()) {
-            post(() -> abandonBeforeTake(f, ItemRepairCopy.NO_SUCH_PROBLEM)); return;
+            post(() -> abandonBeforeTake(f, ItemRepairCopy.NO_SUCH_PROBLEM));
+            return;
         }
         var settings = plugin.itemRepairSettings();
         long cash = repair.get().cents();
@@ -314,7 +413,8 @@ public final class ItemRepairRuntime {
                     f.property.ownershipEpoch(), f.quoteDay, repair.get(), cash, settings.ratioBps(),
                     ItemRepairRecipes.requiredCents(cash, settings.ratioBps()), value, f.priceVersion, f.lines, f.plan);
         } catch (IllegalArgumentException cheaperThanCash) {
-            post(() -> abandonBeforeTake(f, ItemRepairCopy.PRICES_CHANGED)); return;
+            post(() -> abandonBeforeTake(f, ItemRepairCopy.PRICES_CHANGED));
+            return;
         }
         ItemRepairRepository.Begin begun;
         try { begun = repository.begin(quote, runId, at, days.dayAt(at)); }
@@ -363,12 +463,18 @@ public final class ItemRepairRuntime {
                     refusal = ItemRepairCopy.ITEMS_CHANGED;
             }
         } catch (RuntimeException | LinkageError unclear) { refusal = ItemRepairCopy.UNAVAILABLE; }
-        if (refusal != null) { cancel(f, refusal); return; }
+        if (refusal != null) {
+            cancel(f, refusal);
+            return;
+        }
         f.taken = true;
         ItemCollectionEvidence evidence;
         try { evidence = ItemInventoryCustody.collect(f.player, f.collectionId, f.takes); }
-        catch (RuntimeException | LinkageError unclear) { held(f, ItemRepairRepository.Uncertainty.TAKE_FAILED); return; }
-        // INFO only with the DEV settle delay, so a bot proof can stop the server right after this line.
+        catch (RuntimeException | LinkageError unclear) {
+            held(f, ItemRepairRepository.Uncertainty.TAKE_FAILED);
+            return;
+        }
+        // Logged only with the test delay set, so a test can stop the server right after the take.
         if (settleDelayMillis > 0) plugin.getLogger().info("Item repair " + f.collectionId + ": items taken; proving the save.");
         boolean ownershipStillValid = stillOwned(f);
         var expectations = new ArrayList<ItemSaveProof.Expectation>();
@@ -399,7 +505,8 @@ public final class ItemRepairRuntime {
             case APPLIED -> {
                 try { plugin.propertyService().installLeased(List.of(f.property), reread.orElse(null), "Item repair " + f.collectionId); }
                 catch (RuntimeException cacheFailure) {
-                    plugin.getLogger().warning("Item repair " + f.collectionId + " could not refresh the cached home; the next ownership check does.");
+                    plugin.getLogger().warning("Item repair " + f.collectionId
+                            + " could not refresh the cached home; the next ownership check does.");
                 }
                 finish(f, ItemRepairCopy.done(ItemRepairRecipes.describe(f.quote.lines()), f.collectionId));
             }
@@ -420,8 +527,14 @@ public final class ItemRepairRuntime {
         if (closed) return;
         submit(() -> {
             repository.markAmbiguous(f.collectionId, f.player.getUniqueId(), runId, reason);
-            post(() -> { alertHeld(f.collectionId); finish(f, ItemRepairCopy.held(f.collectionId)); });
-        }, () -> { alertHeld(f.collectionId); finish(f, ItemRepairCopy.held(f.collectionId)); });
+            post(() -> {
+                alertHeld(f.collectionId);
+                finish(f, ItemRepairCopy.held(f.collectionId));
+            });
+        }, () -> {
+            alertHeld(f.collectionId);
+            finish(f, ItemRepairCopy.held(f.collectionId));
+        });
     }
 
     /** Before the take: INTENT becomes CANCELLED for this run. Nothing was taken. */
@@ -431,7 +544,8 @@ public final class ItemRepairRuntime {
             post(() -> finish(f, message));
         }, () -> {
             // The INTENT could not be cancelled: hold it like any unclear hand-in. Still nothing was taken.
-            alertHeld(f.collectionId); finish(f, ItemRepairCopy.held(f.collectionId));
+            alertHeld(f.collectionId);
+            finish(f, ItemRepairCopy.held(f.collectionId));
         });
     }
 
@@ -461,36 +575,48 @@ public final class ItemRepairRuntime {
      * item-repairs off: it needs only the system switch and the database. A full inventory leaves the rest waiting.
      */
     public boolean claimReturns(Player player, Consumer<String> reply) {
-        requireMain(); Objects.requireNonNull(player); Objects.requireNonNull(reply);
+        requireMain();
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(reply);
         var deliveries = delivery.get();
         if (closed || !plugin.killSwitches().isSystemEnabled() || deliveries == null || !deliveries.ready() || !ready) {
-            reply.accept(ItemRepairCopy.UNAVAILABLE); return false;
+            reply.accept(ItemRepairCopy.UNAVAILABLE);
+            return false;
         }
-        if (!claiming.add(player.getUniqueId())) { reply.accept(ItemRepairCopy.HOME_BUSY); return false; }
+        if (!claiming.add(player.getUniqueId())) {
+            reply.accept(ItemRepairCopy.HOME_BUSY);
+            return false;
+        }
         boolean queued = submit(() -> {
             // A held delivery stops every delivery for this player, so say that instead of pointing at the command again.
             var held = repository.heldDelivery(player.getUniqueId());
             var waiting = held.isPresent() ? List.<ItemCustody>of() : repository.pendingReturns(player.getUniqueId());
             post(() -> {
                 if (held.isPresent()) {
-                    returnsPending.remove(player.getUniqueId()); claiming.remove(player.getUniqueId());
+                    returnsPending.remove(player.getUniqueId());
+                    claiming.remove(player.getUniqueId());
                     if (present(player)) reply.accept(ItemRepairCopy.held(held.get()));
                     return;
                 }
                 if (waiting.isEmpty()) {
-                    returnsPending.remove(player.getUniqueId()); claiming.remove(player.getUniqueId());
+                    returnsPending.remove(player.getUniqueId());
+                    claiming.remove(player.getUniqueId());
                     if (present(player)) reply.accept(ItemRepairCopy.NO_RETURNS);
                     return;
                 }
                 deliverNext(player, waiting, 0, reply);
             });
-        }, () -> { claiming.remove(player.getUniqueId()); if (present(player)) reply.accept(ItemRepairCopy.UNAVAILABLE); });
+        }, () -> {
+            claiming.remove(player.getUniqueId());
+            if (present(player)) reply.accept(ItemRepairCopy.UNAVAILABLE);
+        });
         return queued;
     }
 
     /** Main only, read-only staff list: open, held and return-pending hand-ins. */
     public boolean staffList(Consumer<List<String>> reply) {
-        requireMain(); Objects.requireNonNull(reply);
+        requireMain();
+        Objects.requireNonNull(reply);
         return submit(() -> {
             var rows = repository.listOpen(ItemRepairRepository.MAX_SWEEP);
             post(() -> reply.accept(staffLines(rows)));
@@ -526,10 +652,15 @@ public final class ItemRepairRuntime {
 
     private void deliverNext(Player player, List<ItemCustody> waiting, int index, Consumer<String> reply) {
         if (index >= waiting.size()) {
-            claiming.remove(player.getUniqueId()); returnsPending.remove(player.getUniqueId()); return;
+            claiming.remove(player.getUniqueId());
+            returnsPending.remove(player.getUniqueId());
+            return;
         }
         var deliveries = delivery.get();
-        if (closed || deliveries == null || !present(player)) { claiming.remove(player.getUniqueId()); return; }
+        if (closed || deliveries == null || !present(player)) {
+            claiming.remove(player.getUniqueId());
+            return;
+        }
         ItemCustody custody = waiting.get(index);
         String item = itemName(custody);
         // The delivery runtime calls back even after the player left, so the claim always clears and a held return always
@@ -540,15 +671,25 @@ public final class ItemRepairRuntime {
                     if (present(player)) reply.accept(ItemRepairCopy.returned(custody.quantity(), item));
                     deliverNext(player, waiting, index + 1, reply);
                 }
-                case NO_SPACE -> { claiming.remove(player.getUniqueId()); if (present(player)) reply.accept(ItemRepairCopy.MAKE_ROOM); }
+                case NO_SPACE -> {
+                    claiming.remove(player.getUniqueId());
+                    if (present(player)) reply.accept(ItemRepairCopy.MAKE_ROOM);
+                }
                 case HELD -> {
                     // Nothing more can be delivered to this player until staff settle it, so the desk stops offering it.
-                    claiming.remove(player.getUniqueId()); returnsPending.remove(player.getUniqueId());
+                    claiming.remove(player.getUniqueId());
+                    returnsPending.remove(player.getUniqueId());
                     alertHeld(custody.requestNonce());
                     if (present(player)) reply.accept(ItemRepairCopy.held(custody.requestNonce()));
                 }
-                case BUSY -> { claiming.remove(player.getUniqueId()); if (present(player)) reply.accept(ItemRepairCopy.HOME_BUSY); }
-                default -> { claiming.remove(player.getUniqueId()); if (present(player)) reply.accept(ItemRepairCopy.UNAVAILABLE); }
+                case BUSY -> {
+                    claiming.remove(player.getUniqueId());
+                    if (present(player)) reply.accept(ItemRepairCopy.HOME_BUSY);
+                }
+                default -> {
+                    claiming.remove(player.getUniqueId());
+                    if (present(player)) reply.accept(ItemRepairCopy.UNAVAILABLE);
+                }
             }
         });
     }
@@ -585,7 +726,8 @@ public final class ItemRepairRuntime {
     static boolean needsMore(Preview current, Preview shown) {
         if (current.lines().size() != shown.lines().size()) return true;
         for (int i = 0; i < shown.lines().size(); i++) {
-            var now = current.lines().get(i); var then = shown.lines().get(i);
+            var now = current.lines().get(i);
+            var then = shown.lines().get(i);
             if (!now.material().equals(then.material()) || now.quantity() > then.quantity()) return true;
         }
         return false;
@@ -607,22 +749,37 @@ public final class ItemRepairRuntime {
     private boolean submit(Work work, Runnable fail) {
         try {
             worker.execute(() -> {
-                try { work.run(); } catch (Exception failure) { post(fail); }
+                try {
+                    work.run();
+                } catch (Exception failure) {
+                    post(fail);
+                }
             });
             return true;
-        } catch (RuntimeException busy) { fail.run(); return false; }
+        } catch (RuntimeException busy) {
+            fail.run();
+            return false;
+        }
     }
 
     private void post(Runnable action) {
-        if (!closed && !completions.offer(action)) { closed = true; worker.shutdown(); }
+        if (!closed && !completions.offer(action)) {
+            closed = true;
+            worker.shutdown();
+        }
     }
 
     /** An in-flight INTENT is left for startup recovery, never finished on shutdown. The home's lease is kept. */
     public CompletionStage<Void> closeAsync() {
         requireMain();
-        closed = true; ready = false; ticker.cancel();
+        closed = true;
+        ready = false;
+        ticker.cancel();
         if (flight != null) gate.release(flight.player.getUniqueId(), flight);
-        flight = null; claiming.clear(); completions.clear(); worker.shutdown();
+        flight = null;
+        claiming.clear();
+        completions.clear();
+        worker.shutdown();
         return drained.minimalCompletionStage();
     }
 

@@ -6,6 +6,7 @@ import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.formulas.IncidentType;
 import com.prosperitysmp.npc.formulas.UpgradeType;
 import com.prosperitysmp.npc.sim.SimulationLogic;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -49,7 +50,9 @@ public final class IncidentRollRepository {
     public LocalDate today() { return economyClock.today(); }
 
     public Result roll(UUID property, UUID expectedOwner, int expectedEpoch, LocalDate day) throws SQLException {
-        Objects.requireNonNull(property); Objects.requireNonNull(expectedOwner); Objects.requireNonNull(day);
+        Objects.requireNonNull(property);
+        Objects.requireNonNull(expectedOwner);
+        Objects.requireNonNull(day);
         if (expectedEpoch < 0 || day.getYear() < 1 || day.getYear() > 9999)
             throw new IllegalArgumentException("Invalid incident day/epoch");
         try (Connection c = database.getConnection()) {
@@ -64,7 +67,10 @@ public final class IncidentRollRepository {
                 LocalDateTime due = now.plusDays(1);
                 require(now.getYear() >= 1 && due.getYear() <= 9999, "Incident clock out of SQL range");
                 Result prior = prior(c, property, day, p.condition());
-                if (prior != null) { c.commit(); return prior; }
+                if (prior != null) {
+                    c.commit();
+                    return prior;
+                }
                 // Older incident records do not prove that damage was applied atomically. Never adopt them.
                 try (PreparedStatement ps = prepare(c,
                         "SELECT incident_id FROM npc_incidents WHERE property_id=? AND economy_day=? LIMIT 1 FOR UPDATE",
@@ -121,7 +127,11 @@ public final class IncidentRollRepository {
                 c.commit();
                 return new Result(true, outcome, incident, condition);
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }
@@ -226,8 +236,14 @@ public final class IncidentRollRepository {
 
     private static PreparedStatement prepare(Connection c, String sql, Object... values) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); bind(ps, values); return ps; }
-        catch (SQLException | RuntimeException e) { ps.close(); throw e; }
+        try {
+            ps.setQueryTimeout(5);
+            bind(ps, values);
+            return ps;
+        } catch (SQLException | RuntimeException e) {
+            ps.close();
+            throw e;
+        }
     }
     private static void bind(PreparedStatement ps, Object... values) throws SQLException {
         for (int i = 0; i < values.length; i++) {
@@ -240,13 +256,19 @@ public final class IncidentRollRepository {
         warnings(c, ps, null);
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        warnings(c, ps, rs); boolean hasRow = rs.next(); warnings(c, ps, rs); return hasRow;
+        warnings(c, ps, rs);
+        boolean hasRow = rs.next();
+        warnings(c, ps, rs);
+        return hasRow;
     }
     private static long number(ResultSet rs, String column, long min, long max) throws SQLException {
-        java.math.BigDecimal raw = rs.getBigDecimal(column);
+        BigDecimal raw = rs.getBigDecimal(column);
         require(raw != null, "Missing incident numeric field");
-        try { long n = raw.longValueExact(); require(n >= min && n <= max, "Invalid incident numeric field"); return n; }
-        catch (ArithmeticException e) { throw new SQLException("Invalid incident numeric precision", e); }
+        try {
+            long n = raw.longValueExact();
+            require(n >= min && n <= max, "Invalid incident numeric field");
+            return n;
+        } catch (ArithmeticException e) { throw new SQLException("Invalid incident numeric precision", e); }
     }
     private static void warnings(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
         if (c.getWarnings() != null || (ps != null && ps.getWarnings() != null) || (rs != null && rs.getWarnings() != null))

@@ -141,7 +141,7 @@ class RentIsolationIT {
         Function<Property, Optional<String>> armDown = p -> p.propertyId().equals(unreadable)
                 ? Optional.empty() : Optional.of("owner-read:" + p.ownerUuid());
 
-        // Isolation off keeps the original behavior: the whole batch is refused before any SQL.
+        // With isolation off, the whole batch is refused before any SQL.
         assertThrows(IllegalStateException.class, () -> batch(false, armDown));
         assertEquals(0, count("npc_rent_reservations"));
         assertEquals(0, count("npc_economy_events WHERE source='npc-property-rent'"));

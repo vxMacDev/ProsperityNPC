@@ -43,7 +43,10 @@ public final class AccountLinkRepository {
     }
     /** The account's group for a day plus every saved pair that touches the group, for staff and the desk. */
     public record Group(UUID account, List<UUID> members, List<Link> links) {
-        public Group { members = List.copyOf(members); links = List.copyOf(links); }
+        public Group {
+            members = List.copyOf(members);
+            links = List.copyOf(links);
+        }
     }
 
     private final Database database;
@@ -61,8 +64,11 @@ public final class AccountLinkRepository {
      * reserve account is configured.
      */
     public Observed observe(UUID java, UUID bedrock, Source source, Instant at, LocalDate day, UUID reserve) throws SQLException {
-        Objects.requireNonNull(java); Objects.requireNonNull(bedrock); Objects.requireNonNull(source);
-        Objects.requireNonNull(at); Objects.requireNonNull(day);
+        Objects.requireNonNull(java);
+        Objects.requireNonNull(bedrock);
+        Objects.requireNonNull(source);
+        Objects.requireNonNull(at);
+        Objects.requireNonNull(day);
         if (source == Source.STAFF) throw new IllegalArgumentException("Staff links are not saved through observe");
         if (java.equals(bedrock)) throw new IllegalArgumentException("Java and Bedrock accounts must differ");
         if (reserve != null && (reserve.equals(java) || reserve.equals(bedrock)))
@@ -91,7 +97,8 @@ public final class AccountLinkRepository {
                     result = Observed.NEW;
                 } else if (result == Observed.REJOINED) {
                     try (PreparedStatement ps = prepare(c, "UPDATE npc_account_links SET split_effective_day=NULL,split_at=NULL,"
-                            + "split_by=NULL,split_reason=NULL,last_seen_at=GREATEST(last_seen_at,?) WHERE account_low=? AND account_high=?",
+                            + "split_by=NULL,split_reason=NULL,last_seen_at=GREATEST(last_seen_at,?) WHERE account_low=? AND "
+                                    + "account_high=?",
                             stamp, low, high)) {
                         if (ps.executeUpdate() != 1) throw new SQLException("Account link not rejoined");
                     }
@@ -105,22 +112,28 @@ public final class AccountLinkRepository {
                 c.commit();
                 return result;
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }
     }
 
     /**
-     * Staff split. The pair stays saved, and from the next economy day it no longer joins the two accounts, so
-     * today keeps one shared limit. Refused when the pair was never saved or a split is already saved.
-     * The start day is decided inside the save, after the pair's row and npc_rent_mutex are held: the day after
-     * the clock's day at that moment, and never on or before a day already pinned merged. Pins are only written
-     * under the same mutex, so a split that stalls across the daily reset cannot reopen a day that already
-     * shared one limit. Lock order is the pair's row, then the mutex; the rent path takes the mutex and no row.
+     * Staff split. The pair stays saved but stops joining the two accounts from the next economy day, so today
+     * keeps one shared limit. Refused when the pair was never saved or is already split. The start day is chosen
+     * after the pair's row and npc_rent_mutex are held: the day after the clock's day, and never on or before a
+     * day already pinned merged. Pins are only written under that mutex, so a split that stalls across the daily
+     * reset cannot reopen a day that already shared one limit. Lock order: the pair's row, then the mutex (the
+     * rent path takes only the mutex).
      */
     public Split staffSplit(UUID a, UUID b, String actor, String reason, EconomyClock days) throws SQLException {
-        Objects.requireNonNull(a); Objects.requireNonNull(b); Objects.requireNonNull(days);
+        Objects.requireNonNull(a);
+        Objects.requireNonNull(b);
+        Objects.requireNonNull(days);
         if (actor == null || actor.isBlank() || actor.length() > 64) throw new IllegalArgumentException("Invalid split actor");
         if (reason == null || reason.isBlank() || reason.length() > 160) throw new IllegalArgumentException("Invalid split reason");
         if (a.equals(b)) return new Split(SplitOutcome.NOT_LINKED, null);
@@ -148,7 +161,8 @@ public final class AccountLinkRepository {
                     Instant at = days.instant();
                     LocalDate effective = days.dayAt(at).plusDays(1);
                     if (pinned != null && !effective.isAfter(pinned)) effective = pinned.plusDays(1);
-                    try (PreparedStatement ps = prepare(c, "UPDATE npc_account_links SET split_effective_day=?,split_at=?,split_by=?,split_reason=? "
+                    try (PreparedStatement ps = prepare(c,
+                            "UPDATE npc_account_links SET split_effective_day=?,split_at=?,split_by=?,split_reason=? "
                             + "WHERE account_low=? AND account_high=? AND split_effective_day IS NULL",
                             effective.toString(), stamp(at), actor, reason, low, high)) {
                         if (ps.executeUpdate() != 1) throw new SQLException("Account split not saved");
@@ -159,7 +173,11 @@ public final class AccountLinkRepository {
                 c.commit();
                 return result;
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }
@@ -167,15 +185,16 @@ public final class AccountLinkRepository {
 
     /**
      * Owner groups for the rent or appreciation allocation of day, inside the CALLER's transaction (autocommit
-     * off), after it took npc_rent_mutex. flagOn pins day as merged (INSERT IGNORE, never deleted). Then the pin
-     * decides: no pin means every owner is its own group, the old behavior, and nothing else is read. A pin
-     * means the groups of every pair active on day. So turning the flag off mid-day keeps that day merged, and
-     * turning it on merges from the next batch. Appreciation passes the closed day it allocates: with the flag
-     * on during D + 1, D's appreciation pins D and is merged even when D's rent was not. That is stricter.
-     * More than MAX_ACTIVE_LINKS active pairs throws, and the caller's batch reserves nothing.
+     * off), after it took npc_rent_mutex. flagOn pins day as merged (INSERT IGNORE, never deleted), and the pin
+     * decides: no pin means every owner is its own group and nothing else is read; a pin means the groups of
+     * every pair active on day. So turning the flag off mid-day keeps that day merged, and turning it on merges
+     * from the next batch. Appreciation passes the closed day it allocates, so with the flag on during D + 1,
+     * D's appreciation is merged even when D's rent was not. More than MAX_ACTIVE_LINKS active pairs throws,
+     * and the caller's batch reserves nothing.
      */
     public OwnerUnits unitsFor(Connection c, LocalDate day, boolean flagOn) throws SQLException {
-        Objects.requireNonNull(c); Objects.requireNonNull(day);
+        Objects.requireNonNull(c);
+        Objects.requireNonNull(day);
         if (c.getAutoCommit()) throw new SQLException("Account links require caller-owned transaction");
         if (flagOn) {
             try (PreparedStatement ps = prepare(c, "INSERT IGNORE INTO npc_linked_account_days(economy_day) VALUES (?)", day.toString())) {
@@ -208,7 +227,8 @@ public final class AccountLinkRepository {
 
     /** Desk read: how many accounts share account's limit on day (1 with no active links). Caller's connection. */
     public static int groupSize(Connection c, UUID account, LocalDate day) throws SQLException {
-        Objects.requireNonNull(account); Objects.requireNonNull(day);
+        Objects.requireNonNull(account);
+        Objects.requireNonNull(day);
         return OwnerUnits.of(activeEdges(c, day)).members(account).size();
     }
 
@@ -219,7 +239,8 @@ public final class AccountLinkRepository {
 
     /** The account's group on day, and every saved pair touching it (split ones too). Read only. Worker only. */
     public Group show(UUID account, LocalDate day) throws SQLException {
-        Objects.requireNonNull(account); Objects.requireNonNull(day);
+        Objects.requireNonNull(account);
+        Objects.requireNonNull(day);
         try (Connection c = database.getConnection()) {
             c.setAutoCommit(false);
             try {

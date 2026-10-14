@@ -1,11 +1,11 @@
 package com.prosperitysmp.npc.economy;
 
 /**
- * The economy-event source keys (§4) and their direction. TO_PUBLIC events are
+ * The economy-event source keys and their direction. TO_PUBLIC events are
  * paid by CentralBank to a player (faucets: rent, appreciation) and are subject
  * to the daily caps + funding invariant. FROM_PUBLIC events are a player paying
  * CentralBank (sinks: utilities, upgrades, repairs, insurance, eviction) and are
- * not capped — they can only ever reduce net liquidity.
+ * not capped, because they can only ever reduce net liquidity.
  */
 public enum EventSource {
     RENT("npc-property-rent", Direction.TO_PUBLIC),

@@ -22,8 +22,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * The partner rate on real SQL: a quote at the partner rate is re-checked against the CURRENT partnership before any
- * payment. After the partnership ends the same quote is refused and no money row is written. Positive control: the
- * same quote while the partnership is active funds through the unchanged order repository.
+ * payment. After the partnership ends the same quote is refused and no money row is written. While the partnership is
+ * active the same quote funds through the order repository, so the refusal is real.
  */
 @Timeout(120)
 class CommerceOrderPartnerIT extends ContractItBase {
@@ -65,7 +65,7 @@ class CommerceOrderPartnerIT extends ContractItBase {
         var before = data();
         int now = reader.feeDiscountPct(owner, ELLIS, DAY);
         assertEquals(0, now);
-        // Mutation guard: skipping the re-validation lets the stale partner quote through.
+        // Without the re-validation the stale partner quote would pass.
         assertFalse(CommerceRuntime.quoteStillValid(entry, partnerQuote, now, OptionalLong.of(UNIT)),
                 "That quote expired. No payment started; ask for a fresh quote.");
         assertEquals(before, data(), "the refusal writes nothing");
@@ -93,7 +93,7 @@ class CommerceOrderPartnerIT extends ContractItBase {
         orders.recordDebit(handle, new Observation(true, true, dollars, 100.0, 100.0 - dollars, false));
         orders.beginCredit(handle);
         var funded = orders.recordCredit(handle, new Observation(true, true, dollars, 20.0, 20.0 + dollars, false), NOW);
-        // Positive control: the counter can move. Caps and journal behave exactly as for any order.
+        // The order funds and writes money evidence, so the counters can move. Caps and journal work as for any order.
         assertEquals(CommerceOrderRepository.State.FUNDED, funded.state());
         assertTrue(count("npc_commerce_money_evidence") > 0);
         assertEquals(partnerQuote.costCents(), Long.parseLong(scalar("SELECT cost_cents FROM npc_commerce_orders")));
@@ -123,7 +123,7 @@ class CommerceOrderPartnerIT extends ContractItBase {
     }
 
     /**
-     * P2-A: the worker reads a 40% partner rate; staff end the partnership before the main-thread callback runs; the
+     * The worker reads a 40% partner rate; staff end the partnership before the main-thread callback runs; the
      * callback checks the quote against the captured 40%, so it passes. The debit intent re-checks the partnership in
      * its own transaction, so the discounted purchase is refused there and nothing can be debited.
      */
@@ -155,7 +155,7 @@ class CommerceOrderPartnerIT extends ContractItBase {
         refusedAtTheDebit(orders, first, reserved(orders, first, reserve), stillPartner(rates(lowered, true), pct));
         CommerceOrder second = quote(entry.cost(UNIT, pct), DAY);
         refusedAtTheDebit(orders, second, reserved(orders, second, reserve), stillPartner(rates(ON, false), pct));
-        // Positive control: the same check at the lowered rate the player would now be quoted lets the debit start.
+        // The same check at the lowered rate the player would now be quoted lets the debit start, so the refusals above are real.
         CommerceOrder fresh = quote(entry.cost(UNIT, 10), DAY);
         assertTrue(orders.beginDebit(fresh, reserved(orders, fresh, reserve), stillPartner(rates(lowered, true), 10)).newlyStarted());
     }
@@ -172,7 +172,7 @@ class CommerceOrderPartnerIT extends ContractItBase {
                 Map.of("resident", MARA.toString(), "material", "IRON_INGOT", "quantity", 16,
                         "fee-discount-percent", 40, "rank-bonus-points", 0, "pitch", "Mara.")))::get, CAST, name -> true);
         var reader = rates(both, true);
-        assertEquals(40, reader.feeDiscountPct(owner, ELLIS, DAY), "positive control: the Ellis partnership is active");
+        assertEquals(40, reader.feeDiscountPct(owner, ELLIS, DAY), "the Ellis partnership is active");
         assertEquals(new com.prosperitysmp.npc.town.PartnerPerks(40, 0), both.configPerks(MARA), "Mara offers the same rate");
         var mara = CommerceCatalogue.entries(residents.find(MARA).orElseThrow().occupation()).getFirst();
         UUID nonce = UUID.randomUUID();
@@ -183,7 +183,7 @@ class CommerceOrderPartnerIT extends ContractItBase {
         // Built as CommerceRuntime.order builds it: the order's own resident.
         refusedAtTheDebit(orders, maraQuote, reserved(orders, maraQuote, reserve),
                 c -> reader.stillGrants(c, maraQuote.playerId(), maraQuote.residentId(), maraQuote.economyDay(), 40));
-        // Positive control: the same reader lets Ellis's order at 40% start.
+        // The same reader lets Ellis's order at 40% start, so the refusal above comes from the resident check.
         CommerceOrder ellisQuote = quote(entry.cost(UNIT, 40), DAY);
         assertTrue(orders.beginDebit(ellisQuote, reserved(orders, ellisQuote, reserve), stillPartner(reader, 40)).newlyStarted());
     }
@@ -225,7 +225,7 @@ class CommerceOrderPartnerIT extends ContractItBase {
                 List.of(Map.of("resident", ELLIS.toString(), "material", "IRON_INGOT", "quantity", 16,
                         "fee-discount-percent", 60, "rank-bonus-points", 0, "pitch", "Higher.")))::get, CAST, name -> true);
         assertEquals(40, rates(raised, true).feeDiscountPct(owner, ELLIS, DAY), "a running term keeps its snapshot");
-        // Partnerships off: no read, no perk, the legacy price.
+        // Partnerships off: no read, no perk, the full price.
         var off = new AtomicReference<>(ON);
         var reader = new PartnerRateReader(partnerships, off::get, () -> false, () -> NOW);
         assertFalse(reader.enabled());

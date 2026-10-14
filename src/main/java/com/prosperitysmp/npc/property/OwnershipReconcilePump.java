@@ -8,17 +8,11 @@ import java.util.function.Consumer;
 /**
  * Main-thread state machine. The worker only publishes a value; it never touches the host.
  *
- * <p>Ownership fence (Host.fence() non-null, i.e. ARM coordination on): a payment, rent payout, admission or rent
- * step holding a home's lease authorizes its CREDIT against the FULL cached record, so the pump never replaces the
- * cached record of a held home. It takes the home's slot (acquireExclusive) on main for the synchronous part of a
- * dispatch and of a completion only, never across the SQL hop, so a daily batch acquiring every home never sees the
- * pump as busy. A home held by someone else is DEFERRED: no SQL write at dispatch, no cache replacement at completion.
- * Deferred homes are retried by the pump itself every DEFERRED_RETRY_TICKS until a pass reaches them unheld.
- * writing(id) names the home whose SQL write is in flight, so a single-home admission can wait for it. It stays true
- * after that write's completion is consumed without installing its result (the pass was cancelled, the record was
- * replaced, or the home was held), because SQL may then be ahead of the cache: such a home is retried like a
- * deferred one until a pass installs SQL's row.
- * Host.fence() null (no coordination, so no lease can be held): exactly the original behavior.
+ * <p>With an ownership fence (Host.fence() non-null), a payment, rent payout, admission or rent step holding a home's
+ * lease authorizes its CREDIT against the full cached record, so the pump never replaces the cached record of a held
+ * home. It takes the home's slot only for the synchronous part of a dispatch and of a completion, never across the
+ * SQL hop, so a daily batch acquiring every home never sees the pump as busy. A held home is deferred: no SQL write,
+ * no cache replacement, and a retry every DEFERRED_RETRY_TICKS. With no fence, no lease can be held.
  */
 public final class OwnershipReconcilePump {
     /** Wait before re-trying deferred homes (5 seconds). A retry that finds a home still held costs one fence check. */
@@ -70,12 +64,14 @@ public final class OwnershipReconcilePump {
     private Consumer<Result> callback;
 
     public OwnershipReconcilePump(Host host, Writer writer, Executor executor) {
-        this.host = Objects.requireNonNull(host); this.writer = Objects.requireNonNull(writer);
+        this.host = Objects.requireNonNull(host);
+        this.writer = Objects.requireNonNull(writer);
         this.executor = Objects.requireNonNull(executor);
     }
     private void main() { if (Thread.currentThread() != thread) throw new IllegalStateException("Main thread required"); }
     public Acceptance request(Collection<Property> properties, Consumer<Result> done) {
-        main(); Objects.requireNonNull(done);
+        main();
+        Objects.requireNonNull(done);
         if (closed) return Acceptance.CLOSED;
         if (callback != null || inFlight) return Acceptance.BUSY;
         if (properties.size() > 512) return Acceptance.OVERFLOW;
@@ -83,13 +79,19 @@ public final class OwnershipReconcilePump {
         return Acceptance.ACCEPTED;
     }
     private void begin(Collection<Property> properties, Consumer<Result> done) {
-        pending = List.copyOf(properties); cursor = checked = changed = skipped = missing = failed = deferred = 0;
-        generation++; callback = done; automatic = false;
+        pending = List.copyOf(properties);
+        cursor = checked = changed = skipped = missing = failed = deferred = 0;
+        generation++;
+        callback = done;
+        automatic = false;
         // A deferred home leaves deferredIds only when this pass reaches it, so a cancelled pass forgets none.
         pending.forEach(p -> host.refreshing(p.propertyId()));
     }
     /** Homes waiting for a retry because a lease held them. Main thread. */
-    public Set<UUID> deferredIds() { main(); return Set.copyOf(deferredIds); }
+    public Set<UUID> deferredIds() {
+        main();
+        return Set.copyOf(deferredIds);
+    }
     /**
      * True while this home's SQL write is in flight (from submit until its completion is consumed on main), and
      * after a write was consumed without installing its result, until a later pass installs SQL's row.
@@ -106,15 +108,22 @@ public final class OwnershipReconcilePump {
      * admissions wait for them (writing) and each is retried like a deferred home until a pass installs SQL's row.
      */
     public void markAhead(Collection<UUID> ids) {
-        main(); if (closed) return;
-        for (UUID id : ids) if (id != null && host.current(id) != null) { aheadIds.add(id); queueRetry(id); }
+        main();
+        if (closed) return;
+        for (UUID id : ids) if (id != null && host.current(id) != null) {
+            aheadIds.add(id);
+            queueRetry(id);
+        }
     }
     /** At most two ARM captures per tick: one completion validation and one new observation. */
     public void tick() {
-        main(); if (closed) return;
+        main();
+        if (closed) return;
         Completion c = completion;
         if (c != null) {
-            completion = null; inFlight = false; writingId = null;
+            completion = null;
+            inFlight = false;
+            writingId = null;
             boolean rebased = false;
             if (callback != null && c.generation == generation) {
                 if (host.current(c.expected.propertyId()) != c.expected) { skipped++; }
@@ -123,8 +132,14 @@ public final class OwnershipReconcilePump {
                     OwnershipFence.Lease slot = NONE;
                     boolean free = true;
                     try { slot = slot(c.expected); }
-                    catch (OwnershipFence.Busy held) { free = false; defer(c.expected); }
-                    catch (RuntimeException coordinator) { free = false; host.uncertain(c.expected.propertyId()); failed++; }
+                    catch (OwnershipFence.Busy held) {
+                        free = false;
+                        defer(c.expected);
+                    } catch (RuntimeException coordinator) {
+                        free = false;
+                        host.uncertain(c.expected.propertyId());
+                        failed++;
+                    }
                     if (free) {
                         try {
                             Observation now = capture(c.expected);
@@ -133,9 +148,17 @@ public final class OwnershipReconcilePump {
                                     && now.presence == Presence.PRESENT
                                     && Objects.equals(now.owner, c.observation.owner)
                                     && Objects.equals(now.owner, w.authoritative.ownerUuid());
-                            if (w != null && w.authoritative != null) { host.rebase(c.expected, w.authoritative, verified); rebased = true; }
-                            if (!verified) { host.uncertain(c.expected.propertyId()); failed++; }
-                            else { checked++; if (!Objects.equals(c.expected.ownerUuid(), w.authoritative.ownerUuid())) changed++; }
+                            if (w != null && w.authoritative != null) {
+                                host.rebase(c.expected, w.authoritative, verified);
+                                rebased = true;
+                            }
+                            if (!verified) {
+                                host.uncertain(c.expected.propertyId());
+                                failed++;
+                            } else {
+                                checked++;
+                                if (!Objects.equals(c.expected.ownerUuid(), w.authoritative.ownerUuid())) changed++;
+                            }
                         } finally { release(slot, c.expected); }
                     }
                 }
@@ -144,23 +167,40 @@ public final class OwnershipReconcilePump {
         }
         if (callback == null && !inFlight && !deferredIds.isEmpty() && --retryIn <= 0) retryDeferred();
         if (callback == null || inFlight) return;
-        if (cursor == pending.size()) { finish(false); return; }
+        if (cursor == pending.size()) {
+            finish(false);
+            return;
+        }
         Property p = pending.get(cursor++);
         deferredIds.remove(p.propertyId()); // Reached: dispatched, skipped, failed or deferred again below.
-        if (host.current(p.propertyId()) != p) { skipped++; stillAhead(p.propertyId()); return; }
+        if (host.current(p.propertyId()) != p) {
+            skipped++;
+            stillAhead(p.propertyId());
+            return;
+        }
         // Held by a payment (or any lease): no observation and no SQL write; retried after it is released.
         try { release(slot(p), p); }
-        catch (OwnershipFence.Busy held) { defer(p); return; }
-        catch (RuntimeException coordinator) { host.uncertain(p.propertyId()); failed++; stillAhead(p.propertyId()); return; }
+        catch (OwnershipFence.Busy held) {
+            defer(p);
+            return;
+        } catch (RuntimeException coordinator) {
+            host.uncertain(p.propertyId());
+            failed++;
+            stillAhead(p.propertyId());
+            return;
+        }
         Observation o = capture(p);
         if (o.presence != Presence.PRESENT) {
             host.uncertain(p.propertyId());
-            if (o.presence == Presence.MISSING) missing++; else skipped++;
+            if (o.presence == Presence.MISSING) missing++;
+            else skipped++;
             stillAhead(p.propertyId());
             return;
         }
         if (!Objects.equals(o.owner, p.ownerUuid())) host.uncertain(p.propertyId());
-        long g = generation; inFlight = true; writingId = p.propertyId();
+        long g = generation;
+        inFlight = true;
+        writingId = p.propertyId();
         try {
             executor.execute(() -> {
                 Write w = null;
@@ -168,7 +208,11 @@ public final class OwnershipReconcilePump {
                 finally { completion = new Completion(g, p, o, w); }
             });
         } catch (RuntimeException rejected) {
-            inFlight = false; writingId = null; host.uncertain(p.propertyId()); failed++; stillAhead(p.propertyId());
+            inFlight = false;
+            writingId = null;
+            host.uncertain(p.propertyId());
+            failed++;
+            stillAhead(p.propertyId());
         }
     }
     /** No fence: no slot to take (NONE). Otherwise the home's exclusive slot; throws Busy when another lease holds it. */
@@ -188,7 +232,10 @@ public final class OwnershipReconcilePump {
      */
     private void settle(Completion c, boolean rebased) {
         UUID id = c.expected.propertyId();
-        if (rebased || host.current(id) == null) { aheadIds.remove(id); return; }
+        if (rebased || host.current(id) == null) {
+            aheadIds.remove(id);
+            return;
+        }
         Write w = c.write;
         if (w == null || w.authoritative == null || !w.authoritative.equals(c.expected)) aheadIds.add(id);
         queueRetry(id);
@@ -202,7 +249,10 @@ public final class OwnershipReconcilePump {
      * never left refused without a retry; repeated automatic retries count toward the stuck warning like deferrals do.
      */
     private void stillAhead(UUID id) {
-        if (host.current(id) == null) { aheadIds.remove(id); return; }
+        if (host.current(id) == null) {
+            aheadIds.remove(id);
+            return;
+        }
         if (!aheadIds.contains(id)) return;
         queueRetry(id);
         streak(id);
@@ -216,7 +266,10 @@ public final class OwnershipReconcilePump {
     private void streak(UUID id) {
         if (!automatic) return;
         int streak = stuckRetries.merge(id, 1, (a, b) -> a < 0 ? a : a + b);
-        if (streak == STUCK_RETRIES) { stuckRetries.put(id, -1); host.stuck(id, STUCK_RETRIES); }
+        if (streak == STUCK_RETRIES) {
+            stuckRetries.put(id, -1);
+            host.stuck(id, STUCK_RETRIES);
+        }
     }
     /** A pass over the deferred homes still cached (their current records), with no external callback. */
     private void retryDeferred() {
@@ -239,14 +292,20 @@ public final class OwnershipReconcilePump {
         Result result = new Result(checked, changed, skipped, missing, failed, cancelled, deferred);
         // A home this pass reached and did not defer starts its retry streak (and stuck warning) over.
         for (Property p : pending) if (!deferredIds.contains(p.propertyId())) stuckRetries.remove(p.propertyId());
-        callback = null; pending = List.of();
+        callback = null;
+        pending = List.of();
         if (!deferredIds.isEmpty()) retryIn = DEFERRED_RETRY_TICKS;
         if (done != null) done.accept(result);
     }
     public void invalidate() {
-        main(); generation++;
+        main();
+        generation++;
         pending.forEach(p -> host.refreshing(p.propertyId()));
         finish(true); // The existing worker must drain before another request is accepted.
     }
-    public void close() { main(); closed = true; invalidate(); }
+    public void close() {
+        main();
+        closed = true;
+        invalidate();
+    }
 }

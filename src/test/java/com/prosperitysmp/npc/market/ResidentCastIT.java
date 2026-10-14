@@ -183,7 +183,7 @@ class ResidentCastIT {
         var result = HousingRuntime.rosterCast(database, POLICY, DAY, cast, person -> true);
         assertEquals(9, result.added());
         assertEquals(ResidentProfile.Temperament.WARM, residents.find(petra.id()).orElseThrow().temperament());
-        // The built-in cast keeps today's rule: a differing saved row stops the import.
+        // For the built-in cast, a differing saved row stops the import.
         execute("DELETE FROM npc_housing_members");
         var mara = ResidentCatalogue.betaCast().getFirst();
         execute("UPDATE npc_resident_profiles SET temperament='RESERVED' WHERE resident_id=?", mara.id());

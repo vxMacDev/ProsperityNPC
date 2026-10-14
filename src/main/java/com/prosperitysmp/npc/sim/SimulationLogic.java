@@ -7,9 +7,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Pure daily state-machine decisions for a property, built on the Batch 4
- * formulas and the deterministic {@link DailyRoll}. These decide <em>what</em>
- * should happen; persistence and any cash are applied elsewhere (later batches).
+ * Pure daily state-machine decisions for a property, built on {@link PropertyFormulas}
+ * and the deterministic {@link DailyRoll}. These decide <em>what</em> should happen;
+ * persistence and any cash are applied elsewhere.
  */
 public final class SimulationLogic {
 

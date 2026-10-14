@@ -25,8 +25,8 @@ import org.geysermc.floodgate.util.LinkedPlayer;
  * whose UUID is a Floodgate ID, so a player who linked and now plays only on Java still has their
  * Bedrock-era homes in the group. With global linking each ask is an HTTPS call to api.geysermc.org; with
  * Floodgate's own local linking it reads Floodgate's database. Bounded: at most the daily limit, each owner
- * once a day, a timeout on each. Anything that fails saves nothing, which keeps the old, looser-for-nobody
- * behavior. start is main thread only. PlayerLink is never touched while the sub-flag is off.
+ * once a day, a timeout on each. Anything that fails saves nothing, so a failed ask never joins two accounts.
+ * start is main thread only. PlayerLink is never touched while the sub-flag is off.
  */
 public final class FloodgateOwnerLookup {
     /** Saves one checked pair (FLOODGATE_LOOKUP). Runs on the database executor. */
@@ -59,9 +59,14 @@ public final class FloodgateOwnerLookup {
      * passes dailyLimit, however often the daily cycle calls this.
      */
     public int start(boolean subFlagOn, LocalDate today, Collection<UUID> owners, int dailyLimit, Saver saver) {
-        Objects.requireNonNull(today); Objects.requireNonNull(owners); Objects.requireNonNull(saver);
+        Objects.requireNonNull(today);
+        Objects.requireNonNull(owners);
+        Objects.requireNonNull(saver);
         if (!subFlagOn || dailyLimit <= 0) return 0;
-        if (!today.equals(day)) { day = today; asked.clear(); }
+        if (!today.equals(day)) {
+            day = today;
+            asked.clear();
+        }
         int room = dailyLimit - asked.size();
         if (room <= 0) return 0;
         var wanted = new ArrayList<UUID>();
@@ -74,7 +79,8 @@ public final class FloodgateOwnerLookup {
         PlayerLink link = api.getPlayerLink();
         if (link == null || !link.isEnabled()) return 0;
         asked.addAll(wanted);
-        var saved = new AtomicInteger(); var failed = new AtomicInteger();
+        var saved = new AtomicInteger();
+        var failed = new AtomicInteger();
         List<CompletableFuture<Void>> asks = new ArrayList<>();
         for (UUID bedrock : wanted) {
             CompletableFuture<LinkedPlayer> answer;
@@ -83,20 +89,32 @@ public final class FloodgateOwnerLookup {
             if (answer == null) answer = CompletableFuture.completedFuture(null);
             asks.add(answer.toCompletableFuture().orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS)
                     .handle((lp, failure) -> {
-                        if (failure != null) { failed.incrementAndGet(); return CompletableFuture.<Void>completedFuture(null); }
+                        if (failure != null) {
+                            failed.incrementAndGet();
+                            return CompletableFuture.<Void>completedFuture(null);
+                        }
                         if (lp == null) return CompletableFuture.<Void>completedFuture(null);
                         UUID java = lp.getJavaUniqueId();
                         if (!bedrock.equals(lp.getBedrockId()) || java == null || api.isFloodgateId(java)) {
-                            failed.incrementAndGet(); return CompletableFuture.<Void>completedFuture(null);
+                            failed.incrementAndGet();
+                            return CompletableFuture.<Void>completedFuture(null);
                         }
                         try {
                             return CompletableFuture.runAsync(() -> {
-                                try { saver.save(java, bedrock); saved.incrementAndGet(); }
-                                catch (Exception | LinkageError notSaved) { failed.incrementAndGet(); }
-                            }, database).exceptionally(rejected -> { failed.incrementAndGet(); return null; });
+                                try {
+                                    saver.save(java, bedrock);
+                                    saved.incrementAndGet();
+                                } catch (Exception | LinkageError notSaved) {
+                                    failed.incrementAndGet();
+                                }
+                            }, database).exceptionally(rejected -> {
+                                failed.incrementAndGet();
+                                return null;
+                            });
                         } catch (RejectedExecutionException busy) {
                             // A full worker refuses the save right away, inside runAsync. Nothing is saved; count it.
-                            failed.incrementAndGet(); return CompletableFuture.<Void>completedFuture(null);
+                            failed.incrementAndGet();
+                            return CompletableFuture.<Void>completedFuture(null);
                         }
                     }).thenCompose(next -> next));
         }

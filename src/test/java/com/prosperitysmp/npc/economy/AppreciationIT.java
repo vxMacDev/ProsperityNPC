@@ -160,7 +160,7 @@ class AppreciationIT {
         assertEquals(0, count("npc_appreciation_reservations"));
         assertEquals(0, count(APPRECIATION));
         assertEquals(0, count("npc_transfer_attempts a JOIN " + APPRECIATION.replace("WHERE", "e ON e.event_id=a.event_id WHERE")));
-        // Positive control: the same composition with the gate open reserves and pays on this database.
+        // With the gate open the same composition reserves and pays, so the zero counts above come from the gate.
         var open = UtilityPaymentRuntime.thenAppreciation(CompletableFuture.completedFuture(0),
                 UtilityPaymentRuntime.appreciationEnabled(Boolean.TRUE), appreciationPhase(limits), n -> counted[0] = n, Runnable::run);
         assertEquals(0, open.join());
@@ -180,7 +180,7 @@ class AppreciationIT {
         assertThrows(IllegalArgumentException.class, () -> rents().reserveAppreciation(DAY, enabled(), limits, TOP),
                 "a day older than the one that just closed is never paid");
         assertEquals(before, snapshot(), "a refused day writes nothing");
-        // Positive control: the same call once DAY has just closed.
+        // Once DAY has just closed, the same call reserves.
         closeDay();
         assertEquals(4, rents().reserveAppreciation(DAY, enabled(), limits, TOP).size());
     }
@@ -357,7 +357,7 @@ class AppreciationIT {
         assertTrue(rents().reserveAppreciation(DAY, List.of(ownerless), limits, TOP).isEmpty());
         assertEquals(0, count("npc_appreciation_reservations"));
         assertEquals(0, count(APPRECIATION));
-        // Positive control: the same gate admits a rated, enabled property whose rent is proved paid.
+        // The same gate admits a rated, enabled property whose rent is proved paid.
         execute("UPDATE npc_properties SET enabled=TRUE WHERE property_id=?", paused);
         var admitted = rents().reserveAppreciation(DAY, enabled(), limits, TOP);
         assertEquals(List.of(unrated, paused).stream().sorted(Comparator.comparing(UUID::toString)).toList(),
@@ -412,8 +412,8 @@ class AppreciationIT {
     }
 
     /**
-     * Regression: the staff cap alert's read went through an autocommit connection, so any historical
-     * FAILED payout made the proof reader throw and SERVER_CAP_NEAR went quiet for good.
+     * The staff cap alert's read must run in a caller-owned transaction. On an autocommit connection a historical
+     * FAILED payout made the proof reader throw, which silenced SERVER_CAP_NEAR.
      */
     @Test
     void serverCapReadSurvivesAHistoricalProvedDeclinedPayout() throws Exception {
@@ -431,7 +431,7 @@ class AppreciationIT {
         // The proved decline releases its share: three $6 rents count, not four.
         assertEquals(1800, rents().serverSpentCents(DAY));
         assertEquals(before, snapshot(), "the cap read is rollback-only and writes nothing");
-        // The next economy day: the FAILED row is now historical but is still scanned as outstanding.
+        // The next economy day: the FAILED row is historical but is still scanned as outstanding.
         closeDay();
         var later = rent.get(1).property();
         UtilityRepository.Receipt utility = utilities().preparePayment(UUID.randomUUID(), later.propertyId(),
@@ -453,7 +453,7 @@ class AppreciationIT {
                 alerts::add, warnings::add, warned));
         assertEquals(List.of("Server daily payout cap is 92 percent used."), alerts);
         assertTrue(warnings.isEmpty());
-        // Negative control: below 90 percent nothing is raised.
+        // Below 90 percent nothing is raised.
         assertFalse(UtilityPaymentRuntime.serverCapCheck(() -> rents().serverSpentCents(NEXT), 15000, NEXT,
                 alerts::add, warnings::add, warned));
         assertEquals(1, alerts.size());
@@ -485,7 +485,7 @@ class AppreciationIT {
             assertInstanceOf(SQLException.class, thrown.getCause());
             assertEquals("Rent ledger read requires caller-owned transaction", thrown.getCause().getMessage());
         }
-        // Positive control: the same read inside a caller-owned transaction.
+        // Inside a caller-owned transaction the same read works.
         assertEquals(2400, rents().serverSpentCents(DAY));
     }
 

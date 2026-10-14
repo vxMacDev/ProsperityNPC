@@ -12,14 +12,14 @@ import static org.junit.jupiter.api.Assertions.*;
 class CommercePartnerRateTest {
     private static final long[] UNITS = {1, 7, 42, 99, 100, 101, 999, 12_345, 1_000_000};
 
-    /** The dev.58 formula, written out here so the legacy price is pinned independently of the code. */
+    /** The plain price formula, written out here so the price with no discount is pinned independently of the code. */
     private static long legacy(CommerceCatalogue.Entry entry, long unit) {
         long materials = unit * entry.quantity();
         return materials + Math.max(100L, Math.floorDiv(materials * entry.serviceBasisPoints() + 9999L, 10000L));
     }
 
     @Test void zeroPercentIsTheLegacyPriceForEveryEntry() {
-        // Positive control: cost(unit, 0) and cost(unit) are the dev.58 price.
+        // With no discount, cost(unit, 0) and cost(unit) both equal the plain formula, so a 0 percent partner pays the full price.
         for (var occupation : ResidentProfile.Occupation.values())
             for (var entry : CommerceCatalogue.entries(occupation))
                 for (long unit : UNITS) {
@@ -35,7 +35,7 @@ class CommercePartnerRateTest {
                     for (int pct = 1; pct <= 60; pct++) {
                         long materials = unit * entry.quantity();
                         long partner = entry.cost(unit, pct);
-                        // Mutation guard: discounting the material part breaks this floor.
+                        // The floor: discounting the material part would break it.
                         assertTrue(partner >= materials + 100, entry.id() + " " + unit + " " + pct);
                         assertTrue(partner <= entry.cost(unit), "a discount never raises the price");
                         long fee = partner - materials;
@@ -45,9 +45,9 @@ class CommercePartnerRateTest {
     }
 
     /**
-     * DEV 2026-10-14, stone at 42 cents with Mara at 25%: the supplies price sits on the $1 fee floor and did not move,
-     * yet it said "(partner rate)". The mark now shows only when the partner price is lower. Without a partner rate the
-     * label is the dev.58 one.
+     * Stone at 42 cents with Mara at 25% puts the supplies price on the $1 fee floor, so the partner price equals the
+     * full price. The "(partner rate)" mark shows only when the partner price is lower. Without a partner rate the label
+     * never carries the mark.
      */
     @Test void thePartnerMarkShowsOnlyWhenThePriceIsLower() {
         var entries = CommerceCatalogue.entries(ResidentProfile.Occupation.RESTORER);
@@ -99,7 +99,7 @@ class CommercePartnerRateTest {
     }
 
     /**
-     * P2-A wiring. The rate the worker read is captured, so the main-thread quote check cannot see a partnership that
+     * The rate the worker read is captured, so the main-thread quote check cannot see a partnership that
      * ended after the read. The order therefore hands payments.request a check built from that captured rate, the
      * payment runtime runs it inside the debit-intent transaction (its only beginDebit call), a discounted request
      * without a check is refused, and the refusal reaches the player as the expired-quote line.

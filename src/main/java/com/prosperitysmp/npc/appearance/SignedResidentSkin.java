@@ -44,11 +44,25 @@ public final class SignedResidentSkin {
         this.fingerprint = sha256(value.getBytes(StandardCharsets.US_ASCII));
     }
 
-    public String value() { return value; }
-    public String signature() { return signature; }
-    public String textureUrl() { return textureUrl; }
-    public String model() { return model; }
-    public String fingerprint() { return fingerprint; }
+    public String value() {
+        return value;
+    }
+
+    public String signature() {
+        return signature;
+    }
+
+    public String textureUrl() {
+        return textureUrl;
+    }
+
+    public String model() {
+        return model;
+    }
+
+    public String fingerprint() {
+        return fingerprint;
+    }
 
     /** Offline only. Invalid input or unavailable/mismatched trust material fails closed. */
     public static SignedResidentSkin verify(String value, String signature) {
@@ -79,8 +93,11 @@ public final class SignedResidentSkin {
         onlyKeys(skin, Set.of("url", "metadata"));
         String url = string(skin.get("url"));
         URI uri;
-        try { uri = URI.create(url); }
-        catch (IllegalArgumentException e) { throw new IllegalArgumentException("Invalid texture URL", e); }
+        try {
+            uri = URI.create(url);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid texture URL", e);
+        }
         require(("http".equals(uri.getScheme()) || "https".equals(uri.getScheme()))
                 && "textures.minecraft.net".equals(uri.getRawAuthority())
                 && uri.getRawPath() != null && uri.getRawPath().matches("/texture/[0-9a-f]{64}")
@@ -127,8 +144,11 @@ public final class SignedResidentSkin {
     private static byte[] canonicalBase64(String text, int cap) {
         require(text != null && !text.isEmpty() && text.length() <= cap, "Invalid Base64 size");
         byte[] bytes;
-        try { bytes = Base64.getDecoder().decode(text); }
-        catch (IllegalArgumentException e) { throw new IllegalArgumentException("Invalid Base64", e); }
+        try {
+            bytes = Base64.getDecoder().decode(text);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid Base64", e);
+        }
         require(Base64.getEncoder().encodeToString(bytes).equals(text), "Noncanonical Base64");
         return bytes;
     }
@@ -173,8 +193,11 @@ public final class SignedResidentSkin {
         if (root.has("timestamp")) {
             JsonElement time = root.get("timestamp");
             require(time.isJsonPrimitive() && time.getAsJsonPrimitive().isNumber(), "Invalid timestamp");
-            try { require(time.getAsBigDecimal().longValueExact() >= 0, "Negative timestamp"); }
-            catch (ArithmeticException e) { throw new IllegalArgumentException("Invalid timestamp", e); }
+            try {
+                require(time.getAsBigDecimal().longValueExact() >= 0, "Negative timestamp");
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException("Invalid timestamp", e);
+            }
         }
         if (root.has("profileId")) require(string(root.get("profileId")).matches("[0-9a-fA-F]{32}"), "Invalid profile ID");
         if (root.has("profileName")) require(string(root.get("profileName")).matches("[A-Za-z0-9_]{1,16}"), "Invalid profile name");
@@ -199,8 +222,11 @@ public final class SignedResidentSkin {
     }
 
     private static String sha256(byte[] bytes) {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
-        catch (GeneralSecurityException e) { throw new IllegalStateException("SHA-256 unavailable", e); }
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     private static void require(boolean condition, String message) {

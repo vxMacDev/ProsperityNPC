@@ -146,7 +146,7 @@ class PayoutRetirementIT {
         execute("UPDATE npc_property_funding SET one_time_seed_cents=600,successful_cash_sinks_cents=0,"
                 + "successful_cash_payouts_cents=0 WHERE property_id=?", id);
         assertEquals(Map.of(id, 600L), pendingLifetime(NEXT), "before: the dead row holds the home's funding");
-        // Flag off (positive control): the dead row still consumes the funding and nothing is retired.
+        // Flag off: the dead row still consumes the funding and nothing is retired.
         var warnings = new ArrayList<String>();
         assertTrue(UtilityPaymentRuntime.reserveRentBatch(rents(), false, NEXT, List.of(property(id)), limits, warnings::add).isEmpty());
         assertEquals(0, count("npc_rent_reservations WHERE economy_day=?", NEXT));
@@ -249,7 +249,7 @@ class PayoutRetirementIT {
         Property old = property(sold);
         UUID buyer = new UUID(0, 3399);
         new PropertyRepository(database).applyOwnerChange(sold, old.ownerUuid(), buyer, old.ownershipEpoch() + 1, "test-sale");
-        // Flag off (positive control): the rerun's queued read refuses the batch, which the runtime holds for review.
+        // Flag off: the rerun's queued read refuses the batch, which the runtime holds for review.
         assertTrue(UtilityPaymentRuntime.reserveRentBatch(rents(), false, NEXT, enabled(), limits, ignored -> { }).isEmpty());
         var stale = assertThrows(SQLException.class, () -> rents().pendingAppreciation(DAY, enabled()));
         assertEquals("Queued appreciation ownership mismatch", stale.getMessage());
@@ -276,7 +276,7 @@ class PayoutRetirementIT {
         Property old = property(sold);
         UUID buyer = new UUID(0, 3398);
         new PropertyRepository(database).applyOwnerChange(sold, old.ownerUuid(), buyer, old.ownershipEpoch() + 1, "test-sale");
-        // Flag off (positive control): the same-day rerun refuses on the stale rent binding.
+        // Flag off: the same-day rerun refuses on the stale rent binding.
         var stale = assertThrows(SQLException.class,
                 () -> UtilityPaymentRuntime.reserveRentBatch(rents(), false, DAY, enabled(), limits, ignored -> { }));
         assertEquals("Queued rent ownership mismatch", stale.getMessage());
@@ -311,7 +311,7 @@ class PayoutRetirementIT {
         assertEquals(10001, count("npc_payout_retirements"));
         assertEquals(0, rents().serverSpentCents(DAY), "retired history is not scanned");
         assertEquals(Map.of(), pendingLifetime(DAY));
-        // Positive control: the same rows without their retirement proof trip the bound, as before.
+        // Without their retirement proof the same rows trip the bound.
         execute("DELETE FROM npc_payout_retirements");
         var thrown = assertThrows(SQLException.class, () -> rents().serverSpentCents(DAY));
         assertEquals("Rent outstanding ledger requires bounded maintenance", thrown.getMessage());
@@ -362,7 +362,7 @@ class PayoutRetirementIT {
         assertTrue(code.contains("return reserveRentBatchCounted(rents, retireNow, holdNow, day, properties, limits, plugin.getLogger()::warning);"));
         assertEquals(1, code.split(java.util.regex.Pattern.quote("rents.reserveCounting(day, properties, limits, holdDueRent)"), -1).length - 1,
                 "the batch reserves only through reserveRentBatch");
-        // Off writes nothing even with a dead row present (positive control: on retires it).
+        // Off writes nothing even with a dead row present. On, the same row is retired.
         var limits = limits(15000, 4500, 1500);
         rents().reserve(DAY, enabled(), limits);
         closeDay();
@@ -426,7 +426,7 @@ class PayoutRetirementIT {
                 "retired rows record no payment");
     }
 
-    /** The Codex P1: with no enabled home the rent batch returns before its SQL step, so it can never retire. */
+    /** With no enabled home the rent batch returns before its SQL step, so it can never retire. */
     @Test
     void everyHomePausedStillRetiresThroughTheStandalonePassAndThenResumes() throws Exception {
         var limits = limits(15000, 4500, 1500);
@@ -438,7 +438,7 @@ class PayoutRetirementIT {
         // requestRentBatch's early exit: no enabled, non-away candidate, so its in-batch pass is unreachable.
         assertTrue(UtilityPaymentRuntime.rentCandidates(paused, java.util.Set.of()).isEmpty());
         closeDay();
-        // Before (the deadlock): each home's own dead reservation refuses its resume, and nothing retires it.
+        // Before the pass, each home's own dead reservation refuses its resume and nothing retires it.
         for (Property off : paused)
             assertThrows(PropertyRepository.ResumeRefused.class, () -> repo.resumeExpected(off, off.ownerUuid()));
         assertEquals(0, count("npc_payout_retirements"));
@@ -449,7 +449,7 @@ class PayoutRetirementIT {
         assertEquals(4, count("npc_payout_retirements WHERE kind='RENT' AND reason='EXPIRED' AND economy_day=? AND retired_on=?", DAY, NEXT));
         assertEquals(4, count(RENT + " AND state='FAILED' AND paid_amount_cents=0"));
         assertEquals(0, count("npc_transfer_attempts a JOIN npc_rent_reservations r ON r.event_id=a.event_id"), "no money call was started");
-        // After: the plain (flag-off) resume now succeeds for every home.
+        // After the pass, the plain (flag-off) resume succeeds for every home.
         for (Property off : paused) assertTrue(repo.resumeExpected(off, off.ownerUuid()).enabled());
         var before = snapshot();
         assertEquals("Payout retirement: nothing to retire. No money moved.",
@@ -503,10 +503,10 @@ class PayoutRetirementIT {
     }
 
     /**
-     * Codex P2 (round 3): a paused home sold today. Paused rows are outside reconciliation, so SQL still holds the
-     * old owner; resume retirement used to compare against that stale owner, find the old owner's never-attempted
-     * current-day rent still "live", and refuse before writing the ARM owner, until the row expired next day.
-     * Now resume writes the fresh ARM owner (epoch + 1) first and retires against it, in one transaction.
+     * A paused home sold today. Paused rows are outside reconciliation, so SQL still holds the old owner. Resume
+     * writes the fresh ARM owner (epoch + 1) first and retires against it, in one transaction. Comparing against
+     * the stale owner would find the old owner's never-attempted current-day rent still live and refuse until the
+     * row expired the next day.
      */
     @Test
     void pausedHomeSoldTodayResumesSameDayRetiringTheOldOwnersUnattemptedRent() throws Exception {
@@ -545,7 +545,7 @@ class PayoutRetirementIT {
         assertEquals(0, count("npc_transfer_attempts WHERE event_id=?", dead));
     }
 
-    /** Negative controls for the fix above: flag off or parent off is the exact old refusal, nothing written. */
+    /** With the flag off or the parent off, resume is refused and nothing is written. */
     @Test
     void pausedHomeSoldTodayStillRefusesWithRetirementOffAndWritesNothing() throws Exception {
         var limits = limits(15000, 4500, 1500);
@@ -566,7 +566,7 @@ class PayoutRetirementIT {
         assertEquals(off, property(pausedId), "owner, epoch and paused state unchanged");
         assertEquals(before, snapshot(), "nothing retired, nothing written");
         assertEquals(ownership, rows("SELECT * FROM npc_property_ownership ORDER BY id"), "no owner write");
-        // Positive control: the same fixture with retirement active resumes for the buyer.
+        // With retirement active the same fixture resumes for the buyer.
         assertTrue(repo.resumeExpected(off, buyer, PropertyService.resumeRetirement(Boolean.TRUE, true, pausedId, DAY, ignored -> { }))
                 .enabled());
         assertEquals(1, count("npc_payout_retirements WHERE property_id=? AND reason='OWNER_CHANGED'", pausedId));
@@ -648,9 +648,9 @@ class PayoutRetirementIT {
     }
 
     /**
-     * Codex P2 (round 3): default-on retirement must be inert with its parent off. Payments off (the shipped
-     * config) and an expired never-attempted reservation: resume is refused exactly as before and nothing is
-     * retired. Positive control: the same fixture with the parent on retires the row and resumes.
+     * Default-on retirement must be inert with its parent off. With payments off (the shipped config) and an
+     * expired never-attempted reservation, resume is refused and nothing is retired. With the parent on, the same
+     * fixture retires the row and resumes.
      */
     @Test
     void paymentsOffResumeRefusesExactlyAsBeforeWithAnExpiredReservation() throws Exception {
@@ -679,7 +679,7 @@ class PayoutRetirementIT {
         var log = new ArrayList<String>();
         var prepared = PropertyService.resumeRetirement(Boolean.TRUE, parent, pausedId, NEXT, log::add);
         assertNull(prepared, "parent off: no preparation, so resumeCoordinated takes the two-argument resume");
-        // resumeCoordinated with a null preparation is the old path exactly.
+        // With a null preparation, resumeCoordinated takes the plain two-argument resume.
         assertThrows(PropertyRepository.ResumeRefused.class, () -> repo.resumeExpected(off, off.ownerUuid()));
         assertThrows(PropertyRepository.ResumeRefused.class, () -> repo.resumeExpected(off, off.ownerUuid(), prepared));
         assertFalse(property(pausedId).enabled(), "still paused");
@@ -688,7 +688,7 @@ class PayoutRetirementIT {
         assertEquals(before, snapshot(), "nothing written");
         assertEquals(List.of(), log);
 
-        // Positive control: the same fixture with the parent on retires this home's row and the resume commits.
+        // With the parent on, the same fixture retires this home's row and the resume commits.
         assertTrue(UtilityPaymentRuntime.payoutRetirementActive(Boolean.TRUE, true, true, Boolean.TRUE, null));
         assertTrue(UtilityPaymentRuntime.payoutRetirementActive(Boolean.TRUE, true, true, null, Boolean.TRUE), "legacy smoke opt-in");
         var active = PropertyService.resumeRetirement(Boolean.TRUE, true, pausedId, NEXT, log::add);
@@ -718,7 +718,7 @@ class PayoutRetirementIT {
         int parent = resume.indexOf("final boolean retirementParent = payments != null && payments.payoutRetirementActive();");
         int call = resume.indexOf("retirementParent, paused.propertyId(), economyToday(), plugin.getLogger()::info);");
         assertTrue(parent > 0 && call > parent, "resume computes the shared parent gate on main and passes it");
-        // Every retirement entry point goes through payoutRetirementActive; the flag-only instance accessor is gone.
+        // Every retirement entry point goes through payoutRetirementActive; there is no flag-only instance accessor.
         String code = java.nio.file.Files.readString(java.nio.file.Path.of(
                 "src/main/java/com/prosperitysmp/npc/economy/UtilityPaymentRuntime.java"));
         assertFalse(code.contains("public boolean payoutRetirementEnabled()"));

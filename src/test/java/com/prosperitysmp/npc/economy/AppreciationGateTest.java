@@ -15,14 +15,14 @@ class AppreciationGateTest {
         assertFalse(UtilityPaymentRuntime.appreciationEnabled(null));
         assertFalse(UtilityPaymentRuntime.appreciationEnabled(Boolean.FALSE));
         assertTrue(UtilityPaymentRuntime.appreciationEnabled(Boolean.TRUE));
-        // Negative controls: truthy values that are not a YAML boolean stay off.
+        // Truthy values that are not a YAML boolean stay off.
         assertFalse(UtilityPaymentRuntime.appreciationEnabled("true"));
         assertFalse(UtilityPaymentRuntime.appreciationEnabled("yes"));
         assertFalse(UtilityPaymentRuntime.appreciationEnabled(1));
     }
 
     @Test void flagOffReplyIsTheExactReplyFromBeforeAppreciation() {
-        // Literal texts seen in the September acceptance logs and the rent isolation release.
+        // Exact reply texts, so any wording change fails here.
         assertEquals("Rent batch complete: 0 verified payouts. Reserve-floor deferrals remain pending; accounting refresh queued.",
                 UtilityPaymentRuntime.rentBatchReply(0, 0, false, -1));
         assertEquals("Rent batch complete: 1 verified payouts. Reserve-floor deferrals remain pending; accounting refresh queued.",

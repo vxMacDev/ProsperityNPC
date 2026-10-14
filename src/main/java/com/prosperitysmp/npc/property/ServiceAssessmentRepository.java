@@ -33,7 +33,8 @@ public final class ServiceAssessmentRepository {
      * Equal window starts do not imply interchangeable cohorts or denominators.
      */
     public ServiceAssessment read(UUID owner, Instant from, int retentionHorizonDays) throws SQLException {
-        Objects.requireNonNull(owner); Objects.requireNonNull(from);
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(from);
         try (ReadSnapshot snapshot = ReadSnapshot.open(database, clock)) {
             return read(snapshot, owner, from, retentionHorizonDays);
         }
@@ -41,7 +42,8 @@ public final class ServiceAssessmentRepository {
 
     /** Borrow only; the outer composition owns rollback and close, including on failure. */
     public ServiceAssessment read(ReadSnapshot snapshot, UUID owner, Instant from, int retentionHorizonDays) throws SQLException {
-        Objects.requireNonNull(owner); Objects.requireNonNull(from);
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(from);
         try {
             snapshot.connection(database);
             return new ServiceAssessment(utilities.read(snapshot, owner, from),

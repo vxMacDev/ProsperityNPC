@@ -28,7 +28,7 @@ public record ItemRepairSettings(boolean enabled, boolean held, int ratioBps, in
     public static final String BLOCK_CASH = "item-repairs.block-cash-while-items-held";
     public static final String RECIPES = "item-repairs.recipes.";
     public static final int DEFAULT_RATIO_BPS = 15_000, DEFAULT_MAX_UNITS = 256, DEFAULT_MAX_STACKS = 4;
-    /** Same lists as the legacy IncidentType item text, which stays untouched in the database. */
+    /** Same lists as IncidentType's item repair text, which stays untouched in the database. */
     public static final Map<IncidentType, List<ItemRepairRecipes.Line>> DEFAULT_RECIPES = Map.of(
             IncidentType.PESTS, List.of(new ItemRepairRecipes.Line("PAPER", 16), new ItemRepairRecipes.Line("BAKED_POTATO", 8)),
             IncidentType.PLUMBING, List.of(new ItemRepairRecipes.Line("COPPER_INGOT", 16), new ItemRepairRecipes.Line("IRON_INGOT", 4)),
@@ -61,7 +61,8 @@ public record ItemRepairSettings(boolean enabled, boolean held, int ratioBps, in
      * for a material name, 0 when it is not an item.
      */
     public static ItemRepairSettings load(Function<String, Object> get, ToIntFunction<String> maxStack) {
-        Objects.requireNonNull(get); Objects.requireNonNull(maxStack);
+        Objects.requireNonNull(get);
+        Objects.requireNonNull(maxStack);
         var warnings = new ArrayList<String>();
         Object rawEnabled = get.apply(ENABLED);
         boolean enabled = Boolean.TRUE.equals(rawEnabled);
@@ -70,24 +71,30 @@ public record ItemRepairSettings(boolean enabled, boolean held, int ratioBps, in
         int ratio = integer(get.apply(RATIO), DEFAULT_RATIO_BPS);
         if (ratio < ItemRepairRecipes.MIN_RATIO_BPS || ratio > ItemRepairRecipes.MAX_RATIO_BPS) {
             warnings.add(RATIO + " must be a whole number from 10000 to 100000; item repairs are held off.");
-            held = true; ratio = DEFAULT_RATIO_BPS;
+            held = true;
+            ratio = DEFAULT_RATIO_BPS;
         }
         int units = integer(get.apply(MAX_UNITS), DEFAULT_MAX_UNITS);
         if (units < 1 || units > ItemRepairRecipes.MAX_LINE_QUANTITY) {
             warnings.add(MAX_UNITS + " must be a whole number from 1 to 256; item repairs are held off.");
-            held = true; units = DEFAULT_MAX_UNITS;
+            held = true;
+            units = DEFAULT_MAX_UNITS;
         }
         int stacks = integer(get.apply(MAX_STACKS), DEFAULT_MAX_STACKS);
         if (stacks < 1 || stacks > ItemRepairRecipes.MAX_LINES) {
             warnings.add(MAX_STACKS + " must be a whole number from 1 to 4; item repairs are held off.");
-            held = true; stacks = DEFAULT_MAX_STACKS;
+            held = true;
+            stacks = DEFAULT_MAX_STACKS;
         }
         boolean survival = safety(get.apply(REQUIRE_SURVIVAL), REQUIRE_SURVIVAL, warnings);
         boolean block = safety(get.apply(BLOCK_CASH), BLOCK_CASH, warnings);
         var recipes = new EnumMap<IncidentType, List<ItemRepairRecipes.Line>>(IncidentType.class);
         for (IncidentType type : IncidentType.values()) {
             Object raw = get.apply(RECIPES + type.name());
-            if (raw == null) { recipes.put(type, DEFAULT_RECIPES.get(type)); continue; }
+            if (raw == null) {
+                recipes.put(type, DEFAULT_RECIPES.get(type));
+                continue;
+            }
             var parsed = parse(raw, maxStack);
             if (parsed.isPresent()) recipes.put(type, parsed.get());
             else warnings.add(RECIPES + type.name() + " is not a valid item list; that problem is cash only.");
@@ -106,7 +113,11 @@ public record ItemRepairSettings(boolean enabled, boolean held, int ratioBps, in
             if (!(material instanceof String name) || !(quantity instanceof Integer count)) return Optional.empty();
             if (count < 1 || count > ItemRepairRecipes.MAX_LINE_QUANTITY || !seen.add(name)) return Optional.empty();
             int stack;
-            try { stack = maxStack.applyAsInt(name); } catch (RuntimeException unknown) { return Optional.empty(); }
+            try {
+                stack = maxStack.applyAsInt(name);
+            } catch (RuntimeException unknown) {
+                return Optional.empty();
+            }
             if (!ItemRepairRecipes.allowedMaterial(name, stack)) return Optional.empty();
             lines.add(new ItemRepairRecipes.Line(name, count));
         }

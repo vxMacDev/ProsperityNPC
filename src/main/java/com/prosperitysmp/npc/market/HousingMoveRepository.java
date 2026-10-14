@@ -19,11 +19,14 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.Duration;
+import java.time.ZoneOffset;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.HexFormat;
 import java.util.List;
@@ -57,7 +60,7 @@ public final class HousingMoveRepository {
         this(database, clock, zone, resetHour, premiumEnabled, 0);
     }
 
-    /** evictedSlotLockDays 0 = off (exact prior behavior); N keeps a paid-eviction slot closed for N economy days. */
+    /** evictedSlotLockDays 0 = off; N keeps a paid-eviction slot closed for N economy days. */
     public HousingMoveRepository(Database database, Clock clock, ZoneId zone, int resetHour, boolean premiumEnabled,
                                  int evictedSlotLockDays) {
         if (evictedSlotLockDays < 0 || evictedSlotLockDays > 30) throw new IllegalArgumentException("Invalid evicted slot lock days");
@@ -65,14 +68,18 @@ public final class HousingMoveRepository {
         this.database = Objects.requireNonNull(database);
         this.clock = Objects.requireNonNull(clock);
         this.days = new EconomyClock(clock, zone, resetHour);
-        this.zone = Objects.requireNonNull(zone); this.resetHour = resetHour; this.premiumEnabled = premiumEnabled;
+        this.zone = Objects.requireNonNull(zone);
+        this.resetHour = resetHour;
+        this.premiumEnabled = premiumEnabled;
         this.services = new ServiceAssessmentRepository(database, clock, zone, resetHour);
     }
 
     /** Quote only an actual currently admissible vacancy. No receipt, quota or occupancy write. */
     public HousingMoveRequest quote(UUID requestId, UUID residentId, UUID propertyId, int slot,
                                     LocalDate day) throws SQLException {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(residentId); Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(residentId);
+        Objects.requireNonNull(propertyId);
         validDay(day);
         if (slot < 0 || slot > 3) throw new IllegalArgumentException("Invalid housing slot");
         return transaction(c -> {
@@ -93,7 +100,8 @@ public final class HousingMoveRepository {
 
     /** Receipt, quota consumption, occupancy and cooldown either all commit or all roll back. */
     public Result apply(HousingMoveRequest request, Policy policy) throws SQLException {
-        Objects.requireNonNull(request); Objects.requireNonNull(policy);
+        Objects.requireNonNull(request);
+        Objects.requireNonNull(policy);
         return transaction(c -> {
             HousingRegistry.lock(c);
             Optional<Receipt> prior = receipt(c, request.requestId());
@@ -110,7 +118,8 @@ public final class HousingMoveRepository {
                     && home.market().equals(request.marketId()) && home.propertyClass().equals(request.classKey()),
                     "Housing property changed");
             HousingRegistry.Member member = member(c, request.residentId());
-            require(member.revision() == request.membershipRevision() && member.policy().tier() == request.tier(), "Housing membership changed");
+            require(member.revision() == request.membershipRevision() && member.policy().tier() == request.tier(),
+                    "Housing membership changed");
             eligible(home, member, request.day(), request.slot());
             PremiumEvidence premium = request.tier() == HousingPolicy.Tier.PREMIUM ? premiumEvidence(c, home) : null;
             PremiumEvidence sourceEvidence = null;
@@ -137,7 +146,7 @@ public final class HousingMoveRepository {
                         VALUES (?,?,?,?,?,?,?,?,?,NULL,?)
                         """, departure.residentId(), departure.occupancyRevisionBefore(), departure.occupancyRevisionAfter(),
                         departure.propertyId(), departure.ownerAtDeparture(), departure.ownershipEpoch(), departure.slot(),
-                        java.time.LocalDateTime.ofInstant(at, java.time.ZoneOffset.UTC), departure.cause().name(), departure.fingerprint())) { one(c, ps); }
+                        LocalDateTime.ofInstant(at, ZoneOffset.UTC), departure.cause().name(), departure.fingerprint())) { one(c, ps); }
                 // Two revisions preserve the existing departure-before-successor invariant, without a visible vacant interval.
                 try (var ps = prepare(c, """
                         UPDATE npc_tenants SET property_id=?,slot=?,move_cooldown_until_day=?,row_version=row_version+2
@@ -162,23 +171,32 @@ public final class HousingMoveRepository {
             String columns = evidence == null ? "" : ",tier,premium_evidence,premium_evidence_sha256";
             String values = evidence == null ? "" : ",?,?,?";
             if (request.origin() != null) {
-                columns += ",origin_property_id,origin_owner_uuid,origin_ownership_epoch,origin_property_revision,origin_slot,origin_admission_id";
+                columns += ",origin_property_id,origin_owner_uuid,origin_ownership_epoch,origin_property_revision,"
+                        + "origin_slot,origin_admission_id";
                 values += ",?,?,?,?,?,?";
             }
             try (PreparedStatement ps = prepare(c, """
                     INSERT INTO npc_housing_moves(request_id,payload_hash,economy_day,resident_id,property_id,owner_uuid,
                       ownership_epoch,property_revision,membership_revision,tenancy_revision_before,tenancy_revision_after,
                       slot,world_uuid,market_id,class_key,cooldown_until,applied_at_millis
-                    """ + columns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?" + values + ")", request.requestId(), request.fingerprint(policy), request.day().toString(), request.residentId(),
-                    request.propertyId(), request.ownerId(), request.ownershipEpoch(), request.propertyRevision(),
+                    """ + columns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?" + values + ")", request.requestId(),
+                    request.fingerprint(policy), request.day().toString(), request.residentId(), request.propertyId(), request.ownerId(),
+                    request.ownershipEpoch(), request.propertyRevision(),
                     request.membershipRevision(), request.tenancyRevision(), after, request.slot(), request.worldId(),
                     request.marketId(), request.classKey(), cooldown.toString(), at.toEpochMilli())) {
-                if (evidence != null) { ps.setString(18, request.tier().name()); ps.setBytes(19, evidence); ps.setString(20, sha256(evidence)); }
+                if (evidence != null) {
+                    ps.setString(18, request.tier().name());
+                    ps.setBytes(19, evidence);
+                    ps.setString(20, sha256(evidence));
+                }
                 if (request.origin() != null) {
                     var origin = request.origin();
-                    ps.setBytes(21, Uuids.toBytes(origin.propertyId())); ps.setBytes(22, Uuids.toBytes(origin.ownerId()));
-                    ps.setInt(23, origin.ownershipEpoch()); ps.setLong(24, origin.propertyRevision());
-                    ps.setInt(25, origin.slot()); ps.setBytes(26, Uuids.toBytes(origin.admissionId()));
+                    ps.setBytes(21, Uuids.toBytes(origin.propertyId()));
+                    ps.setBytes(22, Uuids.toBytes(origin.ownerId()));
+                    ps.setInt(23, origin.ownershipEpoch());
+                    ps.setLong(24, origin.propertyRevision());
+                    ps.setInt(25, origin.slot());
+                    ps.setBytes(26, Uuids.toBytes(origin.admissionId()));
                 }
                 one(c, ps);
             }
@@ -190,7 +208,10 @@ public final class HousingMoveRepository {
     /** Historical evidence, not proof that the resident still occupies the recorded slot. */
     public Optional<Receipt> find(UUID requestId) throws SQLException {
         Objects.requireNonNull(requestId);
-        return transaction(c -> { HousingRegistry.lock(c); return receipt(c, requestId); });
+        return transaction(c -> {
+            HousingRegistry.lock(c);
+            return receipt(c, requestId);
+        });
     }
 
     private static HousingRegistry.Member member(Connection c, UUID resident) throws SQLException {
@@ -216,14 +237,19 @@ public final class HousingMoveRepository {
         String region;
         try (var ps = prepare(c, "SELECT reference_rent_cents,region_id FROM npc_properties WHERE property_id=?", home.id());
              var rs = ps.executeQuery()) {
-            require(next(c, ps, rs), "Premium home missing"); reference = number(rs, "reference_rent_cents"); region = rs.getString("region_id");
+            require(next(c, ps, rs), "Premium home missing");
+            reference = number(rs, "reference_rent_cents");
+            region = rs.getString("region_id");
             require(!next(c, ps, rs), "Duplicate premium home");
         }
         int installed = 0, effective = 0;
-        try (var ps = prepare(c, "SELECT level,disabled_incident_id FROM npc_upgrades WHERE property_id=? AND upgrade_type='FACILITIES' FOR UPDATE", home.id());
+        try (var ps = prepare(c,
+                "SELECT level,disabled_incident_id FROM npc_upgrades WHERE property_id=? AND upgrade_type='FACILITIES' FOR UPDATE",
+                home.id());
              var rs = ps.executeQuery()) {
             if (next(c, ps, rs)) {
-                installed = integer(rs, "level"); effective = rs.getObject("disabled_incident_id") == null ? installed : 0;
+                installed = integer(rs, "level");
+                effective = rs.getObject("disabled_incident_id") == null ? installed : 0;
                 require(!next(c, ps, rs), "Duplicate premium facilities");
             }
         }
@@ -232,15 +258,17 @@ public final class HousingMoveRepository {
                 SELECT 1 FROM npc_utility_bills b WHERE b.property_id=? AND b.ownership_epoch=? AND b.due_at<=?
                 AND NOT EXISTS (SELECT 1 FROM npc_utility_payments p WHERE p.property_id=b.property_id
                   AND p.economy_day=b.economy_day AND p.state='PAID') LIMIT 1
-                """, home.id(), home.epoch(), java.time.LocalDateTime.ofInstant(at, java.time.ZoneOffset.UTC));
+                """, home.id(), home.epoch(), LocalDateTime.ofInstant(at, ZoneOffset.UTC));
              var rs = ps.executeQuery()) { require(!next(c, ps, rs), "Premium home has unpaid matured utilities"); }
-        if (premiumEligibility) try (var ps = prepare(c, "SELECT 1 FROM npc_incidents WHERE property_id=? AND prevented=FALSE AND resolved_at IS NULL AND due_at<=? LIMIT 1",
-                home.id(), java.time.LocalDateTime.ofInstant(at, java.time.ZoneOffset.UTC));
+        if (premiumEligibility) try (var ps = prepare(c,
+                "SELECT 1 FROM npc_incidents WHERE property_id=? AND prevented=FALSE AND resolved_at IS NULL AND due_at<=? LIMIT 1",
+                home.id(), LocalDateTime.ofInstant(at, ZoneOffset.UTC));
              var rs = ps.executeQuery()) { require(!next(c, ps, rs), "Premium home has overdue service incidents"); }
         var facts = new HousingMarketSnapshot.Home(home.id(), home.owner(), home.world(), region, home.market(), home.propertyClass(),
                 home.epoch(), home.revision(), home.capacity(), reference, home.rent(), home.condition(), installed, effective, List.of());
         ServiceAssessment assessment = services.readInTransaction(c, at, home.owner(), at.minus(Duration.ofDays(29)), 7);
-        if (premiumEligibility) require(PremiumHousingEligibility.evaluate(facts, assessment, zone, resetHour).eligible(), "Premium service evidence no longer qualifies");
+        if (premiumEligibility) require(PremiumHousingEligibility.evaluate(facts, assessment, zone, resetHour).eligible(),
+                "Premium service evidence no longer qualifies");
         return new PremiumEvidence(facts, assessment);
     }
 
@@ -250,21 +278,27 @@ public final class HousingMoveRepository {
         Home source = home(c, origin.propertyId());
         require(source.enabled() && source.owner().equals(origin.ownerId()) && source.epoch() == origin.ownershipEpoch()
                 && source.revision() == origin.propertyRevision() && source.world().equals(request.worldId())
-                && source.market().equals(request.marketId()) && source.propertyClass().equals(request.classKey()), "Relocation source changed");
+                && source.market().equals(request.marketId()) && source.propertyClass().equals(request.classKey()),
+                "Relocation source changed");
         Receipt prior = receipt(c, origin.admissionId()).orElseThrow(() -> new SQLException("Relocation origin receipt missing"));
         require(prior.request().residentId().equals(request.residentId()) && prior.request().tier() == HousingPolicy.Tier.PREMIUM
                 && prior.request().propertyId().equals(origin.propertyId()) && prior.request().slot() == origin.slot()
                 && prior.tenancyRevisionAfter() == request.tenancyRevision() && !request.day().isBefore(prior.cooldownUntil()),
                 "Relocation origin admission changed or cooldown active");
-        try (var ps = prepare(c, "SELECT property_id,slot,row_version,tier,move_cooldown_until_day FROM npc_tenants WHERE tenant_id=? FOR UPDATE", request.residentId());
+        try (var ps = prepare(c,
+                "SELECT property_id,slot,row_version,tier,move_cooldown_until_day FROM npc_tenants WHERE tenant_id=? FOR UPDATE",
+                request.residentId());
              var rs = ps.executeQuery()) {
             require(next(c, ps, rs) && origin.propertyId().equals(uuid(rs, "property_id")) && integer(rs, "slot") == origin.slot()
                     && number(rs, "row_version") == request.tenancyRevision() && "PREMIUM".equals(rs.getString("tier"))
                     && !request.day().isBefore(parseDay(rs.getString("move_cooldown_until_day"))) && !next(c, ps, rs),
                     "Relocation occupancy changed");
         }
-        try (var ps = prepare(c, "SELECT request_id FROM npc_housing_moves WHERE resident_id=? ORDER BY tenancy_revision_after DESC,request_id LIMIT 1 FOR UPDATE", request.residentId());
-             var rs = ps.executeQuery()) { require(next(c, ps, rs) && origin.admissionId().equals(uuid(rs, "request_id")), "Relocation history changed"); }
+        try (var ps = prepare(c,
+                "SELECT request_id FROM npc_housing_moves WHERE resident_id=? "
+                + "ORDER BY tenancy_revision_after DESC,request_id LIMIT 1 FOR UPDATE", request.residentId());
+             var rs = ps.executeQuery()) { require(next(c, ps, rs) && origin.admissionId().equals(uuid(rs, "request_id")),
+             "Relocation history changed"); }
         PremiumEvidence evidence = serviceEvidence(c, source, false);
         require(HousingDecisionPlan.rank(evidence.home(), evidence.assessment(),
                 HousingDecisionPlan.ColdStartPolicy.HOLD_UNRATED).status() == HousingDecisionPlan.RankStatus.RATED,
@@ -277,10 +311,12 @@ public final class HousingMoveRepository {
     private static double score(PremiumEvidence evidence) {
         var h = evidence.home();
         return PropertyFormulas.propertyScore(h.condition(), PropertyFormulas.facilitiesScore(h.effectiveFacilities()),
-                PropertyFormulas.rentFairness(h.askingRentCents(), h.referenceRentCents()), evidence.assessment().operatorScore().orElseThrow());
+                PropertyFormulas.rentFairness(h.askingRentCents(), h.referenceRentCents()),
+                evidence.assessment().operatorScore().orElseThrow());
     }
 
-    private byte[] evidence(HousingMoveRequest request, Policy policy, PremiumEvidence premium, PremiumEvidence source) throws SQLException {
+    private byte[] evidence(HousingMoveRequest request, Policy policy, PremiumEvidence premium,
+            PremiumEvidence source) throws SQLException {
         var assessment = premium.assessment();
         var text = new StringBuilder("premium-proof-v1|").append(request.fingerprint(policy)).append('\n')
                 .append(assessment.capturedAt()).append('|').append(assessment.windowFrom()).append('|').append(zone.getId())
@@ -314,7 +350,8 @@ public final class HousingMoveRepository {
             int enabled = integer(rs, "enabled");
             long revision = number(rs, "row_version"), rent = number(rs, "asking_rent_cents");
             String market = rs.getString("market_id"), propertyClass = rs.getString("class_key");
-            HousingPolicy.key(market); HousingPolicy.key(propertyClass);
+            HousingPolicy.key(market);
+            HousingPolicy.key(propertyClass);
             require(epoch >= 0 && revision >= 0 && revision < Long.MAX_VALUE && capacity >= 1 && capacity <= 4
                     && condition >= 0 && condition <= 100 && rent >= 1 && rent <= Integer.MAX_VALUE
                     && enabled >= 0 && enabled <= 1, "Invalid housing property");
@@ -329,12 +366,16 @@ public final class HousingMoveRepository {
         Long lastAdmission = null;
         LocalDate lastCooldown = null;
         UUID priorRequest = null;
-        try (PreparedStatement ps = prepare(c, "SELECT request_id FROM npc_housing_moves WHERE resident_id=? ORDER BY tenancy_revision_after DESC,request_id LIMIT 1 FOR UPDATE", resident);
+        try (PreparedStatement ps = prepare(c,
+                "SELECT request_id FROM npc_housing_moves WHERE resident_id=? "
+                + "ORDER BY tenancy_revision_after DESC,request_id LIMIT 1 FOR UPDATE", resident);
              ResultSet rs = ps.executeQuery()) {
             if (next(c, ps, rs)) priorRequest = uuid(rs, "request_id");
         }
         UUID chronological = null;
-        try (PreparedStatement ps = prepare(c, "SELECT request_id FROM npc_housing_moves WHERE resident_id=? ORDER BY economy_day DESC,applied_at_millis DESC,request_id DESC LIMIT 1 FOR UPDATE", resident);
+        try (PreparedStatement ps = prepare(c,
+                "SELECT request_id FROM npc_housing_moves WHERE resident_id=? "
+                + "ORDER BY economy_day DESC,applied_at_millis DESC,request_id DESC LIMIT 1 FOR UPDATE", resident);
              ResultSet rs = ps.executeQuery()) {
             if (next(c, ps, rs)) chronological = uuid(rs, "request_id");
         }
@@ -368,12 +409,13 @@ public final class HousingMoveRepository {
      * Slots closed by a paid eviction. The immutable departure row is written in the eviction's own
      * transaction, so the lock is atomic with it; an economy day D eviction blocks D..D+lockDays-1.
      */
-    static java.util.Set<Integer> evictedSlots(Connection c, EconomyClock days, UUID property, LocalDate day, int lockDays) throws SQLException {
-        java.util.Set<Integer> out = new HashSet<>();
+    static Set<Integer> evictedSlots(Connection c, EconomyClock days, UUID property, LocalDate day, int lockDays) throws SQLException {
+        Set<Integer> out = new HashSet<>();
         if (lockDays <= 0) return out;
         Instant from = days.startOf(day.minusDays(lockDays - 1L));
-        try (PreparedStatement ps = prepare(c, "SELECT DISTINCT slot FROM npc_tenancy_departures WHERE property_id=? AND cause='PAID_EVICTION' AND departed_at>=?",
-                property, java.time.LocalDateTime.ofInstant(from, java.time.ZoneOffset.UTC));
+        try (PreparedStatement ps = prepare(c,
+                "SELECT DISTINCT slot FROM npc_tenancy_departures WHERE property_id=? AND cause='PAID_EVICTION' AND departed_at>=?",
+                property, LocalDateTime.ofInstant(from, ZoneOffset.UTC));
              ResultSet rs = ps.executeQuery()) {
             while (next(c, ps, rs)) out.add(integer(rs, "slot"));
         }
@@ -381,13 +423,15 @@ public final class HousingMoveRepository {
     }
     private void availableSlot(Connection c, Home home, int selected, LocalDate day) throws SQLException {
         require(!evictedSlots(c, days, home.id(), day, evictedSlotLockDays).contains(selected), "Housing slot recently vacated");
-        try (PreparedStatement ps = prepare(c, "SELECT tenant_id,slot FROM npc_tenants WHERE property_id=? ORDER BY tenant_id LIMIT 5 FOR UPDATE", home.id());
+        try (PreparedStatement ps = prepare(c,
+                "SELECT tenant_id,slot FROM npc_tenants WHERE property_id=? ORDER BY tenant_id LIMIT 5 FOR UPDATE", home.id());
              ResultSet rs = ps.executeQuery()) {
             HashSet<Integer> slots = new HashSet<>();
             while (next(c, ps, rs)) {
                 int slot = integer(rs, "slot");
                 Uuids.fromBytes(rs.getBytes("tenant_id"));
-                require(slot >= 0 && slot < home.capacity() && slots.add(slot) && slots.size() <= home.capacity(), "Invalid existing housing occupancy");
+                require(slot >= 0 && slot < home.capacity() && slots.add(slot) && slots.size() <= home.capacity(),
+                        "Invalid existing housing occupancy");
                 require(slot != selected, "Housing slot occupied");
             }
         }
@@ -406,8 +450,13 @@ public final class HousingMoveRepository {
     }
     private static void pinPolicy(Connection c, LocalDate day, Policy policy) throws SQLException {
         Optional<Policy> existing = policy(c, day);
-        if (existing.isPresent()) { require(existing.get().equals(policy), "Housing day policy conflict"); return; }
-        try (PreparedStatement ps = prepare(c, "INSERT INTO npc_housing_days(economy_day,server_limit,market_limit,property_limit,cooldown_days) VALUES (?,?,?,?,?)", day.toString(),
+        if (existing.isPresent()) {
+            require(existing.get().equals(policy), "Housing day policy conflict");
+            return;
+        }
+        try (PreparedStatement ps = prepare(c,
+                "INSERT INTO npc_housing_days(economy_day,server_limit,market_limit,property_limit,cooldown_days) VALUES (?,?,?,?,?)",
+                day.toString(),
                 policy.serverLimit(), policy.marketLimit(), policy.propertyLimit(), policy.cooldownDays())) { one(c, ps); }
     }
     private static Optional<Policy> policy(Connection c, LocalDate day) throws SQLException {
@@ -424,7 +473,8 @@ public final class HousingMoveRepository {
     private void quota(Connection c, HousingMoveRequest request, Policy policy) throws SQLException {
         int total = 0, market = 0, property = 0;
         HashSet<UUID> residents = new HashSet<>();
-        try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_housing_moves WHERE economy_day=? ORDER BY request_id LIMIT 513 FOR UPDATE", request.day().toString());
+        try (PreparedStatement ps = prepare(c,
+                "SELECT * FROM npc_housing_moves WHERE economy_day=? ORDER BY request_id LIMIT 513 FOR UPDATE", request.day().toString());
              ResultSet rs = ps.executeQuery()) {
             while (next(c, ps, rs)) {
                 require(++total <= 512, "Housing daily receipts exceed bound");
@@ -436,7 +486,8 @@ public final class HousingMoveRepository {
                 if (r.propertyId().equals(request.propertyId())) property++;
             }
         }
-        require(total < policy.serverLimit() && market < policy.marketLimit() && property < policy.propertyLimit(), "Housing daily quota reached");
+        require(total < policy.serverLimit() && market < policy.marketLimit() && property < policy.propertyLimit(),
+                "Housing daily quota reached");
     }
     private Optional<Receipt> receipt(Connection c, UUID requestId) throws SQLException {
         // Registry lock serializes receipt writers; release this reader before loading its day policy.
@@ -496,18 +547,23 @@ public final class HousingMoveRepository {
             if (column.equalsIgnoreCase(columns.getColumnLabel(i))) return true;
         return false;
     }
-    private void currentDay(LocalDate day) throws SQLException { require(day.equals(days.today()), "Housing requires current economy day"); }
+    private void currentDay(LocalDate day) throws SQLException { require(day.equals(days.today()),
+            "Housing requires current economy day"); }
     private static void validDay(LocalDate day) {
         Objects.requireNonNull(day);
         if (day.getYear() < 1 || day.getYear() > 9999) throw new IllegalArgumentException("Housing day out of range");
     }
     private static LocalDate parseDay(String value) {
         if (value == null || !value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) throw new IllegalArgumentException("Invalid housing day");
-        LocalDate day = LocalDate.parse(value); validDay(day); return day;
+        LocalDate day = LocalDate.parse(value);
+        validDay(day);
+        return day;
     }
     private static UUID uuid(ResultSet rs, String column) throws SQLException { return Uuids.fromBytes(rs.getBytes(column)); }
     private static long number(ResultSet rs, String column) throws SQLException {
-        long value = rs.getLong(column); require(!rs.wasNull(), "Missing housing number"); return value;
+        long value = rs.getLong(column);
+        require(!rs.wasNull(), "Missing housing number");
+        return value;
     }
     private static int integer(ResultSet rs, String column) throws SQLException { return Math.toIntExact(number(rs, column)); }
     private static void require(boolean condition, String message) throws SQLException { if (!condition) throw new SQLException(message); }
@@ -520,25 +576,41 @@ public final class HousingMoveRepository {
                 else ps.setObject(i + 1, values[i]);
             }
             return ps;
-        } catch (SQLException | RuntimeException failure) { ps.close(); throw failure; }
+        } catch (SQLException | RuntimeException failure) {
+            ps.close();
+            throw failure;
+        }
     }
     private static void warnings(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        require(c.getWarnings() == null && ps.getWarnings() == null && (rs == null || rs.getWarnings() == null), "Incomplete housing move operation");
+        require(c.getWarnings() == null && ps.getWarnings() == null && (rs == null || rs.getWarnings() == null),
+                "Incomplete housing move operation");
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        warnings(c, ps, rs); boolean value = rs.next(); warnings(c, ps, rs); return value;
+        warnings(c, ps, rs);
+        boolean value = rs.next();
+        warnings(c, ps, rs);
+        return value;
     }
     private static void one(Connection c, PreparedStatement ps) throws SQLException {
-        require(ps.executeUpdate() == 1, "Housing write did not affect one row"); warnings(c, ps, null);
+        require(ps.executeUpdate() == 1, "Housing write did not affect one row");
+        warnings(c, ps, null);
     }
     private interface Work<T> { T run(Connection c) throws SQLException; }
     private <T> T transaction(Work<T> work) throws SQLException {
         try (Connection c = database.getConnection()) {
             c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
             c.setAutoCommit(false);
-            try { T result = work.run(c); c.commit(); return result; }
+            try {
+                T result = work.run(c);
+                c.commit();
+                return result;
+            }
             catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 if (failure instanceof SQLException sql) throw sql;
                 throw new SQLException("Invalid housing move state", failure);
             }

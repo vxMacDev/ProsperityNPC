@@ -253,7 +253,7 @@ class VoluntaryDepartureRepositoryIT {
         assertEquals(List.of(), repo(seed, DAY).runDay(DAY, List.of(target(home)), MOODS).departed());
         assertEquals(1, housed(home));
         try (Connection c = db.getConnection()) { exec(c, "UPDATE npc_properties SET enabled=TRUE WHERE property_id=?", home); }
-        assertEquals(1, repo(seed, DAY).runDay(DAY, List.of(target(home)), MOODS).departed().size(), "positive control");
+        assertEquals(1, repo(seed, DAY).runDay(DAY, List.of(target(home)), MOODS).departed().size(), "enabled again with the same owner, the home does lose a resident");
     }
 
     @Test void moodsNeverRecordedMeansNoEvidenceAndNoDeparture() throws Exception {
@@ -262,7 +262,7 @@ class VoluntaryDepartureRepositoryIT {
         long seed = seedWhere(List.of(home), DAY, 0, 1);
         assertEquals(List.of(), repo(seed, DAY).runDay(DAY, List.of(target(home)), MOODS).departed());
         try (Connection c = db.getConnection()) { exec(c, "UPDATE npc_tenants SET mood_day=?", DAY.toString()); }
-        assertEquals(1, repo(seed, DAY).runDay(DAY, List.of(target(home)), MOODS).departed().size(), "positive control");
+        assertEquals(1, repo(seed, DAY).runDay(DAY, List.of(target(home)), MOODS).departed().size(), "with moods recorded the same home does lose a resident");
     }
 
     @Test void voluntaryCauseCarriesNoPurchaseAndTheSchemaAgrees() throws Exception {

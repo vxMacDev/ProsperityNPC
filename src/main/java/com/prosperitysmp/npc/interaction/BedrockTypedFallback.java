@@ -24,7 +24,10 @@ final class BedrockTypedFallback {
 
     /** Typed action numbers start at 1; returns the zero-based index or -1. */
     static int index(String typed) {
-        try { int n = Integer.parseInt(typed.trim()); return n >= 1 && n <= 99 ? n - 1 : -1; }
+        try {
+            int n = Integer.parseInt(typed.trim());
+            return n >= 1 && n <= 99 ? n - 1 : -1;
+        }
         catch (NumberFormatException bad) { return -1; }
     }
 }

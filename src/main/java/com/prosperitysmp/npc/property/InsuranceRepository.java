@@ -2,6 +2,7 @@ package com.prosperitysmp.npc.property;
 
 import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.formulas.PropertyFormulas;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -46,7 +47,10 @@ public final class InsuranceRepository {
      */
     public ApplyResult applyPaid(Connection c, long eventId, Property expected, Instant at, LocalDate day)
             throws SQLException {
-        transaction(c); scope(expected); time(at); day(day);
+        transaction(c);
+        scope(expected);
+        time(at);
+        day(day);
         if (eventId <= 0) throw new IllegalArgumentException("Invalid insurance event");
         Instant appliedAt = at.truncatedTo(ChronoUnit.MILLIS);
         PropertyState actual = property(c, expected.propertyId());
@@ -83,7 +87,9 @@ public final class InsuranceRepository {
 
     /** Tomorrow's seven-day interval must not overlap this owner's incarnation, even if used. */
     public boolean canPurchase(Connection c, UUID propertyId, LocalDate applicationDay) throws SQLException {
-        transaction(c); Objects.requireNonNull(propertyId); day(applicationDay);
+        transaction(c);
+        Objects.requireNonNull(propertyId);
+        day(applicationDay);
         PropertyState p = property(c, propertyId);
         return p.enabled() && p.owner() != null && canPurchaseLocked(c, propertyId, p.owner(), p.epoch(), applicationDay);
     }
@@ -103,19 +109,29 @@ public final class InsuranceRepository {
 
     /** Nonlocking current-incarnation snapshot; an active term wins over an adjacent renewal. */
     public Optional<CoverageView> snapshot(Connection c, Property property, LocalDate day) throws SQLException {
-        transaction(c); Objects.requireNonNull(property); Objects.requireNonNull(property.propertyId()); day(day);
+        transaction(c);
+        Objects.requireNonNull(property);
+        Objects.requireNonNull(property.propertyId());
+        day(day);
         return view(c, property, null, day, false);
     }
 
     public Optional<CoverageView> snapshot(Connection c, Property property, Instant at, LocalDate day) throws SQLException {
-        transaction(c); Objects.requireNonNull(property); Objects.requireNonNull(property.propertyId()); time(at); day(day);
+        transaction(c);
+        Objects.requireNonNull(property);
+        Objects.requireNonNull(property.propertyId());
+        time(at);
+        day(day);
         return view(c, property, at, day, false);
     }
 
     /** Current incarnation's pending/active term, including consumption. Locks property first. */
     public Optional<CoverageView> current(Connection c, Property expected, Instant at, LocalDate day)
             throws SQLException {
-        transaction(c); scope(expected); time(at); day(day);
+        transaction(c);
+        scope(expected);
+        time(at);
+        day(day);
         if (!matches(property(c, expected.propertyId()), expected)) return Optional.empty();
         return view(c, expected, at, day, true);
     }
@@ -133,7 +149,10 @@ public final class InsuranceRepository {
      */
     public PreventionResult recordPrevention(Connection c, Property expected, long incidentId,
                                              Instant at, LocalDate day) throws SQLException {
-        transaction(c); scope(expected); time(at); day(day);
+        transaction(c);
+        scope(expected);
+        time(at);
+        day(day);
         if (incidentId <= 0) throw new IllegalArgumentException("Invalid insurance incident");
         Instant generatedAt = at.truncatedTo(ChronoUnit.MILLIS);
         require(matches(property(c, expected.propertyId()), expected), "Insurance ownership unavailable");
@@ -302,7 +321,9 @@ public final class InsuranceRepository {
                 && receipt.ownershipEpoch() == expected.ownershipEpoch() && receipt.capacity() == expected.capacity();
     }
     private static void scope(Property p) {
-        Objects.requireNonNull(p); Objects.requireNonNull(p.propertyId()); Objects.requireNonNull(p.ownerUuid());
+        Objects.requireNonNull(p);
+        Objects.requireNonNull(p.propertyId());
+        Objects.requireNonNull(p.ownerUuid());
         if (p.ownershipEpoch() < 0 || p.capacity() < 1 || p.capacity() > 4)
             throw new IllegalArgumentException("Invalid insurance property scope");
     }
@@ -335,7 +356,7 @@ public final class InsuranceRepository {
         return Uuids.fromBytes(value);
     }
     private static long number(ResultSet rs, String column, long min, long max) throws SQLException {
-        java.math.BigDecimal value = rs.getBigDecimal(column);
+        BigDecimal value = rs.getBigDecimal(column);
         require(value != null, "Missing insurance numeric field");
         try {
             long result = value.longValueExact();
@@ -352,7 +373,10 @@ public final class InsuranceRepository {
                 else ps.setObject(i + 1, args[i]);
             }
             return ps;
-        } catch (SQLException | RuntimeException failure) { ps.close(); throw failure; }
+        } catch (SQLException | RuntimeException failure) {
+            ps.close();
+            throw failure;
+        }
     }
     private static void one(Connection c, PreparedStatement ps) throws SQLException {
         require(ps.executeUpdate() == 1, "Insurance write affected unexpected rows");

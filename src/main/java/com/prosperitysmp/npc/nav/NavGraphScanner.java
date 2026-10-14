@@ -1,12 +1,13 @@
 package com.prosperitysmp.npc.nav;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import java.util.Objects;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 
 /**
- * Builds a draft {@link NavGraph} from real world blocks (§10.1). It samples the
+ * Builds a draft {@link NavGraph} from real world blocks. It samples the
  * scan box on the main thread and delegates the node/edge rules to the pure
  * {@link NavScanLogic}. Capture is sliced across ticks and never loads a chunk.
  * Only the completed captured terrain may be passed to worker-side graph derivation.
@@ -44,7 +45,7 @@ public final class NavGraphScanner {
         private Capture(World world, NavScanLogic.Bounds bounds, NavPalette palette, int headroom, int maxStep) {
             this.world = world;
             this.bounds = bounds;
-            this.palette = java.util.Objects.requireNonNull(palette);
+            this.palette = Objects.requireNonNull(palette);
             this.headroom = headroom;
             this.maxStep = maxStep;
             terrain = new NavTerrainCapture(bounds, headroom, maxStep);

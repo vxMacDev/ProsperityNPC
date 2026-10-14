@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Real, disposable MariaDB rehearsal of the registered V5 -> V15 SQL resources.
- * No plugin startup, wallet/provider calls, runtime switches, or DEV/VPS access.
+ * No plugin startup, wallet/provider calls, runtime switches, or access to a live server.
  * HELD_DEV has no occupancy or financial rows; LEGACY_ROWS is synthetic SQL-only coverage.
  * This tests DDL recovery, not MigrationRunner.run's dispatch or the guarded updater.
  */
@@ -174,9 +174,9 @@ class DevUpgradeIT {
     }
 
     /**
-     * linked-accounts (V34) on an upgraded dev schema: every migration up to the latest applies on top of the legacy
-     * V1 benefit-unit rows and leaves them byte for byte as they were. V34 adds its own two tables, empty, and can be
-     * replayed. The V1 tables stay unused by main code and are not dropped.
+     * linked-accounts (V34) on an upgraded schema: every migration up to the latest applies on top of the V1
+     * benefit-unit rows and leaves them byte for byte unchanged. V34 adds its own two tables, empty, and can be
+     * replayed. The V1 tables are unused by main code and are not dropped.
      */
     @Test
     void linkedAccountsLeavesTheLegacyBenefitUnitRowsAsTheyAre() throws Exception {
@@ -191,8 +191,8 @@ class DevUpgradeIT {
                 seedV5(c, Fixture.LEGACY_ROWS);
                 List<List<String>> units = rows(c, "SELECT * FROM npc_benefit_units ORDER BY benefit_unit_id");
                 List<List<String>> members = rows(c, "SELECT * FROM npc_benefit_unit_members ORDER BY member_uuid");
-                assertEquals(1, units.size(), "positive control: the legacy unit row is there");
-                assertEquals(1, members.size(), "positive control: the legacy member row is there");
+                assertEquals(1, units.size(), "the legacy unit row is there");
+                assertEquals(1, members.size(), "the legacy member row is there");
                 for (Migration migration : all) if (migration.version() > 5) apply(c, migration);
                 // Replaying V34's DDL (a restart after its tables, before its marker) changes nothing.
                 for (String sql : linked.statements()) execute(c, sql);
@@ -325,7 +325,7 @@ class DevUpgradeIT {
                     Map<String, String> before = schema(c);
                     if (prefix == 0) assertResolutionDecisions(c, false);
                     for (String sql : staff.statements().subList(0, prefix)) execute(c, sql);
-                    // A partial run keeps the old check too, so it refuses the new decision rather than taking a bad one.
+                    // A partial run still has the earlier check, so it refuses the new decision rather than taking a bad one.
                     if (prefix == 1) assertResolutionDecisions(c, false);
                     apply(c, staff);
                     for (String sql : staff.statements()) execute(c, sql);
@@ -367,7 +367,7 @@ class DevUpgradeIT {
                 giver.occupation().name(), giver.means().name(), giver.lifeStage().name(),
                 giver.temperament().name(), giver.preference().name(), giver.wardrobe().everyday(),
                 giver.wardrobe().work(), giver.wardrobe().leisure());
-        // Positive controls: kept terms on a partnership hand-in, and no terms on an older one or on a plain contract.
+        // Kept terms are accepted on a partnership hand-in, and no terms on an older one or on a plain contract.
         handIn(c, giver.id(), "PARTNERSHIP", 40, 0, 7);
         handIn(c, giver.id(), "PARTNERSHIP", 0, 2, 30);
         handIn(c, giver.id(), "PARTNERSHIP", null, null, null);
@@ -409,7 +409,7 @@ class DevUpgradeIT {
                 + "recipient_id, material, quantity, minimum_stage, duration_minutes, accepted_at_millis, accepted_economy_day, "
                 + "day_slot, expires_at_millis, status) VALUES (?,?,'SUPPLY','wall-stone','Wall stone','Bring stone.',?,?,"
                 + "'COBBLESTONE',64,'STRANGER',30,0,'2026-10-14',?,1800000,'ACTIVE')";
-        // Positive control: an honest supply contract back to its giver.
+        // A supply contract back to its giver is accepted.
         execute(c, insert, UUID.randomUUID(), PLAYER, cast.get(0).id(), cast.get(0).id(), 1);
         assertThrows(SQLException.class, () -> execute(c, insert, UUID.randomUUID(), PLAYER, cast.get(0).id(), cast.get(1).id(), 2),
                 "a supply contract cannot go to another resident");
@@ -434,7 +434,7 @@ class DevUpgradeIT {
                 + "incident_type,repair_snapshot_sha256,quote_day,cash_cents,value_ratio_bps,required_value_cents,recipe_value_cents,"
                 + "price_version,quote_sha256,state,run_id) VALUES(?,?,?,?,0,'PESTS',REPEAT('a',64),'2026-09-06',2000,?,?,?,'v1',"
                 + "REPEAT('b',64),'CANCELLED',?)";
-        // Positive control: an honest row (ceil(2000 x 1.5) = 3000, worth 3200) is accepted.
+        // An honest row (ceil(2000 x 1.5) = 3000, worth 3200) is accepted.
         execute(c, insert, UUID.randomUUID(), PLAYER, PROPERTY, Long.parseLong(incident), 15000, 3000, 3200, UUID.randomUUID());
         assertThrows(SQLException.class, () -> execute(c, insert, UUID.randomUUID(), PLAYER, PROPERTY, Long.parseLong(incident),
                 15000, 3000, 2999, UUID.randomUUID()), "worth less than the floor");
@@ -530,7 +530,7 @@ class DevUpgradeIT {
                 AT, "Existing cast; all five main switches OFF; paused/resumed route.");
         if (fixture == Fixture.HELD_DEV) return;
 
-        // Historical SQL fixtures are NOT a claim about DEV contents or actual external money movement.
+        // These SQL fixtures are synthetic. They say nothing about a live server's contents or real money movement.
         execute(c, """
                 INSERT INTO npc_properties VALUES
                   (?,?,'legacy-house','town','standard',2,1200,1350,?,7,67,0,?,4294967300,?),

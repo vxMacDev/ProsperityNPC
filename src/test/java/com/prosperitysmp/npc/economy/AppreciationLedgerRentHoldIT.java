@@ -150,7 +150,7 @@ class AppreciationLedgerRentHoldIT {
     @Test
     void omittedDeferredRentHoldsTheWholeAppreciationPhaseWhenTheHoldIsOn() throws Exception {
         deferRentOfA();
-        // Positive control: the ledger query does see the seeded row (a wrong source key would pass vacuously).
+        // The ledger query sees the seeded row. With a wrong source key the checks below would pass vacuously.
         assertTrue(rents().outstandingRent(NEXT));
         assertFalse(rents().outstandingRent(DAY), "DAY's rent is all PAID");
         var before = snapshot();
@@ -173,9 +173,9 @@ class AppreciationLedgerRentHoldIT {
         assertEquals(b, rows.getFirst().property().propertyId());
         assertEquals(300L, rows.getFirst().cents());
         assertEquals(1, count("npc_appreciation_reservations WHERE property_id=? AND economy_day=?", b, DAY));
-        assertFalse(UtilityPaymentRuntime.appreciationLedgerHeld(false, false, step), "off before and after: old behaviour");
+        assertFalse(UtilityPaymentRuntime.appreciationLedgerHeld(false, false, step), "off before and after: not held");
         assertTrue(UtilityPaymentRuntime.appreciationLedgerHeld(false, true, step), "switched on mid-hop: unverified, fail closed");
-        // The old path is exactly reserveAppreciation then pendingAppreciation.
+        // With the hold off, the step is reserveAppreciation followed by pendingAppreciation.
         assertTrue(rents().reserveAppreciation(DAY, List.of(property(b)), limits, TOP).isEmpty(), "replay reserves nothing");
         assertEquals(rows, rents().pendingAppreciation(DAY, List.of(property(b))));
     }
@@ -260,9 +260,9 @@ class AppreciationLedgerRentHoldIT {
     void rentHeldForADueUnappliedChangeHoldsAppreciationUntilThatRentIsFinal() throws Exception {
         scheduleChangeOfADueNext();
         rentBatchSkipsAForItsDueChange();
-        // The defect: the event ledger alone sees nothing outstanding, so the old check would release appreciation.
+        // The event ledger alone sees nothing outstanding, so a ledger-only check would release appreciation.
         assertFalse(rents().outstandingRent(NEXT), "no ledger event for A's rent");
-        assertTrue(rents().heldForDueRentChange(NEXT), "positive control: A's rent is held for its due change");
+        assertTrue(rents().heldForDueRentChange(NEXT), "A's rent is held for its due change");
         var before = snapshot();
         assertEquals(Optional.empty(), UtilityPaymentRuntime.appreciationStep(rents(), true, NEXT, List.of(property(b)), limits, TOP),
                 "held: appreciation cannot spend the headroom A's rent still needs today");
@@ -278,7 +278,7 @@ class AppreciationLedgerRentHoldIT {
         assertEquals(Optional.empty(), UtilityPaymentRuntime.appreciationStep(rents(), true, NEXT, List.of(property(b)), limits, TOP),
                 "reserved but unpaid: still held");
         assertTrue(pay(rent.getFirst()));
-        // Negative control: with A's rent final, the hold opens and B's appreciation for DAY proceeds.
+        // With A's rent final, the hold opens and B's appreciation for DAY proceeds.
         var step = UtilityPaymentRuntime.appreciationStep(rents(), true, NEXT, List.of(property(b)), limits, TOP);
         assertEquals(List.of(b), step.orElseThrow().stream().map(r -> r.property().propertyId()).toList());
     }
@@ -303,7 +303,7 @@ class AppreciationLedgerRentHoldIT {
         // Mid-batch: the rent-change step applies A's change before this batch's appreciation phase runs.
         var due = new PropertyRepository(database).applyDueRentChanges(NEXT, PropertyRepository.MAX_DUE_RENT_CHANGES);
         assertTrue(due.changes().getFirst().applied());
-        // The defect: neither SQL check can see that A's rent is still owed today.
+        // Neither SQL check can see that A's rent is still owed today, which is why the batch carries the skip count.
         assertFalse(rents().outstandingRent(NEXT), "no ledger event for A's rent");
         assertFalse(rents().heldForDueRentChange(NEXT), "the change is applied, so no pending columns");
         var before = snapshot();
@@ -319,7 +319,7 @@ class AppreciationLedgerRentHoldIT {
         assertEquals(0, started.get(), "the appreciation supplier is never invoked");
         assertEquals(0, count("npc_appreciation_reservations"), "held: nothing reserved");
         assertEquals(before, snapshot(), "a held phase writes nothing");
-        // Positive control: without the count, the same phase would spend headroom A's rent still needs today.
+        // Without the count the same phase runs and spends headroom A's rent still needs today.
         assertEquals(2, appreciationPhase(both).join());
         assertEquals(2, count("npc_appreciation_reservations WHERE economy_day=?", DAY));
     }
@@ -350,8 +350,8 @@ class AppreciationLedgerRentHoldIT {
         var plain = UtilityPaymentRuntime.reserveRentBatchCounted(rents(), false, false, NEXT, List.of(property(a), property(b)),
                 limits, w -> { });
         assertEquals(0, plain.heldForDueChange());
-        assertEquals(List.of(a), plain.pending().stream().map(r -> r.property().propertyId()).toList(), "old behaviour");
-        // A now has today's reservation, so a later batch with the hold on skips A but does not count it.
+        assertEquals(List.of(a), plain.pending().stream().map(r -> r.property().propertyId()).toList(), "hold off: A is reserved as usual");
+        // A already has today's reservation, so a later batch with the hold on skips A but does not count it.
         var later = UtilityPaymentRuntime.reserveRentBatchCounted(rents(), false, true, NEXT, List.of(property(a), property(b)),
                 limits, w -> { });
         assertEquals(0, later.heldForDueChange(), "already reserved today: not owed again");
@@ -376,7 +376,7 @@ class AppreciationLedgerRentHoldIT {
         assertTrue(pay(rent.getFirst()));
         scheduleChangeOfADueNext();
         assertFalse(rents().heldForDueRentChange(NEXT), "today's reservation exists: no double count");
-        assertTrue(rents().heldForDueRentChange(NEXT.plusDays(1)), "positive control: still due and unreserved the day after");
+        assertTrue(rents().heldForDueRentChange(NEXT.plusDays(1)), "still due and unreserved the day after");
         var step = UtilityPaymentRuntime.appreciationStep(rents(), true, NEXT, List.of(property(b)), limits, TOP);
         assertEquals(1, step.orElseThrow().size());
     }
@@ -387,12 +387,12 @@ class AppreciationLedgerRentHoldIT {
         var later = new PropertyRepository(database).changeAskingRent(property(a), 500, NEXT, 1);
         assertEquals(NEXT.plusDays(1), later.effectiveDay());
         assertFalse(rents().heldForDueRentChange(NEXT));
-        assertTrue(rents().heldForDueRentChange(NEXT.plusDays(1)), "positive control: due on its own day");
+        assertTrue(rents().heldForDueRentChange(NEXT.plusDays(1)), "due on its own day");
         // Due on NEXT but the home is paused: it gets no rent today, and applyDueRentChanges skips it too.
         UUID c = operating(new UUID(0, 3413));
         assertEquals(PropertyRepository.RentChange.Outcome.SCHEDULED,
                 new PropertyRepository(database).changeAskingRent(property(c), 500, DAY, 1).outcome());
-        assertTrue(rents().heldForDueRentChange(NEXT), "positive control: enabled and due holds");
+        assertTrue(rents().heldForDueRentChange(NEXT), "enabled and due holds");
         assertTrue(new PropertyRepository(database).disableExpected(property(c)));
         assertEquals(1, count("npc_properties WHERE property_id=? AND pending_rent_change_id IS NOT NULL", c), "still pending");
         assertFalse(rents().heldForDueRentChange(NEXT));
@@ -416,7 +416,7 @@ class AppreciationLedgerRentHoldIT {
         var stale = rents().reserve(DAY, List.of(property(c)), limits);
         assertEquals(1, stale.size());
         clock.set(NEXT_NOW.plusSeconds(10));
-        assertTrue(rents().outstandingRent(DAY), "positive control: it is outstanding on its own day");
+        assertTrue(rents().outstandingRent(DAY), "it is outstanding on its own day");
         assertFalse(rents().outstandingRent(NEXT));
         var step = UtilityPaymentRuntime.appreciationStep(rents(), true, NEXT, List.of(property(b)), limits, TOP);
         assertEquals(1, step.orElseThrow().size());

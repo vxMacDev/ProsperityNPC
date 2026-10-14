@@ -7,10 +7,13 @@ import com.prosperitysmp.npc.formulas.IncidentType;
 import com.prosperitysmp.npc.clock.EconomyClock;
 import com.prosperitysmp.npc.property.InsuranceRepository;
 import com.prosperitysmp.npc.property.Property;
+import com.prosperitysmp.npc.property.TenantRepository;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.Clock;
 import java.time.Instant;
@@ -22,12 +25,13 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 
 /**
- * SQL-only receipt foundation, not wired to runtime writes. SQL ownership is a mirror,
- * not current ARM authority. Before connecting enqueue/complete, a coordinator must
- * serialize external owner transitions and lifecycle revocation with these commits.
- * This repository never calls Vault or infers payment from a queued command.
+ * Owner purchase receipts (utility, repair, upgrade, eviction, insurance). UtilityPaymentRuntime enqueues and
+ * completes them, and keeps the home's ownership lease until the commit is acknowledged. Each receipt is bound to
+ * the ownership epoch it was quoted for. SQL ownership here is a mirror, not ARM authority. This repository never
+ * calls Vault or infers payment from a queued command.
  */
 public final class PurchaseRepository {
     public enum State { WAITING, APPLIED, DECLINED, REVIEW_REQUIRED }
@@ -69,7 +73,7 @@ public final class PurchaseRepository {
     private final TransferJournal transfers;
     private final Clock clock;
     private final EconomyClock economyClock;
-    private final java.util.function.BooleanSupplier blockCashWhileItemsHeld;
+    private final BooleanSupplier blockCashWhileItemsHeld;
 
     /** Runtime wiring must supply the configured reserve and economy clock. Never reads item-repair rows. */
     public PurchaseRepository(Database database, UUID reserve, Clock clock, ZoneId economyZone, int resetHour) {
@@ -82,7 +86,7 @@ public final class PurchaseRepository {
      * item-repair rows, which exist only after that feature ran.
      */
     public PurchaseRepository(Database database, UUID reserve, Clock clock, ZoneId economyZone, int resetHour,
-                              java.util.function.BooleanSupplier blockCashWhileItemsHeld) {
+                              BooleanSupplier blockCashWhileItemsHeld) {
         this.database = Objects.requireNonNull(database);
         this.transfers = new TransferJournal(database, reserve);
         this.clock = Objects.requireNonNull(clock);
@@ -93,16 +97,20 @@ public final class PurchaseRepository {
     /** Reads an exact incident quote without reserving funds or changing any gameplay state. */
     public PurchaseRequest quoteRepair(UUID requestId, UUID propertyId, UUID payerId, int ownershipEpoch,
                                        long incidentId, LocalDate day) throws SQLException {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(propertyId);
-        Objects.requireNonNull(payerId); Objects.requireNonNull(day);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(payerId);
+        Objects.requireNonNull(day);
         if (ownershipEpoch < 0 || incidentId <= 0 || day.getYear() < 1 || day.getYear() > 9999)
             throw new IllegalArgumentException("Invalid repair scope");
         return transaction(c -> {
             PropertyState p = property(c, propertyId);
             if (p == null || !p.enabled() || !payerId.equals(p.owner()) || p.epoch() != ownershipEpoch)
                 throw new SQLException("Repair quote rejected: property ownership unavailable");
-            try (PreparedStatement ps = prepare(c, "SELECT resolved_at FROM npc_incidents WHERE property_id=? AND incident_id=? FOR UPDATE")) {
-                id(ps, 1, propertyId); ps.setLong(2, incidentId);
+            try (PreparedStatement ps = prepare(c,
+                    "SELECT resolved_at FROM npc_incidents WHERE property_id=? AND incident_id=? FOR UPDATE")) {
+                id(ps, 1, propertyId);
+                ps.setLong(2, incidentId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (strictNext(c, ps, rs)) {
                         boolean resolved = rs.getObject("resolved_at", LocalDateTime.class) != null;
@@ -123,8 +131,11 @@ public final class PurchaseRepository {
     /** Read-only, exact current occupancy quote. Eligibility/ARM authority remain coordinator duties. */
     public PurchaseRequest quoteEviction(UUID requestId, UUID propertyId, UUID payerId, int ownershipEpoch,
                                          UUID tenantId, LocalDate day) throws SQLException {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(propertyId); Objects.requireNonNull(payerId);
-        Objects.requireNonNull(tenantId); Objects.requireNonNull(day);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(payerId);
+        Objects.requireNonNull(tenantId);
+        Objects.requireNonNull(day);
         if (ownershipEpoch < 0 || day.getYear() < 1 || day.getYear() > 9999)
             throw new IllegalArgumentException("Invalid eviction scope");
         return transaction(c -> {
@@ -146,8 +157,10 @@ public final class PurchaseRepository {
     /** Capacity and overlap are read under the same property guard used by enqueue/complete. */
     public PurchaseRequest quoteInsurance(UUID requestId, UUID propertyId, UUID payerId, int ownershipEpoch,
                                           LocalDate day) throws SQLException {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(propertyId);
-        Objects.requireNonNull(payerId); Objects.requireNonNull(day);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(payerId);
+        Objects.requireNonNull(day);
         if (ownershipEpoch < 0 || day.getYear() < 1 || day.getYear() > 9999)
             throw new IllegalArgumentException("Invalid insurance scope");
         return transaction(c -> {
@@ -195,7 +208,8 @@ public final class PurchaseRepository {
                 AND state IN ('WAITING','REVIEW_REQUIRED','DECLINED')
                 ORDER BY event_id LIMIT 101 ROWS EXAMINED 1024
                 """)) {
-            id(ps, 1, q.propertyId()); id(ps, 2, q.tenantId());
+            id(ps, 1, q.propertyId());
+            id(ps, 2, q.tenantId());
             try (ResultSet rs = ps.executeQuery()) {
                 while (strictNext(c, ps, rs)) {
                     if (old.size() >= 100) throw new SQLException("Eviction history requires review");
@@ -276,23 +290,34 @@ public final class PurchaseRepository {
                       kind,upgrade_type,target_level,tenant_id,economy_day,quoted_amount_cents,action_key,
                       repair_incident_id,repair_type,repair_snapshot_sha256,evict_tenancy_revision,evict_slot
                     """ + insuranceColumn + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?" + insuranceValue + ")")) {
-                ps.setLong(1, eventId); id(ps, 2, request.requestId()); id(ps, 3, request.propertyId());
-                id(ps, 4, request.payerId()); ps.setInt(5, request.ownershipEpoch()); ps.setString(6, request.kind().name());
+                ps.setLong(1, eventId);
+                id(ps, 2, request.requestId());
+                id(ps, 3, request.propertyId());
+                id(ps, 4, request.payerId());
+                ps.setInt(5, request.ownershipEpoch());
+                ps.setString(6, request.kind().name());
                 ps.setString(7, request.upgrade() == null ? null : request.upgrade().name());
-                if (request.targetLevel() == null) ps.setNull(8, java.sql.Types.TINYINT); else ps.setInt(8, request.targetLevel());
-                id(ps, 9, request.tenantId()); ps.setString(10, request.day().toString());
-                ps.setLong(11, request.cents()); ps.setString(12, request.actionKey());
+                if (request.targetLevel() == null) ps.setNull(8, Types.TINYINT);
+                else ps.setInt(8, request.targetLevel());
+                id(ps, 9, request.tenantId());
+                ps.setString(10, request.day().toString());
+                ps.setLong(11, request.cents());
+                ps.setString(12, request.actionKey());
                 if (request.repair() == null) {
-                    ps.setNull(13, java.sql.Types.BIGINT); ps.setNull(14, java.sql.Types.VARCHAR);
-                    ps.setNull(15, java.sql.Types.VARCHAR);
+                    ps.setNull(13, Types.BIGINT);
+                    ps.setNull(14, Types.VARCHAR);
+                    ps.setNull(15, Types.VARCHAR);
                 } else {
-                    ps.setLong(13, request.repair().incidentId()); ps.setString(14, request.repair().type().name());
+                    ps.setLong(13, request.repair().incidentId());
+                    ps.setString(14, request.repair().type().name());
                     ps.setString(15, request.repair().snapshotSha256());
                 }
                 if (request.eviction() == null) {
-                    ps.setNull(16, java.sql.Types.BIGINT); ps.setNull(17, java.sql.Types.TINYINT);
+                    ps.setNull(16, Types.BIGINT);
+                    ps.setNull(17, Types.TINYINT);
                 } else {
-                    ps.setLong(16, request.eviction().tenancyRevision()); ps.setInt(17, request.eviction().slot());
+                    ps.setLong(16, request.eviction().tenancyRevision());
+                    ps.setInt(17, request.eviction().slot());
                 }
                 if (request.insurance() != null) ps.setInt(18, request.insurance().capacity());
                 one(ps.executeUpdate());
@@ -307,7 +332,8 @@ public final class PurchaseRepository {
 
     /** Receipt lookup needs no reserve account, so it stays available before one is configured. */
     public static Optional<Receipt> findByRequest(Database database, UUID request) throws SQLException {
-        Objects.requireNonNull(database); Objects.requireNonNull(request);
+        Objects.requireNonNull(database);
+        Objects.requireNonNull(request);
         try (Connection c = database.getConnection()) { return byRequest(c, request); }
     }
 
@@ -377,8 +403,11 @@ public final class PurchaseRepository {
     public void markReview(long eventId, String reason) throws SQLException {
         if (eventId <= 0 || reason == null || !reason.matches("[A-Z_]{1,48}")) throw new IllegalArgumentException("Invalid review reason");
         try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c,
-                "UPDATE npc_purchase_intents SET state='REVIEW_REQUIRED',outcome_code=?,completed_at=CURRENT_TIMESTAMP(3) WHERE event_id=? AND state='WAITING'")) {
-            ps.setString(1, reason); ps.setLong(2, eventId); ps.executeUpdate();
+                "UPDATE npc_purchase_intents SET state='REVIEW_REQUIRED',outcome_code=?,completed_at=CURRENT_TIMESTAMP(3) WHERE event_id=? "
+                + "AND state='WAITING'")) {
+            ps.setString(1, reason);
+            ps.setLong(2, eventId);
+            ps.executeUpdate();
         }
     }
 
@@ -450,8 +479,10 @@ public final class PurchaseRepository {
             }
             case UPGRADE -> {
                 int level = 0;
-                try (PreparedStatement ps = prepare(c, "SELECT level FROM npc_upgrades WHERE property_id=? AND upgrade_type=? FOR UPDATE")) {
-                    id(ps, 1, q.propertyId()); ps.setString(2, q.upgrade().name());
+                try (PreparedStatement ps = prepare(c,
+                        "SELECT level FROM npc_upgrades WHERE property_id=? AND upgrade_type=? FOR UPDATE")) {
+                    id(ps, 1, q.propertyId());
+                    ps.setString(2, q.upgrade().name());
                     try (ResultSet rs = ps.executeQuery()) { if (rs.next()) level = rs.getInt(1); }
                 }
                 yield level != q.targetLevel() - 1 ? "UPGRADE_TARGET_CHANGED" : null;
@@ -494,14 +525,17 @@ public final class PurchaseRepository {
                 IncidentRepair.apply(c, receipt, at, completionDay);
             }
             case MAINTAIN -> {
-                try (PreparedStatement ps = prepare(c, "UPDATE npc_properties SET condition_score=LEAST(100,condition_score+5),row_version=row_version+1 WHERE property_id=?")) {
-                    id(ps, 1, q.propertyId()); one(ps.executeUpdate());
+                try (PreparedStatement ps = prepare(c,
+                        "UPDATE npc_properties SET condition_score=LEAST(100,condition_score+5),row_version=row_version+1 WHERE "
+                        + "property_id=?")) {
+                    id(ps, 1, q.propertyId());
+                    one(ps.executeUpdate());
                 }
             }
             case EVICT -> {
                 if (clock.instant().isBefore(repairPaidAt(c, receipt.eventId())))
                     throw new SQLException("Eviction completion precedes confirmed payment");
-                if (!com.prosperitysmp.npc.property.TenantRepository.vacate(c, q.tenantId(), q.propertyId(), clock, receipt.eventId()))
+                if (!TenantRepository.vacate(c, q.tenantId(), q.propertyId(), clock, receipt.eventId()))
                     throw new SQLException("Eviction tenancy changed");
             }
             case UPGRADE -> {
@@ -511,12 +545,21 @@ public final class PurchaseRepository {
                         UPDATE npc_upgrades SET level=?,purchase_cost_cents=purchase_cost_cents+?,installed_at=CURRENT_TIMESTAMP(3)
                         WHERE property_id=? AND upgrade_type=? AND level=?
                         """)) {
-                    ps.setInt(1, q.targetLevel()); ps.setLong(2, receipt.quotedCents()); id(ps, 3, q.propertyId());
-                    ps.setString(4, q.upgrade().name()); ps.setInt(5, q.targetLevel() - 1); updated = ps.executeUpdate();
+                    ps.setInt(1, q.targetLevel());
+                    ps.setLong(2, receipt.quotedCents());
+                    id(ps, 3, q.propertyId());
+                    ps.setString(4, q.upgrade().name());
+                    ps.setInt(5, q.targetLevel() - 1);
+                    updated = ps.executeUpdate();
                 }
                 if (updated == 0 && q.targetLevel() == 1) {
-                    try (PreparedStatement ps = prepare(c, "INSERT INTO npc_upgrades(property_id,upgrade_type,level,purchase_cost_cents,installed_at) VALUES (?,?,1,?,CURRENT_TIMESTAMP(3))")) {
-                        id(ps, 1, q.propertyId()); ps.setString(2, q.upgrade().name()); ps.setLong(3, receipt.quotedCents()); one(ps.executeUpdate());
+                    try (PreparedStatement ps = prepare(c,
+                            "INSERT INTO npc_upgrades(property_id,upgrade_type,level,purchase_cost_cents,installed_at) VALUES "
+                            + "(?,?,1,?,CURRENT_TIMESTAMP(3))")) {
+                        id(ps, 1, q.propertyId());
+                        ps.setString(2, q.upgrade().name());
+                        ps.setLong(3, receipt.quotedCents());
+                        one(ps.executeUpdate());
                     }
                 } else one(updated);
             }
@@ -524,8 +567,13 @@ public final class PurchaseRepository {
     }
 
     private static Receipt finish(Connection c, Receipt receipt, State state, String outcome) throws SQLException {
-        try (PreparedStatement ps = prepare(c, "UPDATE npc_purchase_intents SET state=?,outcome_code=?,completed_at=CURRENT_TIMESTAMP(3) WHERE event_id=? AND state='WAITING'")) {
-            ps.setString(1, state.name()); ps.setString(2, outcome); ps.setLong(3, receipt.eventId()); one(ps.executeUpdate());
+        try (PreparedStatement ps = prepare(c,
+                "UPDATE npc_purchase_intents SET state=?,outcome_code=?,completed_at=CURRENT_TIMESTAMP(3) WHERE event_id=? AND "
+                + "state='WAITING'")) {
+            ps.setString(1, state.name());
+            ps.setString(2, outcome);
+            ps.setLong(3, receipt.eventId());
+            one(ps.executeUpdate());
         }
         return new Receipt(receipt.eventId(), receipt.request(), receipt.quotedCents(), state, outcome);
     }
@@ -561,7 +609,9 @@ public final class PurchaseRepository {
                 SELECT * FROM npc_purchase_intents WHERE property_id=? AND ownership_epoch=? AND action_key=?
                 ORDER BY event_id DESC LIMIT 1
                 """)) {
-            id(ps, 1, q.propertyId()); ps.setInt(2, q.ownershipEpoch()); ps.setString(3, q.actionKey());
+            id(ps, 1, q.propertyId());
+            ps.setInt(2, q.ownershipEpoch());
+            ps.setString(3, q.actionKey());
             try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(receipt(rs)) : Optional.empty(); }
         }
     }
@@ -588,30 +638,47 @@ public final class PurchaseRepository {
                     LocalDate.parse(rs.getString("economy_day")), repair, eviction, insurance);
             if (!request.actionKey().equals(rs.getString("action_key")) || rs.getLong("quoted_amount_cents") <= 0)
                 throw new IllegalArgumentException("Invalid action or quote");
-            return new Receipt(rs.getLong("event_id"), request, rs.getLong("quoted_amount_cents"), State.valueOf(rs.getString("state")), rs.getString("outcome_code"));
-        } catch (IllegalArgumentException | NullPointerException | java.time.DateTimeException error) {
+            return new Receipt(rs.getLong("event_id"), request, rs.getLong("quoted_amount_cents"), State.valueOf(rs.getString("state")),
+                    rs.getString("outcome_code"));
+        } catch (IllegalArgumentException | NullPointerException | DateTimeException error) {
             throw new SQLException("Invalid purchase receipt", error);
         }
     }
     private static UUID uuid(ResultSet rs, String column) throws SQLException {
-        byte[] bytes = rs.getBytes(column); return bytes == null ? null : Uuids.fromBytes(bytes);
+        byte[] bytes = rs.getBytes(column);
+        return bytes == null ? null : Uuids.fromBytes(bytes);
     }
     private static void id(PreparedStatement ps, int index, UUID id) throws SQLException {
-        if (id == null) ps.setNull(index, java.sql.Types.BINARY); else ps.setBytes(index, Uuids.toBytes(id));
+        if (id == null) ps.setNull(index, Types.BINARY);
+        else ps.setBytes(index, Uuids.toBytes(id));
     }
-    private static void one(int rows) throws SQLException { if (rows != 1) throw new SQLException("Purchase write did not affect exactly one row"); }
+    private static void one(int rows) throws SQLException {
+        if (rows != 1) throw new SQLException("Purchase write did not affect exactly one row");
+    }
     private static PreparedStatement prepare(Connection c, String sql) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); return ps; }
-        catch (SQLException error) { ps.close(); throw error; }
+        try {
+            ps.setQueryTimeout(5);
+            return ps;
+        } catch (SQLException error) {
+            ps.close();
+            throw error;
+        }
     }
     @FunctionalInterface private interface Transaction<T> { T run(Connection connection) throws SQLException; }
     private <T> T transaction(Transaction<T> work) throws SQLException {
         try (Connection c = database.getConnection()) {
             c.setAutoCommit(false);
-            try { T result = work.run(c); c.commit(); return result; }
-            catch (SQLException | RuntimeException error) {
-                try { c.rollback(); } catch (SQLException rollback) { error.addSuppressed(rollback); }
+            try {
+                T result = work.run(c);
+                c.commit();
+                return result;
+            } catch (SQLException | RuntimeException error) {
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    error.addSuppressed(rollback);
+                }
                 throw error;
             }
         }

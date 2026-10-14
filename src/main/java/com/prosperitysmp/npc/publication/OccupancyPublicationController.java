@@ -35,69 +35,103 @@ public final class OccupancyPublicationController implements AutoCloseable {
     public OccupancyPublicationController(Path directory, Executor worker, OccupancyRefreshPump.Reader source,
             Clock clock, LongSupplier monotonic, Duration refreshInterval, Duration maxAge,
             Duration recoveryAge, Duration retentionAge) {
-        this.directory = Objects.requireNonNull(directory); this.worker = Objects.requireNonNull(worker);
-        this.source = Objects.requireNonNull(source); this.clock = Objects.requireNonNull(clock);
+        this.directory = Objects.requireNonNull(directory);
+        this.worker = Objects.requireNonNull(worker);
+        this.source = Objects.requireNonNull(source);
+        this.clock = Objects.requireNonNull(clock);
         this.monotonic = Objects.requireNonNull(monotonic);
-        for(Duration value : Arrays.asList(refreshInterval,maxAge,recoveryAge,retentionAge))
-            if(value==null || value.isNegative() || value.isZero()) throw new IllegalArgumentException("Invalid publication policy");
-        try { interval = refreshInterval.toNanos(); maxAge.toNanos(); }
-        catch(ArithmeticException overflow) { throw new IllegalArgumentException("Publication policy overflow"); }
-        if(refreshInterval.compareTo(maxAge)>=0) throw new IllegalArgumentException("Refresh interval must be below max age");
-        this.maxAge=maxAge; this.recoveryAge=recoveryAge; this.retentionAge=retentionAge;
+        for (Duration value : Arrays.asList(refreshInterval, maxAge, recoveryAge, retentionAge))
+            if (value == null || value.isNegative() || value.isZero()) throw new IllegalArgumentException("Invalid publication policy");
+        try {
+            interval = refreshInterval.toNanos();
+            maxAge.toNanos();
+        }
+        catch (ArithmeticException overflow) { throw new IllegalArgumentException("Publication policy overflow"); }
+        if (refreshInterval.compareTo(maxAge) >= 0) throw new IllegalArgumentException("Refresh interval must be below max age");
+        this.maxAge = maxAge;
+        this.recoveryAge = recoveryAge;
+        this.retentionAge = retentionAge;
     }
 
     /** Revoke first, even when replacement validation fails. Only the most recent desired scope is kept. */
     public void configure(List<Approval> replacement) {
-        main(); if(closed) throw new IllegalStateException("Publication controller closed");
-        desired=List.of(); retire();
-        desired=OccupancyRefreshPump.checkedScope(replacement);
+        main();
+        if (closed) throw new IllegalStateException("Publication controller closed");
+        desired = List.of();
+        retire();
+        desired = OccupancyRefreshPump.checkedScope(replacement);
     }
 
     public void tick() {
         main();
-        Boolean result=closeResult;
-        if(result!=null) {
-            closeResult=null; closeQueued=false;
-            if(result) { closing=null; closeAttempted=false; }
-            else state=State.CLOSE_FAILED;
+        Boolean result = closeResult;
+        if (result != null) {
+            closeResult = null;
+            closeQueued = false;
+            if (result) {
+                closing = null;
+                closeAttempted = false;
+            }
+            else state = State.CLOSE_FAILED;
         }
-        long now=monotonic.getAsLong();
-        if(closing!=null) {
-            if(!closeQueued && due(now,lastCloseAttempt,closeAttempted)) queueClose(now);
+        long now = monotonic.getAsLong();
+        if (closing != null) {
+            if (!closeQueued && due(now, lastCloseAttempt, closeAttempted)) queueClose(now);
             return;
         }
-        if(closed) {state=State.CLOSED;return;}
-        if(desired.isEmpty()) {state=State.DISABLED;return;}
-        if(session==null) {
-            session=new OccupancyPublicationSession(directory,desired,source,clock,monotonic,maxAge,recoveryAge,retentionAge);
-            pump=new OccupancyRefreshPump(worker,session,clock,monotonic,maxAge);
-            pump.configure(desired); attempted=false;
-            readable=pump;
+        if (closed) {
+            state = State.CLOSED;
+            return;
         }
-        state=State.ACTIVE; pump.tick();
-        if(!pump.busy() && due(now,lastAttempt,attempted)) {
-            attempted=true;lastAttempt=now;pump.request();
+        if (desired.isEmpty()) {
+            state = State.DISABLED;
+            return;
+        }
+        if (session == null) {
+            session = new OccupancyPublicationSession(directory, desired, source, clock, monotonic, maxAge, recoveryAge, retentionAge);
+            pump = new OccupancyRefreshPump(worker, session, clock, monotonic, maxAge);
+            pump.configure(desired);
+            attempted = false;
+            readable = pump;
+        }
+        state = State.ACTIVE;
+        pump.tick();
+        if (!pump.busy() && due(now, lastAttempt, attempted)) {
+            attempted = true;
+            lastAttempt = now;
+            pump.request();
         }
     }
 
     public Optional<PublicOccupancySnapshot> current() {
-        main(); return closed || closing!=null || pump==null ? Optional.empty() : pump.current();
+        main();
+        return closed || closing != null || pump == null ? Optional.empty() : pump.current();
     }
     /** Public schema only, with freshness/revocation checked on every off-thread read. */
     public Optional<PublicOccupancySnapshot> readPublic() {
-        OccupancyRefreshPump selected=readable;
-        return selected==null ? Optional.empty() : selected.readPublic();
+        OccupancyRefreshPump selected = readable;
+        return selected == null ? Optional.empty() : selected.readPublic();
     }
-    public State state() {main();return state;}
+    public State state() {
+        main();
+        return state;
+    }
     public Optional<OccupancyRefreshPump.Disposition> refreshDisposition() {
-        main();return pump==null ? Optional.empty() : Optional.of(pump.disposition());
+        main();
+        return pump == null ? Optional.empty() : Optional.of(pump.disposition());
     }
-    public boolean drained() {main();return closed && closing==null && session==null;}
+    public boolean drained() {
+        main();
+        return closed && closing == null && session == null;
+    }
 
     @Override public void close() {
-        main(); if(closed)return;
-        closed=true;desired=List.of();retire();
-        if(closing==null)state=State.CLOSED;
+        main();
+        if (closed) return;
+        closed = true;
+        desired = List.of();
+        retire();
+        if (closing == null) state = State.CLOSED;
     }
     /**
      * Terminal host shutdown: revoke on the owner, then submit the returned work off-thread.
@@ -108,12 +142,15 @@ public final class OccupancyPublicationController implements AutoCloseable {
      * the task's successful completion is the terminal host signal instead.
      */
     public Callable<Void> shutdownTask() {
-        main(); closed=true; desired=List.of(); retire(false);
-        OccupancyPublicationSession target=closing;
+        main();
+        closed = true;
+        desired = List.of();
+        retire(false);
+        OccupancyPublicationSession target = closing;
         return () -> {
-            if(Thread.currentThread()==owner)
+            if (Thread.currentThread() == owner)
                 throw new IllegalStateException("Publication shutdown requires worker thread");
-            if(target!=null)target.close();
+            if (target != null) target.close();
             return null;
         };
     }
@@ -121,32 +158,47 @@ public final class OccupancyPublicationController implements AutoCloseable {
         retire(true);
     }
     private void retire(boolean submitClose) {
-        readable=null;
-        if(pump!=null) {pump.close();pump=null;}
-        if(session!=null) {
-            session.cancel();closing=session;session=null;closeAttempted=false;
+        readable = null;
+        if (pump != null) {
+            pump.close();
+            pump = null;
         }
-        if(closing!=null) {
-            state=State.DRAINING;long now=monotonic.getAsLong();
-            if(submitClose && !closeQueued && due(now,lastCloseAttempt,closeAttempted))queueClose(now);
+        if (session != null) {
+            session.cancel();
+            closing = session;
+            session = null;
+            closeAttempted = false;
         }
-        else state=closed ? State.CLOSED : State.DISABLED;
+        if (closing != null) {
+            state = State.DRAINING;
+            long now = monotonic.getAsLong();
+            if (submitClose && !closeQueued && due(now, lastCloseAttempt, closeAttempted)) queueClose(now);
+        }
+        else state = closed ? State.CLOSED : State.DISABLED;
     }
     private void queueClose(long now) {
-        closeAttempted=true;lastCloseAttempt=now;closeQueued=true;
-        OccupancyPublicationSession target=closing;
+        closeAttempted = true;
+        lastCloseAttempt = now;
+        closeQueued = true;
+        OccupancyPublicationSession target = closing;
         try {
-            worker.execute(()->{
-                boolean success=false;
-                try {target.close();success=true;} catch(Exception ignored) { /* bounded lifecycle status only */ }
-                finally {closeResult=success;}
+            worker.execute(() -> {
+                boolean success = false;
+                try {
+                    target.close();
+                    success = true;
+                } catch (Exception ignored) { /* bounded lifecycle status only */ }
+                finally { closeResult = success; }
             });
-        } catch(RuntimeException rejected) {closeQueued=false;state=State.CLOSE_FAILED;}
+        } catch (RuntimeException rejected) {
+            closeQueued = false;
+            state = State.CLOSE_FAILED;
+        }
     }
-    private boolean due(long now,long previous,boolean hasPrevious) {
-        return !hasPrevious || now-previous<0 || now-previous>=interval;
+    private boolean due(long now, long previous, boolean hasPrevious) {
+        return !hasPrevious || now - previous < 0 || now - previous >= interval;
     }
     private void main() {
-        if(Thread.currentThread()!=owner)throw new IllegalStateException("Publication controller owner thread required");
+        if (Thread.currentThread() != owner) throw new IllegalStateException("Publication controller owner thread required");
     }
 }

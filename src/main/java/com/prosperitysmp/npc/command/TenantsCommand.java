@@ -77,7 +77,8 @@ public final class TenantsCommand implements TabExecutor {
         var property = authority == null ? Optional.<Property>empty()
                 : plugin.propertyService().findByWorldRegion(authority.worldId(), authority.regionId());
         if (property.isEmpty() || !property.get().enabled() || !player.getUniqueId().equals(property.get().ownerUuid())) {
-            send(player, NamedTextColor.RED, "Stand in your enrolled property."); return;
+            send(player, NamedTextColor.RED, "Stand in your enrolled property.");
+            return;
         }
         boolean accepted = plugin.utilityPayments().requestEviction(property.get().propertyId(), player.getUniqueId(), tenant,
                 maximum, () -> player.isOnline() && !player.isDead()
@@ -85,7 +86,9 @@ public final class TenantsCommand implements TabExecutor {
                         && player.hasPermission("prosperitynpc.use")
                         && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
                             .filter(authority::sameIncarnation).isPresent(),
-                message -> { if (player.isOnline()) send(player, NamedTextColor.GRAY, message); });
+                message -> {
+                    if (player.isOnline()) send(player, NamedTextColor.GRAY, message);
+                });
         send(player, accepted ? NamedTextColor.GRAY : NamedTextColor.RED, accepted
                 ? "Checking the selected resident and payment limit. Wait for the verified result."
                 : "Property payments are busy or unavailable. No payment was started.");

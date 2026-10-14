@@ -29,7 +29,7 @@ economy:
   # and server caps after all of that day's rent, and the whole batch skips it if the floor deferred any
   # rent. It shares a property's lifetime funding with future rent and respects the CentralBank floor.
   # Because it is paid the next day, one day's reported outflow can exceed server-daily-cap-cents.
-  # Off: nothing is reserved or paid, exactly as before.
+  # Off: nothing is reserved or paid.
   appreciation-enabled: false
   # Safety check, on by default. It only acts while appreciation-enabled is on; with appreciation off it is never
   # read and changes nothing. On: a batch also holds all appreciation while any home still has today's rent
@@ -47,7 +47,7 @@ economy:
   # or every owner away, and resuming a paused home retires that home's own such payouts first. A payout from
   # today still owed to the current owner is never retired, so it can hold a resume until the next day.
   # It only acts while payments are in use (payments-enabled on and the system and economy switches on); with
-  # payments off it changes nothing anywhere, and resuming a paused home is refused or allowed exactly as before.
+  # payments off it changes nothing anywhere, including whether a paused home may be resumed.
   # Off: nothing is retired.
   payout-retirement-enabled: true
   # Safety check, on by default. It only acts while housing.vacation-days is above 0; at 0 no home is ever
@@ -87,7 +87,7 @@ linked-accounts:
   # Turning it on takes effect from the next rent or appreciation batch. Appreciation for yesterday is paid
   # today, so turning it on today also merges yesterday's appreciation. That is stricter, never looser.
   # Turning it off takes effect on the next economy day. A day that already started merged stays merged.
-  # Off: nothing is saved, no line shows, and every account has its own limit, as before. Read on start and
+  # Off: nothing is saved, no line shows, and every account has its own limit. Read on start and
   # /npcadmin reload.
   enabled: false
   # Needs enabled. Once per economy day, asks Floodgate about home owners whose account is a Bedrock account.
@@ -163,7 +163,7 @@ rendering:
 
 # Your own named residents. Read once at startup: full restart after changing anything here.
 residents:
-  # Off: the built-in three (Mara Vale, Ellis Ward, Nico Reed), as before.
+  # Off: the built-in three (Mara Vale, Ellis Ward, Nico Reed).
   # On: residents come from plugins/ProsperityNPC/residents.yml (see examples/residents.extended.yml in the repo).
   # If that file is missing or fails a check, the built-in three are used and /npcadmin health says so.
   cast-file-enabled: false
@@ -171,7 +171,7 @@ residents:
   # residents with no verified everyday skin, so nobody pays rent as an invisible tenant.
   require-skin-for-roster: true
 
-# Outfits for avatars already on screen. Off: a resident's outfit is picked when its avatar appears, as before.
+# Outfits for avatars already on screen. Off: a resident's outfit is picked when its avatar appears.
 appearance:
   # On: an avatar changes to the outfit for its new routine (work, free time, home) while it is out.
   # It only changes when no player is close and nobody is talking to that resident.
@@ -222,7 +222,7 @@ housing:
   # of paid at the old rent. If the step's result is unknown and the database cannot be read back, the homes stay
   # held (no payments), staff are alerted, and the read is retried every 5 to 60 seconds until it works.
   # Without ARM coordination no payment can be in progress, so the step runs without holding homes.
-  # Read live. Off: the old behavior and its old risk. The step runs without holding homes, so a rent change can
+  # Read live. Off: the step runs without holding homes, so a rent change can
   # land while a payment is between taking and paying money, and that payment is left for staff recovery.
   rent-change-lease-guard-enabled: true
   # Days (0-30) a room stays closed to matching after the owner evicts its resident. 0 = off.
@@ -277,9 +277,15 @@ town:
   # reserve, so the reserve caps and floor above do not limit it.
   training-enabled: false
   commerce-enabled: false
-  # Daily limits for resident item orders.
+  # Resident item orders: daily limits, and the save check on collected orders.
   # Issuance caps are pinned on first use of a service day and are not refunded on cancellation.
   commerce:
+    # Safety check, on by default. It only acts when a paid order is collected, so with commerce-enabled off it changes nothing.
+    # On: before giving the items the plugin saves the player with a marker for this delivery, reads that save back, then
+    # checks that its own save after the delivery holds exactly this order's items. A save that cannot be checked gives
+    # nothing, or holds the order for staff. It never counts as delivered.
+    # Off: only the inventory and ender chest count is checked.
+    delivery-save-marker: true
     global-orders-per-day: 64
     global-units-per-day: 512
     material-units-per-day: 128
@@ -423,7 +429,7 @@ auto-care:
 item-repairs:
   # On: the desk repair button and the Bedrock repair button open a choice (cash or items), and
   # /property repair <id> items works. Also needs the system and economy switches.
-  # Off: those buttons pay cash exactly as before, /property repair <id> items says the feature is off, and
+  # Off: those buttons pay cash, /property repair <id> items says the feature is off, and
   # nothing is written. Read on start and /npcadmin reload.
   enabled: false
   # The items must be worth at least this share of the cash price at full price-book value. 15000 is 150 percent.
@@ -492,13 +498,13 @@ nav:
   scan-above: 4
 
 # Small player-facing conversation and desk fixes. Every flag is off by default,
-# so a server behaves exactly as before until it turns one on.
+# so nothing changes until you turn one on.
 # conversation-sliding-deadline, its two pause keys and desk-pause-controls are read when the plugin starts: restart after changing them.
 ux:
   # A conversation's 90 second idle limit restarts on every choice, instead of one hard cut-off.
   # A walking resident also stays stopped while someone keeps choosing, up to conversation-pause-cap-seconds
   # in total for everyone talking to them. Then they walk on and cannot be stopped again for
-  # conversation-pause-cooldown-seconds. Off: one shared 90 second stop every 2 minutes, as before.
+  # conversation-pause-cooldown-seconds. Off: one shared 90 second stop every 2 minutes.
   conversation-sliding-deadline: false
   # Only read when conversation-sliding-deadline is on. 90 to 300.
   conversation-pause-cap-seconds: 180

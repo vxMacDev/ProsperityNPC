@@ -35,7 +35,8 @@ public final class VoluntaryDepartureRepository {
     /** Property identity captured under an ownership lease; skipped if the stored row no longer matches. */
     public record Target(UUID propertyId, UUID ownerId, int ownershipEpoch) {
         public Target {
-            Objects.requireNonNull(propertyId); Objects.requireNonNull(ownerId);
+            Objects.requireNonNull(propertyId);
+            Objects.requireNonNull(ownerId);
             if (ownershipEpoch < 0) throw new IllegalArgumentException("Invalid ownership epoch");
         }
     }
@@ -58,7 +59,10 @@ public final class VoluntaryDepartureRepository {
 
     /** failed: properties whose decision could not be committed; they were left unchanged. */
     public record Result(List<Departed> departed, List<UUID> failed) {
-        public Result { departed = List.copyOf(departed); failed = List.copyOf(failed); }
+        public Result {
+            departed = List.copyOf(departed);
+            failed = List.copyOf(failed);
+        }
     }
 
     private record Candidate(UUID resident, int satisfaction) { }
@@ -75,7 +79,8 @@ public final class VoluntaryDepartureRepository {
     }
 
     public Result runDay(LocalDate day, List<Target> targets, Policy policy) throws SQLException {
-        Objects.requireNonNull(day); Objects.requireNonNull(policy);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(policy);
         if (targets.size() > MAX_TARGETS || day.getYear() < 1 || day.getYear() > 9998)
             throw new IllegalArgumentException("Voluntary departure scope");
         Map<UUID, Target> sorted = new LinkedHashMap<>();
@@ -103,7 +108,8 @@ public final class VoluntaryDepartureRepository {
     /** Read-only. Null means no departure today for this home. */
     private Decision decide(Connection c, LocalDate day, Target target, Policy policy) throws SQLException {
         int condition;
-        try (PreparedStatement ps = prepare(c, "SELECT enabled,owner_uuid,ownership_epoch,condition_score FROM npc_properties WHERE property_id=?",
+        try (PreparedStatement ps = prepare(c,
+                "SELECT enabled,owner_uuid,ownership_epoch,condition_score FROM npc_properties WHERE property_id=?",
                 target.propertyId()); ResultSet rs = ps.executeQuery()) {
             if (!rs.next() || !rs.getBoolean("enabled") || !sameOwner(rs, target)) return null;
             condition = rs.getInt("condition_score");
@@ -139,25 +145,38 @@ public final class VoluntaryDepartureRepository {
         try {
             try (PreparedStatement ps = prepare(c, "SELECT singleton FROM npc_rent_mutex WHERE singleton=1 FOR UPDATE");
                  ResultSet rs = ps.executeQuery()) { if (!rs.next()) throw new SQLException("Rent mutex unavailable"); }
-            try (PreparedStatement ps = prepare(c, "SELECT enabled,owner_uuid,ownership_epoch FROM npc_properties WHERE property_id=? FOR UPDATE",
+            try (PreparedStatement ps = prepare(c,
+                    "SELECT enabled,owner_uuid,ownership_epoch FROM npc_properties WHERE property_id=? FOR UPDATE",
                     target.propertyId()); ResultSet rs = ps.executeQuery()) {
-                if (!rs.next() || !rs.getBoolean("enabled") || !sameOwner(rs, target)) { c.rollback(); return null; }
+                if (!rs.next() || !rs.getBoolean("enabled") || !sameOwner(rs, target)) {
+                    c.rollback();
+                    return null;
+                }
             }
             if (count(c, "SELECT COUNT(*) FROM npc_voluntary_departures WHERE economy_day=?", day.toString()) >= policy.serverDailyLimit()
                     || blocked(c, day, target.propertyId())
-                    || candidates(c, day, target.propertyId(), policy.moods()).stream().noneMatch(x -> x.resident().equals(decision.resident()))) {
-                c.rollback(); return null;
+                    || candidates(c, day, target.propertyId(), policy.moods()).stream()
+                            .noneMatch(x -> x.resident().equals(decision.resident()))) {
+                c.rollback();
+                return null;
             }
             String prior;
             try (PreparedStatement ps = prepare(c, "SELECT move_cooldown_until_day FROM npc_tenants WHERE tenant_id=? FOR UPDATE",
                     decision.resident()); ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) { c.rollback(); return null; }
+                if (!rs.next()) {
+                    c.rollback();
+                    return null;
+                }
                 prior = rs.getString(1);
             }
             TenancyDeparture departure = TenantRepository.vacateVoluntarily(c, decision.resident(), target.propertyId(), clock);
-            if (departure == null) { c.rollback(); return null; }
+            if (departure == null) {
+                c.rollback();
+                return null;
+            }
             LocalDate until = prior != null && LocalDate.parse(prior).isAfter(cooldown) ? LocalDate.parse(prior) : cooldown;
-            try (PreparedStatement ps = prepare(c, "UPDATE npc_tenants SET move_cooldown_until_day=? WHERE tenant_id=? AND property_id IS NULL",
+            try (PreparedStatement ps = prepare(c,
+                    "UPDATE npc_tenants SET move_cooldown_until_day=? WHERE tenant_id=? AND property_id IS NULL",
                     until.toString(), decision.resident())) {
                 if (ps.executeUpdate() != 1) throw new SQLException("Departure cooldown not recorded");
             }
@@ -172,7 +191,11 @@ public final class VoluntaryDepartureRepository {
             return new Departed(decision.resident(), target.propertyId(), departure.occupancyRevisionBefore(),
                     decision.score(), decision.chanceBp(), until);
         } catch (SQLException | RuntimeException failure) {
-            try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+            try {
+                c.rollback();
+            } catch (SQLException rollback) {
+                failure.addSuppressed(rollback);
+            }
             throw failure;
         } finally {
             c.setAutoCommit(true);
@@ -215,7 +238,9 @@ public final class VoluntaryDepartureRepository {
     }
 
     private static boolean exists(Connection c, String sql, Object... values) throws SQLException {
-        try (PreparedStatement ps = prepare(c, sql, values); ResultSet rs = ps.executeQuery()) { return rs.next(); }
+        try (PreparedStatement ps = prepare(c, sql, values); ResultSet rs = ps.executeQuery()) {
+            return rs.next();
+        }
     }
 
     private static long count(Connection c, String sql, Object... values) throws SQLException {
@@ -235,7 +260,11 @@ public final class VoluntaryDepartureRepository {
             }
             return ps;
         } catch (SQLException failure) {
-            try { ps.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+            try {
+                ps.close();
+            } catch (SQLException close) {
+                failure.addSuppressed(close);
+            }
             throw failure;
         }
     }

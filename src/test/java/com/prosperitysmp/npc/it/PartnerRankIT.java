@@ -69,10 +69,10 @@ class PartnerRankIT extends ContractItBase {
 
     @Test void thePartnerHomeGoesFirstOnlyWithBothFlagsOn() throws SQLException {
         var before = data();
-        // Positive control: advertising alone orders as before (no advertising here, so the old order).
+        // Without partner points the order is the plain tie order (no advertising here).
         assertEquals(HOME, first(options(true, Map.of())));
         assertEquals(HOME, first(options(false, Map.of())));
-        // Mutation guard: ignoring advertising-rank-enabled makes this parent-off case pick OTHER.
+        // If advertising-rank-enabled were ignored, this case with the parent flag off would pick OTHER.
         assertEquals(HOME, first(options(false, Map.of(NICO, 2))), "advertising rank off: no partner bonus");
         assertEquals(OTHER, first(options(true, Map.of(NICO, 2))));
         var off = read(options(true, Map.of()));
@@ -85,7 +85,7 @@ class PartnerRankIT extends ContractItBase {
         // Both homes at advertising level 3 (12 points). The partner's 2 points add nothing past the cap.
         execute("INSERT INTO npc_upgrades(property_id,upgrade_type,level) VALUES (?,'ADVERTISING',3)", HOME);
         execute("INSERT INTO npc_upgrades(property_id,upgrade_type,level) VALUES (?,'ADVERTISING',3)", OTHER);
-        assertEquals(HOME, first(options(true, Map.of(NICO, 2))), "12 + 2 is still 12: the old tie order");
+        assertEquals(HOME, first(options(true, Map.of(NICO, 2))), "12 + 2 is still 12: the plain tie order");
         // One level below the top, the partner points count again.
         execute("UPDATE npc_upgrades SET level=2 WHERE property_id=?", OTHER);
         execute("UPDATE npc_upgrades SET level=2 WHERE property_id=?", HOME);

@@ -4,6 +4,7 @@ import com.prosperitysmp.npc.arm.OwnershipFence;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -17,25 +18,10 @@ import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
- * housing.rent-change-lease-guard-enabled: the daily asking-rent change step, fenced. This is the production
- * decision path PropertyService runs; it owns no plugin state itself, so a test drives exactly this code.
- *
- * <ol>
- * <li>Unless the cache is already suspect, a read-only SQL check runs first. Nothing due: no lease is taken,
- *     nothing is written, and the reply is the unguarded step's "No rent changes due.".</li>
- * <li>Something due (or a suspect cache to rebase): every cached property's ownership slot is taken on main
- *     (DueRentLeases). A busy one is excluded; a coordinator failure aborts the attempt with every lease released.</li>
- * <li>The SQL step runs with those exclusions; on main every held entry SQL reported (a change's after-row, or a
- *     re-read row) is set to that full row whenever it differs in ANY field (installHeld), and only then are the
- *     leases released: a held home is never released over a record SQL contradicts. An excluded (busy) entry is
- *     never touched; the fenced reconcile pump rebases it after its holder releases it.
- *     Deferred changes retry every DueRentLeases.RETRY_TICKS, at most MAX_ATTEMPTS times.</li>
- * <li>SQL outcome unknown: the held ids are re-read. Readable: rebase, release, done. Unreadable: the leases stay
- *     held (no payment may start on a cache SQL may contradict), a staff alert is raised, and the re-read is tried
- *     again on a bounded backoff (REREAD_TICKS doubling up to MAX_REREAD_TICKS) until it succeeds or the service
- *     closes. The first successful re-read rebases, releases and ends the step exactly like the readable branch.</li>
- * </ol>
- * Main thread only, except Sql calls, which run on worker.
+ * housing.rent-change-lease-guard-enabled: the daily asking-rent change step, fenced by ownership leases.
+ * PropertyService runs this exact path and it owns no plugin state, so a test drives the production code.
+ * A home another holder has (for example a payment between its DEBIT and CREDIT) is skipped, and a held home is never
+ * released while its cached record differs from SQL. Main thread only, except Sql calls, which run on worker.
  */
 public final class GuardedRentStep {
     /** First wait before re-reading SQL after an unconfirmed step that could not be re-read (5 seconds). */
@@ -85,9 +71,12 @@ public final class GuardedRentStep {
 
     private GuardedRentStep(Host host, Sql sql, OwnershipFence fence, Executor worker, Executor main, LocalDate today,
                             BiConsumer<Boolean, String> done) {
-        this.host = Objects.requireNonNull(host); this.sql = Objects.requireNonNull(sql);
-        this.fence = Objects.requireNonNull(fence); this.worker = Objects.requireNonNull(worker);
-        this.main = Objects.requireNonNull(main); this.today = Objects.requireNonNull(today);
+        this.host = Objects.requireNonNull(host);
+        this.sql = Objects.requireNonNull(sql);
+        this.fence = Objects.requireNonNull(fence);
+        this.worker = Objects.requireNonNull(worker);
+        this.main = Objects.requireNonNull(main);
+        this.today = Objects.requireNonNull(today);
         this.done = Objects.requireNonNull(done);
     }
 
@@ -116,11 +105,13 @@ public final class GuardedRentStep {
      */
     static Installed installHeld(Map<UUID, Property> cache, PropertyRepository.DueRentResult result,
                                  List<Property> authoritative, Predicate<UUID> holds) {
-        Objects.requireNonNull(cache); Objects.requireNonNull(result);
-        Objects.requireNonNull(authoritative); Objects.requireNonNull(holds);
+        Objects.requireNonNull(cache);
+        Objects.requireNonNull(result);
+        Objects.requireNonNull(authoritative);
+        Objects.requireNonNull(holds);
         int applied = 0, cancelled = 0, replaced = 0;
         boolean drift = false;
-        var rows = new java.util.LinkedHashMap<UUID, Property>();
+        var rows = new LinkedHashMap<UUID, Property>();
         for (var change : result.changes()) {
             switch (change.resolution()) {
                 case APPLIED -> applied++;
@@ -154,6 +145,10 @@ public final class GuardedRentStep {
         return Math.min(MAX_REREAD_TICKS, REREAD_TICKS << doublings);
     }
 
+    /**
+     * A read-only SQL check runs first. With nothing due, no lease is taken, nothing is written, and the reply is
+     * the unguarded step's "No rent changes due.".
+     */
     private boolean begin() {
         // A suspect cache always needs the guarded rebase, so there is nothing to check first.
         if (host.cacheSuspect()) return attempt(1);
@@ -187,7 +182,12 @@ public final class GuardedRentStep {
         } catch (RejectedExecutionException busy) { return false; }
     }
 
-    /** One guarded attempt. Main thread. False: nothing was submitted and every lease taken here is released. */
+    /**
+     * One guarded attempt. Main thread. False: nothing was submitted and every lease taken here is released.
+     * Every cached property's slot is taken first; a busy one is excluded and never touched, and the fenced
+     * reconcile pump rebases it once its holder lets go. Deferred changes retry every DueRentLeases.RETRY_TICKS,
+     * at most MAX_ATTEMPTS times.
+     */
     private boolean attempt(int attempt) {
         final boolean rebase = host.cacheSuspect();
         final List<UUID> cachedIds = List.copyOf(host.cache().keySet());
@@ -211,8 +211,10 @@ public final class GuardedRentStep {
                     // Outcome unknown. The leases stay held until SQL is re-read and the cache matches it.
                     final List<Property> reread = new ArrayList<>();
                     boolean readable;
-                    try { for (UUID id : heldIds) sql.find(id).ifPresent(reread::add); readable = true; }
-                    catch (SQLException | RuntimeException unreadable) { readable = false; }
+                    try {
+                        for (UUID id : heldIds) sql.find(id).ifPresent(reread::add);
+                        readable = true;
+                    } catch (SQLException | RuntimeException unreadable) { readable = false; }
                     final boolean confirmed = readable;
                     main.execute(() -> {
                         host.cacheSuspect(true);
@@ -223,7 +225,10 @@ public final class GuardedRentStep {
                             done.accept(false, HELD);
                             return;
                         }
-                        if (!settle(leases, heldIds, reread)) { done.accept(false, HELD); return; }
+                        if (!settle(leases, heldIds, reread)) {
+                            done.accept(false, HELD);
+                            return;
+                        }
                         host.log(Level.SEVERE, "Rent change step not confirmed; matching and rent wait for the next cycle.");
                         done.accept(false, NOT_CONFIRMED);
                     });
@@ -232,7 +237,9 @@ public final class GuardedRentStep {
                 main.execute(() -> {
                     var installed = installHeld(host.cache(), result, authoritative, leases::holds);
                     var outcome = installed.outcome();
-                    totals[0] += outcome.applied(); totals[1] += outcome.cancelled(); totals[2] += outcome.replaced();
+                    totals[0] += outcome.applied();
+                    totals[1] += outcome.cancelled();
+                    totals[2] += outcome.replaced();
                     if (!result.changes().isEmpty() || outcome.drift()) host.cacheChanged();
                     host.pendingRentChanges(result.stillPending() > 0);
                     if (!installed.heldMatch()) {
@@ -275,12 +282,16 @@ public final class GuardedRentStep {
                 });
             });
             return true;
-        } catch (RejectedExecutionException busy) { release(leases); return false; }
+        } catch (RejectedExecutionException busy) {
+            release(leases);
+            return false;
+        }
     }
 
     /**
-     * Outcome unknown and SQL unreadable: keep every lease, alert staff, and re-read the held ids after a bounded
-     * backoff. Main thread. Nothing here calls done; the attempt already reported the hold.
+     * Outcome unknown and SQL unreadable: keep every lease, because no payment may start on a cache SQL may
+     * contradict. Alert staff and re-read the held ids after a bounded backoff (rereadDelay) until it succeeds or
+     * the service closes. Main thread. Nothing here calls done; the attempt already reported the hold.
      */
     private void hold(DueRentLeases leases, List<UUID> heldIds, int failures) {
         host.cacheSuspect(true);
@@ -318,7 +329,10 @@ public final class GuardedRentStep {
     private boolean settle(DueRentLeases leases, List<UUID> heldIds, List<Property> reread) {
         var installed = installHeld(host.cache(), new PropertyRepository.DueRentResult(List.of(), 0), reread, leases::holds);
         host.cacheChanged();
-        if (!installed.heldMatch()) { hold(leases, heldIds, 1); return false; }
+        if (!installed.heldMatch()) {
+            hold(leases, heldIds, 1);
+            return false;
+        }
         release(leases);
         host.finished();
         return true;

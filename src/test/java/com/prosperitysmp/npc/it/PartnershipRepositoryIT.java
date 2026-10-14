@@ -128,7 +128,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         var refused = assertThrows(SQLException.class, () -> execute(secondRow, UUID.randomUUID(), owner, MARA, DAY.toString(),
                 DAY.plusDays(6).toString(), otherStart));
         assertTrue(refused.getMessage().contains("uq_partnership_active_owner"), refused.getMessage());
-        // Positive control: the same row for another owner is accepted, so only the owner key refused it.
+        // The same row for another owner is accepted, so only the owner key refused it.
         execute(secondRow, UUID.randomUUID(), UUID.randomUUID(), MARA, DAY.toString(), DAY.plusDays(6).toString(), otherStart);
         assertEquals(2, count("npc_partnerships"));
     }
@@ -147,7 +147,7 @@ class PartnershipRepositoryIT extends ContractItBase {
             }));
             gate.countDown();
             var codes = new ArrayList<Code>();
-            // Mutation guard: without the resident lock the race over-allocates or deadlocks.
+            // Without the resident lock the race would over-allocate or deadlock.
             for (var future : futures) codes.add(future.get(60, TimeUnit.SECONDS));
             assertEquals(4, codes.stream().filter(c -> c == Code.HANDOVER_STARTED).count(), codes.toString());
             assertEquals(2, codes.stream().filter(c -> c == Code.PARTNER_SEATS_FULL).count(), codes.toString());
@@ -167,7 +167,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         assertEquals(Code.PARTNER_STARTED, contracts.finishHandover(begun.contract().orElseThrow().contractId(), early, run, 16,
                 taken(early, run, 16, 16), thenAt.plusSeconds(5), then, oneSeat).code());
         UUID late = eligible(ELLIS);
-        // The old term ended yesterday: the seat is free today and the old row lapses as it is read.
+        // The first term ended yesterday: the seat is free today and that row lapses as it is read.
         var today = contracts.beginPartnership(true, late, offer(ELLIS), oneSeat, UUID.randomUUID(), NOW, DAY);
         assertEquals(Code.HANDOVER_STARTED, today.code());
         assertEquals(List.of(List.of("ENDED", "LAPSED")), rows("SELECT status, end_reason FROM npc_partnerships WHERE owner_id=?", early));
@@ -189,7 +189,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         var renewed = contracts.finishHandover(begun.contract().orElseThrow().contractId(), owner, run, 20, taken(owner, run, 20, 16),
                 at5.plusSeconds(5), d5, ON.terms(offer(ELLIS)));
         assertEquals(Code.PARTNER_RENEWED, renewed.code());
-        // Mutation guard: extending from today would give d5 + 7 = DAY + 12; the old end + 7 is DAY + 13.
+        // Extending from today would give d5 + 7 = DAY + 12. A renewal extends from the current end: DAY + 6 + 7 = DAY + 13.
         assertEquals(DAY.plusDays(13), renewed.partnership().orElseThrow().lastActiveDay());
         assertEquals(List.of(List.of(DAY.plusDays(6).toString(), DAY.plusDays(13).toString())),
                 rows("SELECT previous_last_day, new_last_day FROM npc_partnership_renewals"));
@@ -239,9 +239,9 @@ class PartnershipRepositoryIT extends ContractItBase {
     }
 
     /**
-     * P2-B: confirm 16 iron for 40% over 7 days; while the begin runs, staff reload the offer to 64 iron for 60% over
+     * Confirm 16 iron for 40% over 7 days; while the begin runs, staff reload the offer to 64 iron for 60% over
      * 30 days; the take collects the 16 iron captured at begin; settlement fetches the current terms by resident. The
-     * old cheaper hand-in must never settle at the new perks: it is held for staff, and a staff resolve with the
+     * cheaper hand-in must never settle at the reloaded perks: it is held for staff, and a staff resolve with the
      * reloaded offer records it consumed with no partnership.
      */
     @Test void aReloadDuringTheHandInNeverSettlesTheOldMaterialsAtTheNewPerks() throws SQLException {
@@ -256,7 +256,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         var current = settleTerms(reloaded("IRON_INGOT", 64, 60, 30));
         assertThrows(SQLException.class, () -> contracts.finishHandover(id, owner, run, 20, taken(owner, run, 20, 16),
                 NOW.plusSeconds(5), DAY, current), "a raised cost holds the hand-over for staff");
-        assertEquals(0, count("npc_partnerships"), "no partnership for the old cheaper hand-in");
+        assertEquals(0, count("npc_partnerships"), "no partnership for the cheaper hand-in");
         // ContractRuntime then holds it; a staff resolve as consumed with the reloaded offer still starts nothing.
         assertEquals(com.prosperitysmp.npc.town.TownContract.Status.AMBIGUOUS, contracts.markAmbiguous(id, owner, run).orElseThrow().status());
         var resolved = contracts.resolve(id, TownContractRepository.Decision.VERIFIED_CONSUMED, "staff-1", "case-1",
@@ -290,7 +290,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         assertEquals(DAY.plusDays(6), started.partnership().orElseThrow().lastActiveDay());
         assertEquals(List.of(List.of("40", DAY.plusDays(6).toString())),
                 rows("SELECT fee_discount_pct, last_active_day FROM npc_partnerships WHERE owner_id=?", owner));
-        // A renewal confirmed at 7 days and settled after a reload to 30 adds 7 days, from the old end.
+        // A renewal confirmed at 7 days and settled after a reload to 30 adds 7 days, from the current end.
         LocalDate d5 = DAY.plusDays(5);
         Instant at5 = NOW.plusSeconds(86_400L * 5);
         UUID renewRun = UUID.randomUUID();
@@ -302,7 +302,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         assertEquals(DAY.plusDays(13), renewed.partnership().orElseThrow().lastActiveDay());
     }
 
-    /** Lowered perks, term and quantity apply at once (positive control for the lower of snapshot and config). */
+    /** Lowered perks, term and quantity apply at once: the lower of the kept terms and the current config wins. */
     @Test void loweredTermsDuringTheHandInApplyAtOnce() throws SQLException {
         UUID owner = eligible(ELLIS);
         UUID run = UUID.randomUUID();
@@ -364,7 +364,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         assertTrue(noPerk.partnership().isEmpty());
         assertEquals(TownContractRepository.NoPartnership.NO_PERK_LEFT, noPerk.noPartnership());
 
-        // The other reasons, and the positive control: the same held start with the current offer starts the partnership.
+        // The other reasons, then the same held start with the current offer, which does start the partnership.
         UUID off = heldStart(eligible(ELLIS));
         assertEquals(TownContractRepository.NoPartnership.NO_OFFER, contracts.resolve(off, TownContractRepository.Decision.VERIFIED_CONSUMED,
                 "staff-1", "case-3", NOW.plusSeconds(20), DAY, null).noPartnership());
@@ -380,7 +380,7 @@ class PartnershipRepositoryIT extends ContractItBase {
         UUID good = heldStart(eligible(ELLIS));
         var started = contracts.resolve(good, TownContractRepository.Decision.VERIFIED_CONSUMED, "staff-1", "case-6",
                 NOW.plusSeconds(20), DAY, current);
-        assertTrue(started.partnership().isPresent(), "positive control");
+        assertTrue(started.partnership().isPresent(), "the held start with the current offer starts a partnership");
         assertNull(started.noPartnership());
         assertNull(contracts.resolve(good, TownContractRepository.Decision.VERIFIED_CONSUMED, "staff-1", "case-6",
                 NOW.plusSeconds(20), DAY, current).noPartnership(), "a repeat decides nothing, so it gives no reason");

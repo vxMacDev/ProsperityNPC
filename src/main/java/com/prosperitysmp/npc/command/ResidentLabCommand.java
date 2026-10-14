@@ -21,11 +21,13 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -54,8 +56,8 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
                               ResidentAppearanceCatalogue appearances) {
         this.plugin = plugin;
         this.residents = residents;
-        this.cast = java.util.Objects.requireNonNull(cast);
-        this.appearances = java.util.Objects.requireNonNull(appearances);
+        this.cast = Objects.requireNonNull(cast);
+        this.appearances = Objects.requireNonNull(appearances);
         this.worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(16), task -> {
             Thread thread = new Thread(task, "prosperity-npc-resident-lab");
             thread.setDaemon(true);
@@ -79,7 +81,10 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
         ResidentProfile target = null;
         ResidentDialogue.Topic topic = ResidentDialogue.Topic.GREETING;
         if (sub.equals("talk") || sub.equals("profile")) {
-            if (args.length < 2) { usage(sender); return true; }
+            if (args.length < 2) {
+                usage(sender);
+                return true;
+            }
             String key = args[1].toLowerCase(Locale.ROOT);
             target = cast.profiles().stream().filter(p -> p.id().toString().equals(key)
                     || p.name().split(" ", 2)[0].toLowerCase(Locale.ROOT).equals(key)).findFirst().orElse(null);
@@ -89,12 +94,16 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
             }
             if (sub.equals("talk")) {
                 if (!(sender instanceof Player)) {
-                    sender.sendMessage(Component.text("Talk uses your own player identity. Console can inspect profiles.", NamedTextColor.GRAY));
+                    sender.sendMessage(Component.text("Talk uses your own player identity. Console can inspect profiles.",
+                            NamedTextColor.GRAY));
                     return true;
                 }
                 try {
                     if (args.length > 2) topic = ResidentDialogue.Topic.valueOf(args[2].toUpperCase(Locale.ROOT));
-                } catch (IllegalArgumentException e) { usage(sender); return true; }
+                } catch (IllegalArgumentException e) {
+                    usage(sender);
+                    return true;
+                }
             }
         }
         UUID playerId = sender instanceof Player p ? p.getUniqueId() : null;
@@ -105,6 +114,7 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
             sender.sendMessage(Component.text("Your previous request is still processing.", NamedTextColor.GRAY));
             return true;
         }
+
         final ResidentProfile requested = target;
         final ResidentDialogue.Topic selected = topic;
         final Instant instant = Instant.now().truncatedTo(ChronoUnit.MILLIS);
@@ -146,7 +156,9 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
                                 yield tally.lines();
                             }
                             int created = 0;
-                            for (var person : cast.profiles()) if (residents.register(person)) created++;
+                            for (var person : cast.profiles()) {
+                                if (residents.register(person)) created++;
+                            }
                             yield List.of("DEV cast: " + created + " created. No tenants, properties, avatars or money changed.");
                         }
                         case "list" -> residents.list(20).stream().map(p -> p.name() + " | " + p.occupation()
@@ -164,7 +176,8 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
                         case "talk" -> {
                             var p = residents.find(requested.id()).orElseThrow(() -> new IllegalStateException("Cast not seeded"));
                             RelationshipMemory.State before = residents.readRelationship(p.id(), playerId);
-                            if (selected == ResidentDialogue.Topic.GREETING) residents.introduce(p.id(), playerId, instant, clock.dayAt(instant));
+                            if (selected == ResidentDialogue.Topic.GREETING)
+                                residents.introduce(p.id(), playerId, instant, clock.dayAt(instant));
                             var conversation = new Conversation(playerId, p.id(), selected);
                             int variant = turns.getOrDefault(conversation, 0);
                             var reply = ResidentDialogue.reply(p, before, selected, worldTime, variant, cast.lines(p.id()));
@@ -172,6 +185,7 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
                             yield List.of(p.name() + ": " + reply.line(),
                                     "Topics: greeting | routine | home | business. Talking never grants money or trust points.");
                         }
+
                         default -> throw new IllegalStateException("Validated command changed");
                     };
                 } catch (Exception error) {
@@ -181,7 +195,11 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
                     // Clear after the callback, not here, so an output backlog cannot bypass per-actor backpressure.
                     if (closed) pending.remove(actor);
                 }
-                if (closed) { pending.remove(actor); return; }
+                if (closed) {
+                    pending.remove(actor);
+                    return;
+                }
+
                 final List<String> output = lines;
                 try {
                     Bukkit.getScheduler().runTask(plugin, () -> {
@@ -190,12 +208,17 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
                             CommandSender recipient = playerId == null ? Bukkit.getConsoleSender() : Bukkit.getPlayer(playerId);
                             if (recipient == null || !recipient.hasPermission("prosperitynpc.admin")) return;
                             if (recipient instanceof Player p && !p.getWorld().getUID().equals(worldId)) return;
-                            for (String line : output.isEmpty() ? List.of("No residents. Staff can use /residentlab seed on dev.") : output) {
+                            for (String line : output.isEmpty()
+                                    ? List.of("No residents. Staff can use /residentlab seed on dev.") : output) {
                                 recipient.sendMessage(Component.text(line, NamedTextColor.AQUA));
                             }
-                        } finally { pending.remove(actor); }
+                        } finally {
+                            pending.remove(actor);
+                        }
                     });
-                } catch (RuntimeException stopping) { pending.remove(actor); }
+                } catch (RuntimeException stopping) {
+                    pending.remove(actor);
+                }
             });
         } catch (RejectedExecutionException full) {
             pending.remove(actor);
@@ -206,7 +229,7 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
 
     /** Every conversation topic, from the enum, so help cannot drift from what talk accepts. */
     static List<String> topicNames() {
-        return java.util.Arrays.stream(ResidentDialogue.Topic.values()).map(t -> t.name().toLowerCase(Locale.ROOT)).toList();
+        return Arrays.stream(ResidentDialogue.Topic.values()).map(t -> t.name().toLowerCase(Locale.ROOT)).toList();
     }
 
     static String usageLine() {
@@ -219,7 +242,8 @@ public final class ResidentLabCommand implements TabExecutor, AutoCloseable {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (!sender.hasPermission("prosperitynpc.admin") || !plugin.getConfig().getBoolean("beta.resident-lab-enabled", false)) return List.of();
+        if (!sender.hasPermission("prosperitynpc.admin") || !plugin.getConfig().getBoolean("beta.resident-lab-enabled", false))
+            return List.of();
         List<String> choices = args.length == 1 ? List.of("list", "seed", "profile", "talk")
                 : args.length == 2 && List.of("profile", "talk").contains(args[0].toLowerCase(Locale.ROOT))
                 ? cast.firstNames() : args.length == 3 && args[0].equalsIgnoreCase("talk")

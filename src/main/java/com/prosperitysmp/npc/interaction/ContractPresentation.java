@@ -12,6 +12,7 @@ import com.prosperitysmp.npc.town.PartnerPerks;
 import com.prosperitysmp.npc.town.Partnership;
 import com.prosperitysmp.npc.town.TownContract;
 import com.prosperitysmp.npc.town.TownContractRepository.Code;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -23,10 +24,10 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Pure view of the "Contracts and partners" topic, and every player line for it. At most 3 actions, in priority
- * order: the open contract (Hand over, Find, Cancel), then the partnership (Partner, Renew, End), then new contracts.
- * Every action is bound to the resident in the conversation (recipientId); Hand over only shows at the contract's
- * recipient, so there it is also the contract's recipient.
+ * Pure view of the "Contracts and partners" topic, and every player line for it. It shows at most 3 actions, in
+ * priority order: the open contract (Hand over, Find, Cancel), then the partnership (Partner, Renew, End), then new
+ * contracts. Every action is bound to the resident in the conversation (recipientId). Hand over only shows at the
+ * contract's recipient; at any other resident the player gets Find instead.
  * Times and the daily reset are written in the server's configured zone and reset hour.
  */
 public final class ContractPresentation {
@@ -136,12 +137,16 @@ public final class ContractPresentation {
                     && p.renewableOn(f.today(), f.catalogue().renewWindowDays()) && actions.size() < 3)
                 actions.add(new ResidentAction(ResidentAction.Kind.PARTNER, ContractDefinition.PARTNER_RENEW, null, person.id(),
                         "Renew partnership (" + items(offer.get()) + ")"));
-            if (actions.size() < 3) actions.add(new ResidentAction(ResidentAction.Kind.PARTNER_END, null, p.partnershipId(), person.id(), END_BUTTON));
+            if (actions.size() < 3) actions.add(new ResidentAction(ResidentAction.Kind.PARTNER_END, null, p.partnershipId(), person.id(),
+                    END_BUTTON));
             return;
         }
         if (!offerLive(offer, f.rankLive())) return;
         PartnerOffer o = offer.get();
-        if (mine.isPresent()) { lines.add(hasOne(name(mine.get().residentId(), cast), mine.get().lastActiveDay())); return; }
+        if (mine.isPresent()) {
+            lines.add(hasOne(name(mine.get().residentId(), cast), mine.get().lastActiveDay()));
+            return;
+        }
         var catalogue = f.catalogue();
         String locked = relationship.stage().ordinal() < catalogue.partnerMinimumStage().ordinal()
                 ? "Partnerships open at " + EncounterView.label(catalogue.partnerMinimumStage().name()) + "."
@@ -150,7 +155,10 @@ public final class ContractPresentation {
                 : f.seatsUsed() >= catalogue.maxPartners() ? seatsFull(catalogue.maxPartners())
                 : contractOpen ? ACTIVE_CONFLICT
                 : f.partnerDayUsed() ? partnerDailyLimit(clock, f.now()) : null;
-        if (locked != null) { lines.add(locked); return; }
+        if (locked != null) {
+            lines.add(locked);
+            return;
+        }
         lines.add(pitch(o, f.rankLive(), f.advertisingTop()));
         if (actions.size() < 3)
             actions.add(new ResidentAction(ResidentAction.Kind.PARTNER, ContractDefinition.PARTNER_START, null, person.id(),
@@ -183,7 +191,7 @@ public final class ContractPresentation {
     public static UUID offerKey(PartnerOffer offer) {
         String shown = offer.residentId() + "|" + offer.material() + "|" + offer.quantity() + "|" + offer.feeDiscountPct()
                 + "|" + offer.rankBonusPoints();
-        return UUID.nameUUIDFromBytes(shown.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes(shown.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -231,7 +239,8 @@ public final class ContractPresentation {
             case HELD_FOR_REVIEW -> contract.map(t -> blockedByHeld(t.contractId())).orElse(UNAVAILABLE);
             case BUSY -> BUSY;
             case ITEMS_BUSY -> ITEMS_BUSY;
-            case WRONG_RECIPIENT -> contract.map(t -> wrongResident(name(t.definition().recipientId(), cast), t.definition())).orElse(UNAVAILABLE);
+            case WRONG_RECIPIENT -> contract.map(t -> wrongResident(name(t.definition().recipientId(), cast),
+                    t.definition())).orElse(UNAVAILABLE);
             case PARTNER_STARTED -> partnership.map(p -> "We're partners until " + p.lastActiveDay() + ". Thank you.").orElse(COMPLETED);
             case PARTNER_RENEWED -> partnership.map(p -> "Partnership renewed until " + p.lastActiveDay() + ".").orElse(COMPLETED);
             case PARTNER_STAGE -> "Partnerships open at " + EncounterView.label(catalogue.partnerMinimumStage().name()) + ".";
@@ -317,7 +326,7 @@ public final class ContractPresentation {
      */
     public static String deadline(Instant at, EconomyClock clock) {
         String time = DateTimeFormatter.ofPattern("HH:mm z", Locale.US).withZone(clock.zone()).format(at);
-        java.time.LocalDate day = at.atZone(clock.zone()).toLocalDate(), today = clock.instant().atZone(clock.zone()).toLocalDate();
+        LocalDate day = at.atZone(clock.zone()).toLocalDate(), today = clock.instant().atZone(clock.zone()).toLocalDate();
         if (!day.isAfter(today)) return time;
         return (day.equals(today.plusDays(1)) ? "tomorrow" : DateTimeFormatter.ofPattern("MMM d", Locale.US).format(day)) + " " + time;
     }

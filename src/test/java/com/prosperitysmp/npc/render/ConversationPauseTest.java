@@ -177,6 +177,6 @@ class ConversationPauseTest {
                 if (pause.capReached(now, renew)) atCap++;
             }
         }
-        assertTrue(atCap > 100, "positive control: the cap was reached " + atCap + " times");
+        assertTrue(atCap > 100, "the cap was reached " + atCap + " times");
     }
 }

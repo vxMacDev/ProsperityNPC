@@ -29,8 +29,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * linked-accounts on the real rent and appreciation reservation SQL. A Java owner (JAVA) and a Bedrock owner
  * (BEDROCK) each own homes. Linked, their homes share one benefit-unit limit; every event still names its own
- * home's owner. Covers the spec's RentLinkedCapIT, RentLinkedSpentIT, AppreciationLinkedIT, ProofInvarianceIT,
- * FlagOffGoldenIT, BoundedLinksIT and ConcurrentLinkIT on one database.
+ * home's owner. The sections below cover the shared limit, spent totals, appreciation, proof invariance, flag-off amounts,
+ * the active-link bound, concurrent link saves and a split across the daily reset, all on one database.
  */
 @Timeout(300)
 class RentLinkedCapIT {
@@ -47,7 +47,7 @@ class RentLinkedCapIT {
     @Test void linkedOwnersShareOneCapSplitPerHomeAndEachHomePaysItsOwnOwner() throws Exception {
         var limits = limits(15000, 4500, 1500, 1500);
         var homes = fourHomes(1500);
-        // Positive control: not linked, each owner has its own $45, so all four $15 homes are paid in full.
+        // Not linked yet: each owner has its own $45, so all four $15 homes are paid in full.
         assertEquals(List.of(1500L, 1500L, 1500L, 1500L), amounts(db.rents(() -> true).reserve(DAY, db.properties(homes), limits)));
         clearRent();
         assertEquals(AccountLinkRepository.Observed.NEW, db.link(JAVA, BEDROCK, DAY));
@@ -91,7 +91,7 @@ class RentLinkedCapIT {
                 db.clock.instant(), db.clock.instant(), first.get(2).eventId());
         db.link(JAVA, BEDROCK, DAY);
         assertEquals(List.of(), db.rents(() -> true).reserve(DAY, db.properties(bedrock), limits), "the group's $45 is used up");
-        // Positive control: the same batch without the link pays Bedrock's own $30.
+        // Without the link the same batch pays Bedrock's own $30.
         db.execute("UPDATE npc_account_links SET split_effective_day=?,split_at=?,split_by='test',first_seen_day=? ",
                 DAY, db.clock.instant(), DAY.minusDays(1));
         assertEquals(List.of(1500L, 1500L), amounts(db.rents(() -> true).reserve(DAY, db.properties(bedrock), limits)));
@@ -109,7 +109,7 @@ class RentLinkedCapIT {
         assertEquals(List.of(1500L, 1500L, 1500L), amounts(first));
         for (var row : first) assertTrue(db.pay(row));
         assertEquals(List.of(), db.rents(() -> true).reserve(DAY, db.properties(java), limits), "the group's $45 went to Bedrock");
-        // Positive control: split as of today (test only), Java gets its own $30.
+        // Split as of today (test only): Java gets its own $30.
         db.execute("UPDATE npc_account_links SET split_effective_day=?,split_at=?,split_by='test',first_seen_day=? ",
                 DAY, db.clock.instant(), DAY.minusDays(1));
         assertEquals(List.of(1500L, 1500L), amounts(db.rents(() -> true).reserve(DAY, db.properties(java), limits)));
@@ -154,7 +154,7 @@ class RentLinkedCapIT {
     }
 
     @Test void appreciationWithTheFlagOffAndNoPinIsPerAccount() throws Exception {
-        // Positive control for the three cases above: same fixture, flag off on both days.
+        // With the flag off on both days the same fixture is per account, so the three cases above are real.
         var homes = appreciationDay(false, true);
         db.clock.set(NOW.plusSeconds(86_400));
         assertEquals(List.of(300L, 300L, 300L, 300L), appreciate(homes, false));
@@ -193,9 +193,9 @@ class RentLinkedCapIT {
 
         var legacy = golden(db.legacyRents().reserve(DAY, properties, limits));
         // Golden amounts: J and B are each cut to $40 (1334/1333/1333), the three others keep $30, then the $150
-        // server limit cuts the $170 total pro rata. A fixed list, checked by hand against the dev.58 rule (owner
-        // pro rata, then server pro rata, largest remainder, ties to the lower index), so a change to the old path
-        // fails here too. Property ids come from the region names, so the keys are fixed as well.
+        // server limit cuts the $170 total pro rata. A fixed list, checked by hand against the flag-off rule (owner
+        // pro rata, then server pro rata, largest remainder, ties to the lower index), so a change to the flag-off
+        // path fails here too. Property ids come from the region names, so the keys are fixed as well.
         var expected = new java.util.TreeMap<String, Long>(java.util.Map.ofEntries(
                 java.util.Map.entry("golden-j-0", 1176L), java.util.Map.entry("golden-j-1", 1177L), java.util.Map.entry("golden-j-2", 1176L),
                 java.util.Map.entry("golden-b-0", 1176L), java.util.Map.entry("golden-b-1", 1176L), java.util.Map.entry("golden-b-2", 1177L),
@@ -218,7 +218,7 @@ class RentLinkedCapIT {
         var off = golden(db.rents(() -> false).reserve(DAY, properties, limits));
         assertEquals(legacy, off, "flag off with link rows: same keys, amounts, owners and units");
         assertEquals(0, db.count("npc_linked_account_days"), "flag off never writes a pin");
-        // Positive control: the flag on with the same rows does change the result.
+        // With the flag on, the same rows give a different result.
         clearRent();
         var on = golden(db.rents(() -> true).reserve(DAY, properties, limits));
         assertNotEquals(legacy, on);
@@ -237,7 +237,7 @@ class RentLinkedCapIT {
         assertEquals(0, db.count("npc_rent_reservations"));
         assertEquals(0, db.count(RENT));
         assertEquals(0, db.count("npc_linked_account_days"), "the pin rolled back with the batch");
-        // Positive control: exactly 10000 active rows is allowed.
+        // Exactly 10000 active rows is allowed.
         db.execute("DELETE FROM npc_account_links ORDER BY link_id DESC LIMIT 1");
         assertEquals(4, db.rents(() -> true).reserve(DAY, db.properties(homes), limits).size());
     }
@@ -296,7 +296,7 @@ class RentLinkedCapIT {
         }
         assertEquals(List.of(), waiting.get(60, TimeUnit.SECONDS), "the group's $45 was spent while the batch waited");
         assertEquals(0, db.count(RENT + " AND benefit_unit_id=?", JAVA));
-        // Positive control: with no Bedrock money the same Java home is paid.
+        // With no Bedrock money the same Java home is paid, so the empty result above is the cap.
         db.execute("DELETE FROM npc_economy_events WHERE source='npc-property-rent'");
         assertEquals(List.of(1500L), amounts(rents.reserve(DAY, java, limits)));
     }
@@ -327,13 +327,13 @@ class RentLinkedCapIT {
         assertNotNull(second.get(), "the Java batch started while Bedrock's batch held the mutex");
         assertEquals(List.of(), second.get().get(60, TimeUnit.SECONDS), "Bedrock's $6 used up the group while Java waited");
         assertEquals(0, db.count("npc_economy_events WHERE source='npc-property-appreciation' AND benefit_unit_id=?", JAVA));
-        // Positive control: with no Bedrock appreciation the same Java batch takes the group's $6.
+        // With no Bedrock appreciation the same Java batch takes the group's $6.
         db.execute("DELETE FROM npc_appreciation_reservations");
         db.execute("DELETE FROM npc_economy_events WHERE source='npc-property-appreciation'");
         assertEquals(List.of(300L, 300L), amounts(rents.reserveAppreciation(DAY, java, limits, TOP)));
     }
 
-    // ---- SplitAcrossResetIT (Codex P1-C)
+    // ---- SplitAcrossResetIT
 
     @Test void aSplitStalledAcrossTheResetCannotReopenTheMergedDay() throws Exception {
         // D = DAY. The pair has been linked for days. Reset is 04:00 Chicago = 09:00Z on DAY.
@@ -381,7 +381,7 @@ class RentLinkedCapIT {
             try { assertEquals(BEDROCK, db.links().unitsFor(c, DAY, false).unitOf(JAVA), "D's grouping is frozen"); }
             finally { c.rollback(); }
         }
-        // Positive control: without Java's reservations the same Bedrock batch is paid, so the empty result is the cap.
+        // Without Java's reservations the same Bedrock batch is paid, so the empty result is the cap.
         clearRent();
         assertEquals(List.of(1500L, 1500L, 1500L), amounts(db.rents(() -> true).reserve(DAY, db.properties(bedrock), limits)));
     }

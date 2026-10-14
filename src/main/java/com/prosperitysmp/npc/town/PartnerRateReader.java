@@ -1,6 +1,8 @@
 package com.prosperitysmp.npc.town;
 
 import com.prosperitysmp.npc.commerce.CommerceRuntime;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Objects;
@@ -41,9 +43,12 @@ public final class PartnerRateReader implements CommerceRuntime.PartnerRates {
      * player's partnership with this resident is active on day at a rate of at least pct (min(snapshot, current
      * config)). The row is share-locked, so a staff end waits for this decision instead of slipping past it.
      */
-    @Override public boolean stillGrants(java.sql.Connection c, UUID player, UUID resident, LocalDate day, int pct)
-            throws java.sql.SQLException {
-        Objects.requireNonNull(c); Objects.requireNonNull(player); Objects.requireNonNull(resident); Objects.requireNonNull(day);
+    @Override public boolean stillGrants(Connection c, UUID player, UUID resident, LocalDate day, int pct)
+            throws SQLException {
+        Objects.requireNonNull(c);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(resident);
+        Objects.requireNonNull(day);
         if (pct < 1 || pct > PartnerOffer.MAX_FEE_DISCOUNT || !enabled()) return false;
         var current = PartnershipRepository.activeForDebit(c, player);
         if (current.isEmpty() || !current.get().activeOn(day) || current.get().startedDay().isAfter(day)

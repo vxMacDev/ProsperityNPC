@@ -27,20 +27,20 @@ public record EncounterView(String name, String occupation, String familiarity, 
     /** Use a main-thread observation at delivery, never a movement claim captured before SQL. */
     public EncounterView withActivity(ResidentDialogue.Topic topic, ResidentActivity actual) {
         return topic == ResidentDialogue.Topic.ROUTINE && actual != null
-                ? new EncounterView(name,occupation,familiarity,
-                        moodSuffix == null ? actual.line() : actual.line() + " " + moodSuffix,topics,actions,moodSuffix) : this;
+                ? new EncounterView(name, occupation, familiarity,
+                        moodSuffix == null ? actual.line() : actual.line() + " " + moodSuffix, topics, actions, moodSuffix) : this;
     }
 
     /** Appends a short mood sentence that survives the delivery-time activity override. */
     public EncounterView withMood(String sentence) {
         return sentence == null || sentence.isBlank() ? this
-                : new EncounterView(name,occupation,familiarity,line + " " + sentence,topics,actions,sentence);
+                : new EncounterView(name, occupation, familiarity, line + " " + sentence, topics, actions, sentence);
     }
 
     /** Appends one sentence to the line. Apply after withActivity and withMood so neither can drop it. */
     public EncounterView withNotice(String sentence) {
         return sentence == null || sentence.isBlank() ? this
-                : new EncounterView(name,occupation,familiarity,line + " " + sentence,topics,actions,moodSuffix);
+                : new EncounterView(name, occupation, familiarity, line + " " + sentence, topics, actions, moodSuffix);
     }
 
     public static EncounterView of(ResidentProfile profile, RelationshipMemory.State state,
@@ -87,7 +87,10 @@ public record EncounterView(String name, String occupation, String familiarity, 
                 line.setLength(0);
             }
             while (word.length() > width) {
-                if (line.length() > 0) { lines.add(line.toString()); line.setLength(0); }
+                if (line.length() > 0) {
+                    lines.add(line.toString());
+                    line.setLength(0);
+                }
                 lines.add(word.substring(0, width));
                 word = word.substring(width);
             }

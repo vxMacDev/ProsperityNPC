@@ -28,7 +28,7 @@ class ItemRepairRecoveryGateTest {
         assertTrue(refused.getMessage().contains("override_reason"));
         assertThrows(IllegalArgumentException.class, () -> ItemRepairRecoveryTool.checkedOverride("x", "   "));
         assertThrows(IllegalArgumentException.class, () -> ItemRepairRecoveryTool.checkedOverride("x", null));
-        // Positive control: the same problem with a reason goes ahead and the reason is what gets recorded.
+        // The same problem with a reason goes ahead, and the reason is what gets recorded.
         assertEquals("player showed the chest on stream", ItemRepairRecoveryTool.checkedOverride("x", "player showed the chest on stream"));
     }
 
@@ -49,7 +49,7 @@ class ItemRepairRecoveryGateTest {
                     java.util.List.of(4, 0), null, null);
 
     /**
-     * P1-B repro. The take records [20,8] to [4,0], the save fails and the hand-in is held. A crash restores [20,8]. After
+     * The take records [20,8] to [4,0], the save fails and the hand-in is held. A crash restores [20,8]. After
      * the restart the player moves [16,8] into a chest and the server saves and stops. The file now shows [4,0], which
      * agrees with the recorded counts, but it is not the take's own save.
      */

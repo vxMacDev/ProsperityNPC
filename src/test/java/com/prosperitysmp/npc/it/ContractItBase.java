@@ -124,7 +124,7 @@ abstract class ContractItBase {
 
     static PartnerOffer offer(UUID resident) { return ON.partnerOffer(resident).orElseThrow(); }
 
-    /** What a clean take of quantity from before looks like: proven save, changed inventory, normal return. */
+    /** Evidence of a clean take: the stack goes from before to before minus quantity, with a proven save and a normal return. */
     static ItemCollectionEvidence taken(UUID player, UUID run, int before, int quantity) {
         return new ItemCollectionEvidence(player, run, "a".repeat(64), "b".repeat(64), List.of(before), List.of(before - quantity), true, true);
     }

@@ -337,7 +337,7 @@ class CommerceOrderRepositoryIT {
             assertDoesNotThrow(() -> repository.claimItems(next,PAYLOAD,late),"paid claim "+claim+" fits beside 4 waiting returns");
         }
         assertEquals(ItemCustodyRepository.MAX_OPEN_REQUESTS_PER_PLAYER,
-                scalar("SELECT COUNT(*) FROM npc_item_custody WHERE source<>'REPAIR_RETURN' AND state='RESERVED'"),"positive control: all eight claims landed");
+                scalar("SELECT COUNT(*) FROM npc_item_custody WHERE source<>'REPAIR_RETURN' AND state='RESERVED'"),"all eight claims landed");
         ItemCustodyRepository custody=new ItemCustodyRepository(database);
         for(ItemCustody stack:returns)
             assertEquals(ItemCustodyRepository.State.RESERVED,custody.find(player,stack.requestNonce(),late).orElseThrow().state(),

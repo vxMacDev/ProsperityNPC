@@ -7,10 +7,12 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -100,12 +102,15 @@ public final class ResidentRepository {
         for (int offset = 0; offset < sorted.size(); offset += 128) {
             if (Thread.currentThread().isInterrupted()) throw new SQLException("Resident snapshot interrupted");
             List<UUID> batch = sorted.subList(offset, Math.min(offset + 128, sorted.size()));
-            String placeholders = String.join(",", java.util.Collections.nCopies(batch.size(), "?"));
+            String placeholders = String.join(",", Collections.nCopies(batch.size(), "?"));
             try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c,
                     "SELECT " + PROFILE_COLUMNS + " FROM npc_resident_profiles WHERE resident_id IN (" + placeholders + ")")) {
                 for (int i = 0; i < batch.size(); i++) ps.setBytes(i + 1, Uuids.toBytes(batch.get(i)));
                 try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) { ResidentProfile profile = readProfile(rs); result.put(profile.id(), profile); }
+                    while (rs.next()) {
+                        ResidentProfile profile = readProfile(rs);
+                        result.put(profile.id(), profile);
+                    }
                 }
             }
         }
@@ -159,11 +164,11 @@ public final class ResidentRepository {
     }
 
     /**
-     * INTERNAL trusted source adapters only; never expose this as a player/console command or client endpoint.
-     * Event validates shape, NOT whether a repair/obligation happened. The adapter MUST verify source identity,
-     * completion/outcome, resident/player attribution, time and economy day before calling this method.
-     * Full payload equality is checked after millisecond normalization. Evidence cannot be overwritten.
-     * INTRODUCTION uses the reserved source "introduction"; normal playable interactions call introduce instead.
+     * For trusted source adapters only; never expose this as a player or console command or a client endpoint.
+     * The event is checked for shape, not for whether a repair or obligation really happened, so the adapter must
+     * first verify the source, the outcome, the resident and player, the time and the economy day. A repeat of the
+     * same source must match the stored payload (after millisecond normalization), and evidence is never overwritten.
+     * INTRODUCTION uses the reserved source "introduction"; normal play calls introduce instead.
      */
     public boolean appendVerified(RelationshipMemory.Event input) throws SQLException {
         return inTransaction(c -> appendVerified(c, input));
@@ -171,13 +176,13 @@ public final class ResidentRepository {
 
     /**
      * Same trusted-source contract as {@link #appendVerified(RelationshipMemory.Event)}, inside a caller-owned
-     * SQL transaction. Auto-commit must already be disabled. This method never commits, rolls back, closes,
-     * or changes transaction settings on the supplied connection, including on failure. The caller MUST abort
-     * its entire transaction on any exception; false means an exact normalized duplicate, not a failure.
+     * SQL transaction with auto-commit already off. It never commits, rolls back, closes or changes settings on the
+     * connection, even on failure, so the caller must abort its whole transaction on any exception. False means an
+     * exact normalized duplicate, not a failure.
      *
      * Lock order: the caller may already hold property -> event -> intent -> incident/tenant locks, then this
-     * method takes the resident profile followed by its memory rows. Resident code never acquires those
-     * upstream locks in reverse. Callers appending for multiple residents must lock them in stable UUID order.
+     * method takes the resident profile followed by its memory rows. Resident code never takes those upstream
+     * locks in reverse. A caller appending for several residents must lock them in stable UUID order.
      */
     public static boolean appendVerified(Connection c, RelationshipMemory.Event input) throws SQLException {
         Objects.requireNonNull(c);
@@ -234,7 +239,7 @@ public final class ResidentRepository {
                                 RelationshipMemory.Kind.valueOf(rs.getString("kind")),
                                 Instant.ofEpochMilli(rs.getLong("occurred_at_millis")),
                                 LocalDate.parse(rs.getString("economy_day"))));
-                    } catch (IllegalArgumentException | java.time.DateTimeException e) {
+                    } catch (IllegalArgumentException | DateTimeException e) {
                         throw new SQLException("invalid stored resident memory", e);
                     }
                 }

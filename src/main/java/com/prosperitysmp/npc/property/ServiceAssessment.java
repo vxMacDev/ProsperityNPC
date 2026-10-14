@@ -21,7 +21,9 @@ public record ServiceAssessment(UtilityServiceAssessment utilities, IncidentServ
     public record ScoreBounds(int minimum, int maximum) { }
 
     public ServiceAssessment {
-        Objects.requireNonNull(utilities); Objects.requireNonNull(incidents); Objects.requireNonNull(retention);
+        Objects.requireNonNull(utilities);
+        Objects.requireNonNull(incidents);
+        Objects.requireNonNull(retention);
         if (!utilities.ownerId().equals(incidents.ownerId()) || !utilities.ownerId().equals(retention.ownerId())
                 || !utilities.capturedAt().equals(incidents.capturedAt()) || !utilities.capturedAt().equals(retention.capturedAt())
                 || !utilities.dueFrom().equals(incidents.dueFrom()) || !utilities.dueFrom().equals(retention.admittedFrom()))

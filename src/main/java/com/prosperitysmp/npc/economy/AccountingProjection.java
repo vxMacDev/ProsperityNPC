@@ -17,6 +17,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,7 +60,10 @@ public final class AccountingProjection implements AutoCloseable {
     }
     public record CommerceReceipt(UUID orderId, UUID payer, UUID reserve, String source, long cents, Instant fundedAt) {
         public CommerceReceipt {
-            Objects.requireNonNull(orderId); Objects.requireNonNull(payer); Objects.requireNonNull(reserve); Objects.requireNonNull(fundedAt);
+            Objects.requireNonNull(orderId);
+            Objects.requireNonNull(payer);
+            Objects.requireNonNull(reserve);
+            Objects.requireNonNull(fundedAt);
             if (payer.equals(reserve) || cents <= 0 || !COMMERCE_SOURCES.contains(source) || fundedAt.toEpochMilli() < 0)
                 throw new IllegalArgumentException("Invalid commerce accounting receipt");
         }
@@ -73,7 +77,9 @@ public final class AccountingProjection implements AutoCloseable {
     public record Snapshot(long generation, Instant capturedAt, String zone, List<Group> groups, List<Item> receipts,
                            List<CommerceReceipt> commerceReceipts) {
         public Snapshot {
-            groups = List.copyOf(groups); receipts = List.copyOf(receipts); commerceReceipts = List.copyOf(commerceReceipts);
+            groups = List.copyOf(groups);
+            receipts = List.copyOf(receipts);
+            commerceReceipts = List.copyOf(commerceReceipts);
         }
         public Snapshot(long generation, Instant capturedAt, String zone, List<Group> groups, List<Item> receipts) {
             this(generation, capturedAt, zone, groups, receipts, List.of());
@@ -102,32 +108,52 @@ public final class AccountingProjection implements AutoCloseable {
     private Snapshot current;
 
     public AccountingProjection(ProsperityNpcPlugin plugin) {
-        main(); Objects.requireNonNull(plugin);
+        main();
+        Objects.requireNonNull(plugin);
         database = plugin.database();
         reserve = ReserveAccount.fromConfig(plugin.getConfig());
         transfers = new TransferJournal(database, reserve);
         commerce = new CommerceOrderRepository(database, reserve);
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1), r -> {
-            Thread t = new Thread(r, "npc-accounting-projection"); t.setDaemon(true); return t;
+            Thread t = new Thread(r, "npc-accounting-projection");
+            t.setDaemon(true);
+            return t;
         }, new ThreadPoolExecutor.AbortPolicy());
         try {
             plugin.trackDatabaseWorker(worker);
             ticker = plugin.getServer().getScheduler().runTaskTimer(plugin, this::tick, 1, 1);
-        } catch (RuntimeException | Error failure) { worker.shutdown(); throw failure; }
+        } catch (RuntimeException | Error failure) {
+            worker.shutdown();
+            throw failure;
+        }
     }
 
     /** Main-thread read; not proof that Skript variables have been flushed durably to disk. */
-    public boolean ready() { main(); expire(); return current != null && acknowledged == current.generation(); }
-    public Snapshot snapshot() { main(); expire(); return current; }
+    public boolean ready() {
+        main();
+        expire();
+        return current != null && acknowledged == current.generation();
+    }
+    public Snapshot snapshot() {
+        main();
+        expire();
+        return current;
+    }
     public boolean acknowledge(long value) {
-        main(); expire();
+        main();
+        expire();
         if (current == null || value != current.generation()) return false;
-        acknowledged = value; return true;
+        acknowledged = value;
+        return true;
     }
 
     /** Host calls after a new payment/uncertain outcome, before permitting another debit. */
     public void invalidate() {
-        main(); generation = Math.incrementExact(generation); current = null; acknowledged = -1; submitted = 0;
+        main();
+        generation = Math.incrementExact(generation);
+        current = null;
+        acknowledged = -1;
+        submitted = 0;
     }
 
     private void expire() {
@@ -136,32 +162,43 @@ public final class AccountingProjection implements AutoCloseable {
         lastWall = now;
         if (closed || backwards || !zone.equals(ZoneId.systemDefault())) {
             if (backwards) generation = Math.incrementExact(generation);
-            current = null; acknowledged = -1;
+            current = null;
+            acknowledged = -1;
         }
         if (current != null && (now.isBefore(current.capturedAt())
                 || Duration.between(current.capturedAt(), now).compareTo(Duration.ofSeconds(30)) >= 0
                 || System.nanoTime() - snapshotStarted < 0 || System.nanoTime() - snapshotStarted >= TTL)) {
-            current = null; acknowledged = -1;
+            current = null;
+            acknowledged = -1;
         }
     }
 
     private void tick() {
-        main(); expire(); if (closed) return;
+        main();
+        expire();
+        if (closed) return;
         Completion done;
-        synchronized (completionLock) { done = completion; completion = null; }
+        synchronized (completionLock) {
+            done = completion;
+            completion = null;
+        }
         if (done != null) {
             inFlight = false;
             if (done.generation() == generation) {
                 boolean retain = canRetainAcknowledgement(current, acknowledged, done.snapshot());
-                current = done.snapshot(); snapshotStarted = done.started();
-                acknowledged = retain ? current.generation() : -1; expire();
+                current = done.snapshot();
+                snapshotStarted = done.started();
+                acknowledged = retain ? current.generation() : -1;
+                expire();
             }
         }
         long now = System.nanoTime();
         if (inFlight || submitted != 0 && now - submitted < REFRESH) return;
         if (!zone.equals(ZoneId.systemDefault())) return;
-        long token = Math.incrementExact(generation); generation = token;
-        submitted = now; inFlight = true;
+        long token = Math.incrementExact(generation);
+        generation = token;
+        submitted = now;
+        inFlight = true;
         try {
             worker.execute(() -> {
                 Snapshot value = null;
@@ -173,7 +210,11 @@ public final class AccountingProjection implements AutoCloseable {
                     }
                 }
             });
-        } catch (RuntimeException rejected) { inFlight = false; current = null; acknowledged = -1; }
+        } catch (RuntimeException rejected) {
+            inFlight = false;
+            current = null;
+            acknowledged = -1;
+        }
     }
 
     // A refresh of identical projected data is not a new accounting obligation.
@@ -190,7 +231,8 @@ public final class AccountingProjection implements AutoCloseable {
         // confirmedPaid uses locking proof reads, so this is a rollback-only transaction,
         // not ReadSnapshot's SQL READ ONLY mode. No INSERT/UPDATE/DELETE is issued here.
         try (Connection c = database.getConnection()) {
-            c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ); c.setAutoCommit(false);
+            c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            c.setAutoCommit(false);
             try {
                 return readSnapshot(c, transfers, commerce, reserve, token, captured, zone, started);
             } finally { c.rollback(); }
@@ -199,25 +241,31 @@ public final class AccountingProjection implements AutoCloseable {
 
     static Snapshot readSnapshot(Connection c, TransferJournal transfers, CommerceOrderRepository commerce, UUID reserve,
                                  long token, Instant captured, ZoneId zone, long started) throws SQLException {
-        Objects.requireNonNull(c); Objects.requireNonNull(transfers); Objects.requireNonNull(commerce); Objects.requireNonNull(reserve);
-        Objects.requireNonNull(captured); Objects.requireNonNull(zone);
+        Objects.requireNonNull(c);
+        Objects.requireNonNull(transfers);
+        Objects.requireNonNull(commerce);
+        Objects.requireNonNull(reserve);
+        Objects.requireNonNull(captured);
+        Objects.requireNonNull(zone);
         if (c.getAutoCommit() || c.getTransactionIsolation() != Connection.TRANSACTION_REPEATABLE_READ)
             throw new SQLException("Accounting requires caller-owned repeatable-read transaction");
         LocalDate today = captured.atZone(zone).toLocalDate();
         Instant from = today.minusDays(6).atStartOfDay(zone).toInstant();
         var items = new ArrayList<Item>();
         var commerceItems = new ArrayList<CommerceReceipt>();
-        String slots = String.join(",", java.util.Collections.nCopies(EventSource.values().length, "?"));
+        String slots = String.join(",", Collections.nCopies(EventSource.values().length, "?"));
         try (PreparedStatement ps = c.prepareStatement("SELECT e.event_id,e.source,e.direction,e.paid_amount_cents,e.finalized_at,"
                 + "a.payer_uuid,a.payee_uuid FROM npc_economy_events e LEFT JOIN npc_transfer_attempts a ON a.event_id=e.event_id "
                 + "WHERE e.state='PAID' AND (e.finalized_at IS NULL OR e.finalized_at>=?) AND e.source IN (" + slots + ") "
                 + "ORDER BY e.event_id LIMIT 10001")) {
             ps.setQueryTimeout(5);
             ps.setObject(1, LocalDateTime.ofInstant(from, ZoneOffset.UTC));
-            int index = 2; for (EventSource source : EventSource.values()) ps.setString(index++, source.key());
+            int index = 2;
+            for (EventSource source : EventSource.values()) ps.setString(index++, source.key());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    warnings(c, ps, rs); budget(started);
+                    warnings(c, ps, rs);
+                    budget(started);
                     if (items.size() >= 10000) throw new SQLException("Accounting row bound");
                     EventSource source = source(rs.getString("source"));
                     long id = rs.getLong("event_id");
@@ -240,7 +288,8 @@ public final class AccountingProjection implements AutoCloseable {
                 throw new SQLException("Accounting paid proof unavailable");
             previous = item.eventId();
         }
-        warnings(c, null, null); budget(started);
+        warnings(c, null, null);
+        budget(started);
         var seenOrders = new HashSet<UUID>();
         for (CommerceOrderRepository.PaidProof proof : commerce.paidProofs(c, from, captured, CommerceOrderRepository.MAX_PAID_PROOFS)) {
             budget(started);
@@ -252,12 +301,14 @@ public final class AccountingProjection implements AutoCloseable {
                     || proof.fundedAt().isBefore(from) || proof.fundedAt().isAfter(captured)
                     || proof.fundedAt().isBefore(proof.order().issuedAt())
                     || !proof.outputReadyAt().equals(proof.fundedAt().plusSeconds(proof.order().outputDelaySeconds()))
-                    || TransferProof.evaluateTransfer(proof.order().costCents(), proof.debit(), proof.credit()) != TransferProof.TransferOutcome.PAID)
+                    || TransferProof.evaluateTransfer(proof.order().costCents(), proof.debit(),
+                            proof.credit()) != TransferProof.TransferOutcome.PAID)
                 throw new SQLException("Accounting commerce proof binding");
             commerceItems.add(new CommerceReceipt(proof.order().orderId(), proof.handle().payerId(), reserve,
                     commerceSource(proof.order().source()), proof.order().costCents(), proof.fundedAt()));
         }
-        warnings(c, null, null); budget(started);
+        warnings(c, null, null);
+        budget(started);
         var groups = new ArrayList<Group>();
         for (int offset = 6; offset >= 0; offset--) {
             String day = today.minusDays(offset).toString();
@@ -317,8 +368,14 @@ public final class AccountingProjection implements AutoCloseable {
     }
     @Override public void close() {
         main();
-        synchronized (completionLock) { closed = true; completion = null; }
-        current = null; acknowledged = -1; ticker.cancel(); worker.shutdown();
+        synchronized (completionLock) {
+            closed = true;
+            completion = null;
+        }
+        current = null;
+        acknowledged = -1;
+        ticker.cancel();
+        worker.shutdown();
     }
     private static void main() { if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Main thread required"); }
 }

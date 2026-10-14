@@ -1,21 +1,33 @@
 package com.prosperitysmp.npc.market;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import com.prosperitysmp.npc.alert.StaffAlerts;
 import com.prosperitysmp.npc.arm.OwnershipFence;
 import com.prosperitysmp.npc.clock.EconomyClock;
+import com.prosperitysmp.npc.db.Database;
+import com.prosperitysmp.npc.property.IncidentRollRepository;
+import com.prosperitysmp.npc.property.OwnerAway;
+import com.prosperitysmp.npc.property.TenantMoodRepository;
+import com.prosperitysmp.npc.property.VoluntaryDepartureRepository;
+import com.prosperitysmp.npc.render.PremiumWalk;
+import com.prosperitysmp.npc.resident.ResidentProfile;
+import com.prosperitysmp.npc.resident.ResidentRepository;
+import com.prosperitysmp.npc.sim.DailyRoll;
+import com.prosperitysmp.npc.sim.SimulationLogic;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitTask;
 
 /** Bounded live host for the finite, evidence-gated matching/receipt engine. */
 public final class HousingRuntime implements AutoCloseable {
     private final ProsperityNpcPlugin plugin;
-    private final com.prosperitysmp.npc.db.Database database;
+    private final Database database;
     private final ExecutorService worker;
     private final ConcurrentLinkedQueue<Runnable> replies = new ConcurrentLinkedQueue<>();
     private final HousingDecisionRepository decisions;
@@ -40,11 +52,14 @@ public final class HousingRuntime implements AutoCloseable {
         premiumEnabled = Boolean.TRUE.equals(plugin.getConfig().get("housing.premium-enabled"));
         coordinator = new HousingCoordinator(new HousingMoveRepository(plugin.database(), clock, zone, reset, premiumEnabled, lockDays));
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1), r -> {
-            Thread t = new Thread(r, "npc-housing"); t.setDaemon(true); return t;
+            Thread t = new Thread(r, "npc-housing");
+            t.setDaemon(true);
+            return t;
         }, new ThreadPoolExecutor.AbortPolicy());
         plugin.trackDatabaseWorker(worker);
         ticker = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
-            Runnable reply = replies.poll(); if (reply != null) reply.run();
+            Runnable reply = replies.poll();
+            if (reply != null) reply.run();
         }, 1, 1);
     }
 
@@ -54,20 +69,20 @@ public final class HousingRuntime implements AutoCloseable {
                 && authorized.getAsBoolean();
     }
 
-    /** Explicit finite cast authoring, not a repeating population faucet. */
     /** Main thread only: staff alert for a coordinated daily phase that started and then failed. */
     private void phaseFailed(int phase, String text) {
-        try { plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.DAILY_PHASE_FAILED, "phase-" + phase, text); }
+        try { plugin.alerts().raise(StaffAlerts.Kind.DAILY_PHASE_FAILED, "phase-" + phase, text); }
         catch (RuntimeException ignored) { /* alerts never block recovery handling */ }
     }
 
     /**
-     * Registers the active cast for housing. While residents.cast-file-enabled is on and
+     * Registers the active cast for housing. This is explicit finite cast authoring, not a repeating
+     * population faucet. While residents.cast-file-enabled is on and
      * residents.require-skin-for-roster is on, a resident with no verified everyday skin is skipped and counted, so
      * the town never gets an invisible paying tenant. With the cast file off the check is never read.
      */
     public boolean registerCast(HousingPolicy policy, com.prosperitysmp.npc.resident.ResidentCast cast,
-                                java.util.function.Predicate<com.prosperitysmp.npc.resident.ResidentProfile> hasEverydaySkin,
+                                Predicate<ResidentProfile> hasEverydaySkin,
                                 BooleanSupplier authorized, Consumer<String> reply) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Main thread required");
         if (busy || !ready(authorized)) return false;
@@ -84,13 +99,20 @@ public final class HousingRuntime implements AutoCloseable {
                     var result = rosterCast(database, policy, available, cast, requireSkin ? hasEverydaySkin : person -> true);
                     messages = result.messages();
                 } catch (Exception failure) {
-                    messages = List.of("Roster import stopped; earlier entries may be saved. Exact same policy can be retried; no tenants were moved.");
+                    messages = List.of("Roster import stopped; earlier entries may be saved. "
+                            + "Exact same policy can be retried; no tenants were moved.");
                 }
                 List<String> result = messages;
-                replies.add(() -> { busy = false; result.forEach(reply); });
+                replies.add(() -> {
+                    busy = false;
+                    result.forEach(reply);
+                });
             });
             return true;
-        } catch (RejectedExecutionException rejected) { busy = false; return false; }
+        } catch (RejectedExecutionException rejected) {
+            busy = false;
+            return false;
+        }
     }
 
     /** The safety check applies only to a residents.yml cast; for the built-in three the flag is never read. */
@@ -104,27 +126,31 @@ public final class HousingRuntime implements AutoCloseable {
         List<String> messages() {
             String ready = "Housing roster ready: " + added + " residents added. Existing records preserved.";
             return skipped == 0 ? List.of(ready)
-                    : List.of(ready, "Roster: " + skipped + (skipped == 1 ? " resident" : " residents") + " skipped until they have a skin.");
+                    : List.of(ready, "Roster: " + skipped + (skipped == 1 ? " resident" : " residents")
+                    + " skipped until they have a skin.");
         }
     }
 
     /**
-     * Worker thread. The built-in cast behaves exactly as before: a saved profile that differs stops the import.
+     * Worker thread. For the built-in cast, a saved profile that differs stops the import.
      * A residents.yml cast keeps a differing saved profile as saved and still enrolls that UUID.
      */
-    static RosterResult rosterCast(com.prosperitysmp.npc.db.Database database, HousingPolicy policy, LocalDate available,
+    static RosterResult rosterCast(Database database, HousingPolicy policy, LocalDate available,
                                    com.prosperitysmp.npc.resident.ResidentCast cast,
-                                   java.util.function.Predicate<com.prosperitysmp.npc.resident.ResidentProfile> include) throws Exception {
-        var residents = new com.prosperitysmp.npc.resident.ResidentRepository(database);
+                                   Predicate<ResidentProfile> include) throws Exception {
+        var residents = new ResidentRepository(database);
         var registry = new HousingRegistry(database);
         boolean fromFile = cast.source() != com.prosperitysmp.npc.resident.ResidentCast.Source.BUILT_IN;
         int added = 0;
         int skipped = 0;
         for (var person : cast.profiles()) {
-            if (!include.test(person)) { skipped++; continue; }
+            if (!include.test(person)) {
+                skipped++;
+                continue;
+            }
             try {
                 residents.register(person);
-            } catch (com.prosperitysmp.npc.resident.ResidentRepository.ProfileMismatchException kept) {
+            } catch (ResidentRepository.ProfileMismatchException kept) {
                 if (!fromFile) throw kept;
             }
             var prior = registry.find(person.id());
@@ -142,7 +168,7 @@ public final class HousingRuntime implements AutoCloseable {
      * while residents.require-skin-for-roster is on. For the built-in three the flag is never read.
      */
     public static boolean heldForSkin(UUID residentId, com.prosperitysmp.npc.resident.ResidentCast cast,
-                                      java.util.function.Predicate<com.prosperitysmp.npc.resident.ResidentProfile> hasEverydaySkin,
+                                      Predicate<ResidentProfile> hasEverydaySkin,
                                       BooleanSupplier requireSkinForRoster) {
         if (!skinRequired(cast, requireSkinForRoster)) return false;
         var member = cast.byId(residentId);
@@ -158,7 +184,7 @@ public final class HousingRuntime implements AutoCloseable {
      * Worker thread. A resident held for want of a skin is never newly admitted. One already on the roster can
      * still have its policy changed, since that adds no tenant.
      */
-    static RosterOne rosterOne(com.prosperitysmp.npc.db.Database database, UUID residentId, HousingPolicy policy,
+    static RosterOne rosterOne(Database database, UUID residentId, HousingPolicy policy,
                                LocalDate available, boolean heldForSkin) throws Exception {
         var registry = new HousingRegistry(database);
         var prior = registry.find(residentId);
@@ -197,72 +223,84 @@ public final class HousingRuntime implements AutoCloseable {
                     message = "Policy not changed: resident missing, occupied or concurrently changed. No resident was moved.";
                 }
                 String result = message;
-                replies.add(() -> { busy = false; reply.accept(result); });
+                replies.add(() -> {
+                    busy = false;
+                    reply.accept(result);
+                });
             });
             return true;
-        } catch (RejectedExecutionException rejected) { busy = false; return false; }
+        } catch (RejectedExecutionException rejected) {
+            busy = false;
+            return false;
+        }
     }
 
     /** Each incident decision commits once per property/day under the captured ownership lease. */
     public boolean requestIncidents(BooleanSupplier authorized, Consumer<String> reply) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Main thread required");
-        if (closed || busy || !plugin.isEnabled() || plugin.ownershipFence()==null
+        if (closed || busy || !plugin.isEnabled() || plugin.ownershipFence() == null
                 || !plugin.killSwitches().isSystemEnabled() || !plugin.killSwitches().isIncidentsEnabled()
                 || !authorized.getAsBoolean()) return false;
-        long seed=plugin.getConfig().getLong("state.sim-seed",0);
-        if(seed==0)return false;
-        var enrolled=plugin.propertyService().getEnrolled();
+        long seed = plugin.getConfig().getLong("state.sim-seed", 0);
+        if (seed == 0) return false;
+        var enrolled = plugin.propertyService().getEnrolled();
         // Saved owner-away decisions only; none saved yet today means the step waits (no reclassifying).
-        var held=plugin.ownerAway().held(enrolled);
-        if(held.isEmpty())return false;
-        var properties=dailyTargets(enrolled,held.get());
-        if(properties.size()>512)return false;
-        var rolls=new com.prosperitysmp.npc.property.IncidentRollRepository(database,
-                new com.prosperitysmp.npc.sim.SimulationLogic(new com.prosperitysmp.npc.sim.DailyRoll(seed)),Clock.systemUTC(),
-                ZoneId.of(plugin.getConfig().getString("clock.timezone","America/Chicago")),
-                plugin.getConfig().getInt("clock.daily-reset-hour",4));
-        var leases=new ArrayList<OwnershipFence.Lease>();
-        LocalDate day=days.today();
-        var service=plugin.propertyService();
+        var held = plugin.ownerAway().held(enrolled);
+        if (held.isEmpty()) return false;
+        var properties = dailyTargets(enrolled, held.get());
+        if (properties.size() > 512) return false;
+        var rolls = new IncidentRollRepository(database,
+                new SimulationLogic(new DailyRoll(seed)), Clock.systemUTC(),
+                ZoneId.of(plugin.getConfig().getString("clock.timezone", "America/Chicago")),
+                plugin.getConfig().getInt("clock.daily-reset-hour", 4));
+        var leases = new ArrayList<OwnershipFence.Lease>();
+        LocalDate day = days.today();
+        var service = plugin.propertyService();
         try {
-            for(var p:properties) {
-                var owner=plugin.armAdapter().ownerReadRegion(p.worldUuid(),p.regionId(),p.ownerUuid()).orElseThrow();
-                var lease=plugin.ownershipFence().acquire(owner);leases.add(lease);lease.validate(owner);
+            for (var p : properties) {
+                var owner = plugin.armAdapter().ownerReadRegion(p.worldUuid(), p.regionId(), p.ownerUuid()).orElseThrow();
+                var lease = plugin.ownershipFence().acquire(owner);
+                leases.add(lease);
+                lease.validate(owner);
             }
-            busy=true;
-            worker.execute(()->{
+            busy = true;
+            worker.execute(() -> {
                 try {
-                    int count=0;
-                    for(var p:properties) {
-                        var result=rolls.roll(p.propertyId(),p.ownerUuid(),p.ownershipEpoch(),day);
-                        if(result.newlyRecorded() && result.outcome()==com.prosperitysmp.npc.property.IncidentRollRepository.Outcome.INCIDENT)count++;
+                    int count = 0;
+                    for (var p : properties) {
+                        var result = rolls.roll(p.propertyId(), p.ownerUuid(), p.ownershipEpoch(), day);
+                        if (result.newlyRecorded() && result.outcome() == IncidentRollRepository.Outcome.INCIDENT) count++;
                     }
-                    int created=count;
+                    int created = count;
                     // Rolls can lower condition in SQL: re-read every rolled home so the cache matches before release.
-                    List<com.prosperitysmp.npc.property.Property> rows=new ArrayList<>();
-                    try { for(var p:properties) service.readRow(p.propertyId()).ifPresent(rows::add); }
-                    catch(Exception unreadable) { rows=null; }
-                    var reread=rows;
+                    List<com.prosperitysmp.npc.property.Property> rows = new ArrayList<>();
+                    try { for (var p : properties) service.readRow(p.propertyId()).ifPresent(rows::add); }
+                    catch (Exception unreadable) { rows = null; }
+                    var reread = rows;
                     replies.add(()->{
                         try { service.installLeased(properties,reread,"Daily property checks"); }
-                        catch(RuntimeException cacheFailure) {
-                            plugin.getLogger().warning("Daily property checks could not refresh cached homes; the next ownership check does.");
+                        catch (RuntimeException cacheFailure) {
+                            plugin.getLogger().warning(
+                                    "Daily property checks could not refresh cached homes; the next ownership check does.");
                         }
                         for(var lease:leases)lease.releaseReconciled();
                         busy=false;
-                        reply.accept("Daily property checks complete: "+created+" new service incidents. Existing daily decisions preserved.");
+                        reply.accept("Daily property checks complete: " + created
+                                + " new service incidents. Existing daily decisions preserved.");
                     });
-                } catch(Exception failure) {
+                } catch (Exception failure) {
                     replies.add(()->{
-                        plugin.getLogger().severe("Incident batch requires recovery for "+day+"; leases retained.");
+                        plugin.getLogger().severe("Incident batch requires recovery for " + day + "; leases retained.");
                         phaseFailed(0, "Daily property checks were interrupted; staff recovery required.");
                         reply.accept("Property checks interrupted. Earlier decisions may be committed; staff recovery required.");
                     });
                 }
             });
             return true;
-        } catch(RuntimeException beforeDispatch) {
-            for(var lease:leases)lease.releaseReconciled();busy=false;return false;
+        } catch (RuntimeException beforeDispatch) {
+            for (var lease : leases) lease.releaseReconciled();
+            busy = false;
+            return false;
         }
     }
 
@@ -272,7 +310,7 @@ public final class HousingRuntime implements AutoCloseable {
      */
     public static List<com.prosperitysmp.npc.property.Property> dailyTargets(
             Collection<com.prosperitysmp.npc.property.Property> enrolled, Set<UUID> away) {
-        return com.prosperitysmp.npc.property.OwnerAway.present(enrolled.stream().filter(p -> p.enabled() && p.ownerUuid() != null)
+        return OwnerAway.present(enrolled.stream().filter(p -> p.enabled() && p.ownerUuid() != null)
                 .sorted(Comparator.comparing(p -> p.propertyId().toString())).toList(), away);
     }
 
@@ -294,8 +332,8 @@ public final class HousingRuntime implements AutoCloseable {
                 String message;
                 boolean failed = false;
                 try {
-                    int updated = new com.prosperitysmp.npc.property.TenantMoodRepository(database)
-                            .updateDay(day, com.prosperitysmp.npc.property.TenantMoodRepository.MAX_BATCH, paused);
+                    int updated = new TenantMoodRepository(database)
+                            .updateDay(day, TenantMoodRepository.MAX_BATCH, paused);
                     message = "Resident moods updated: " + updated + ". Earlier updates for today were kept.";
                 } catch (Exception failure) {
                     message = "Resident moods interrupted. Nothing else was changed; the step can run again.";
@@ -310,7 +348,10 @@ public final class HousingRuntime implements AutoCloseable {
                 });
             });
             return true;
-        } catch (RejectedExecutionException rejected) { busy = false; return false; }
+        } catch (RejectedExecutionException rejected) {
+            busy = false;
+            return false;
+        }
     }
 
     public boolean voluntaryDeparturesEnabled() {
@@ -327,8 +368,8 @@ public final class HousingRuntime implements AutoCloseable {
         var config = plugin.getConfig();
         long seed = config.getLong("state.sim-seed", 0);
         if (seed == 0) return false;
-        var policy = new com.prosperitysmp.npc.property.VoluntaryDepartureRepository.Policy(moodsEnabled(),
-                Math.max(0, Math.min(com.prosperitysmp.npc.property.VoluntaryDepartureRepository.MAX_SERVER_DAILY,
+        var policy = new VoluntaryDepartureRepository.Policy(moodsEnabled(),
+                Math.max(0, Math.min(VoluntaryDepartureRepository.MAX_SERVER_DAILY,
                         config.getInt("housing.voluntary-departure-server-daily-limit", 3))),
                 Math.max(1, Math.min(30, config.getInt("housing.cooldown-days", 7))),
                 Math.max(0, Math.min(100, config.getInt("housing.voluntary-departure-satisfaction-below", 40))),
@@ -337,10 +378,10 @@ public final class HousingRuntime implements AutoCloseable {
         var awayHeld = plugin.ownerAway().held(enrolled);
         if (awayHeld.isEmpty()) return false; // Today's owner-away decisions are not saved yet.
         var properties = dailyTargets(enrolled, awayHeld.get());
-        if (properties.size() > com.prosperitysmp.npc.property.VoluntaryDepartureRepository.MAX_TARGETS) return false;
+        if (properties.size() > VoluntaryDepartureRepository.MAX_TARGETS) return false;
         LocalDate day = days.today();
         var leases = new ArrayList<OwnershipFence.Lease>();
-        var targets = new ArrayList<com.prosperitysmp.npc.property.VoluntaryDepartureRepository.Target>();
+        var targets = new ArrayList<VoluntaryDepartureRepository.Target>();
         for (var p : properties) {
             OwnershipFence.Lease lease = null;
             try {
@@ -348,7 +389,7 @@ public final class HousingRuntime implements AutoCloseable {
                 if (owner == null) continue;
                 lease = plugin.ownershipFence().acquire(owner);
                 lease.validate(owner);
-                targets.add(new com.prosperitysmp.npc.property.VoluntaryDepartureRepository.Target(
+                targets.add(new VoluntaryDepartureRepository.Target(
                         p.propertyId(), p.ownerUuid(), p.ownershipEpoch()));
                 leases.add(lease);
             } catch (RuntimeException busyOrUnreadable) {
@@ -356,13 +397,17 @@ public final class HousingRuntime implements AutoCloseable {
             }
         }
         int skipped = properties.size() - targets.size();
-        var departures = new com.prosperitysmp.npc.property.VoluntaryDepartureRepository(database,
-                new com.prosperitysmp.npc.sim.SimulationLogic(new com.prosperitysmp.npc.sim.DailyRoll(seed)), Clock.systemUTC());
+        var departures = new VoluntaryDepartureRepository(database,
+                new SimulationLogic(new DailyRoll(seed)), Clock.systemUTC());
         busy = true;
         try {
             worker.execute(() -> {
-                com.prosperitysmp.npc.property.VoluntaryDepartureRepository.Result result = null;
-                try { result = departures.runDay(day, targets, policy); } catch (Exception failure) { result = null; }
+                VoluntaryDepartureRepository.Result result = null;
+                try {
+                    result = departures.runDay(day, targets, policy);
+                } catch (Exception failure) {
+                    result = null;
+                }
                 var done = result;
                 replies.add(() -> {
                     for (var lease : leases) lease.releaseReconciled();
@@ -374,8 +419,10 @@ public final class HousingRuntime implements AutoCloseable {
                         return;
                     }
                     for (var d : done.departed()) plugin.getLogger().info("Voluntary departure day=" + day + " resident=" + d.residentId()
-                            + " property=" + d.propertyId() + " score=" + d.score() + " chanceBp=" + d.chanceBp() + " cooldownUntil=" + d.cooldownUntil());
-                    for (var failed : done.failed()) plugin.getLogger().warning("Voluntary departure skipped after an error: property=" + failed + " day=" + day);
+                            + " property=" + d.propertyId() + " score=" + d.score() + " chanceBp=" + d.chanceBp() + " cooldownUntil="
+                            + d.cooldownUntil());
+                    for (var failed : done.failed()) plugin.getLogger().warning("Voluntary departure skipped after an error: property="
+                            + failed + " day=" + day);
                     int held = skipped + done.failed().size();
                     reply.accept("Voluntary departures: " + done.departed().size() + " residents left neglected homes."
                             + (held > 0 ? " " + held + " homes were busy or unreadable and were left unchanged." : ""));
@@ -384,7 +431,8 @@ public final class HousingRuntime implements AutoCloseable {
             return true;
         } catch (RejectedExecutionException rejected) {
             for (var lease : leases) lease.releaseReconciled();
-            busy = false; return false;
+            busy = false;
+            return false;
         }
     }
 
@@ -418,18 +466,29 @@ public final class HousingRuntime implements AutoCloseable {
                 }
             });
             return true;
-        } catch (RejectedExecutionException rejected) { busy = false; return false; }
+        } catch (RejectedExecutionException rejected) {
+            busy = false;
+            return false;
+        }
     }
 
     private void apply(HousingDecisionPlan plan, BooleanSupplier authorized, Consumer<String> reply) {
         if (!ready(authorized) || !plan.snapshot().day().equals(days.today())) {
-            busy = false; reply.accept("Matching cancelled before admission; authority or day changed."); return;
+            busy = false;
+            reply.accept("Matching cancelled before admission; authority or day changed.");
+            return;
         }
         if (plan.requests().stream().anyMatch(r -> r.tier() == HousingPolicy.Tier.PREMIUM)
                 && !Boolean.TRUE.equals(plugin.getConfig().get("housing.premium-enabled"))) {
-            busy = false; reply.accept("Premium matching cancelled before admission; policy changed."); return;
+            busy = false;
+            reply.accept("Premium matching cancelled before admission; policy changed.");
+            return;
         }
-        if (plan.requests().isEmpty()) { busy = false; reply.accept("No eligible resident moves today."); return; }
+        if (plan.requests().isEmpty()) {
+            busy = false;
+            reply.accept("No eligible resident moves today.");
+            return;
+        }
         var leases = new ArrayList<OwnershipFence.Lease>();
         try {
             Set<UUID> targets = new HashSet<>();
@@ -441,7 +500,9 @@ public final class HousingRuntime implements AutoCloseable {
                 if (!targets.remove(home.propertyId())) continue;
                 var owner = plugin.armAdapter().ownerReadRegion(home.worldId(), home.regionId(), home.ownerId())
                         .orElseThrow(() -> new IllegalStateException("Owner unavailable"));
-                var lease = plugin.ownershipFence().acquire(owner); leases.add(lease); lease.validate(owner);
+                var lease = plugin.ownershipFence().acquire(owner);
+                leases.add(lease);
+                lease.validate(owner);
             }
             if (!targets.isEmpty()) throw new IllegalStateException("Admission target missing");
             boolean announce = Boolean.TRUE.equals(plugin.getConfig().get("housing.premium-broadcast-enabled"));
@@ -452,7 +513,7 @@ public final class HousingRuntime implements AutoCloseable {
                     try { lines = announce ? PremiumMoveBroadcast.relocations(database, results) : List.of(); }
                     catch (Exception | LinkageError cosmetic) { lines = List.of(); }
                     var toSend = lines;
-                    var walks = com.prosperitysmp.npc.render.PremiumWalk.moves(results);
+                    var walks = PremiumWalk.moves(results);
                     replies.add(() -> {
                         try { broadcastRelocations(toSend); } catch (RuntimeException cosmetic) { /* never block lease release */ }
                         try { if (plugin.renderManager() != null) plugin.renderManager().premiumRelocated(walks); }
@@ -474,7 +535,8 @@ public final class HousingRuntime implements AutoCloseable {
             });
         } catch (RuntimeException beforeDispatch) {
             for (var lease : leases) lease.releaseReconciled();
-            busy = false; reply.accept("Matching held before admission; a property is busy or unavailable.");
+            busy = false;
+            reply.accept("Matching held before admission; a property is busy or unavailable.");
         }
     }
 
@@ -488,7 +550,9 @@ public final class HousingRuntime implements AutoCloseable {
 
     @Override public void close() {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Main thread required");
-        closed = true; ticker.cancel(); worker.shutdown();
+        closed = true;
+        ticker.cancel();
+        worker.shutdown();
         // Shutdown orchestration drains registered workers; unresolved leases are not timed out.
     }
 }

@@ -1,12 +1,15 @@
 package com.prosperitysmp.npc.property;
 
+import com.prosperitysmp.npc.economy.LinkedAccounts;
+import com.prosperitysmp.npc.formulas.PropertyFormulas;
+import com.prosperitysmp.npc.market.OwnerHousingView;
+import com.prosperitysmp.npc.util.Money;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import com.prosperitysmp.npc.market.OwnerHousingView;
 
 /** Immutable private snapshot. Revision is the property's row_version, not a global change token. */
 public record OwnerDeskData(Property property, long revision, Instant capturedAt,
@@ -39,7 +42,7 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
     public OwnerDeskData(Property property, long revision, Instant capturedAt,
                          List<Resident> residents, List<Issue> issues, List<Upgrade> upgrades, Statement statement) {
         this(property, revision, capturedAt, residents, issues, upgrades, statement,
-                new Insurance(com.prosperitysmp.npc.formulas.PropertyFormulas.insurancePriceCents(property.capacity()),
+                new Insurance(PropertyFormulas.insurancePriceCents(property.capacity()),
                         null, null, false, true));
     }
     public OwnerDeskData {
@@ -51,7 +54,7 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
         Objects.requireNonNull(pendingRent);
         Objects.requireNonNull(linked);
         Objects.requireNonNull(partner);
-        if (insurance.premiumCents() != com.prosperitysmp.npc.formulas.PropertyFormulas.insurancePriceCents(property.capacity()))
+        if (insurance.premiumCents() != PropertyFormulas.insurancePriceCents(property.capacity()))
             throw new IllegalArgumentException("Insurance premium differs from capacity");
         if (revision < 0) throw new IllegalArgumentException("negative revision");
         housing.ifPresent(view -> {
@@ -72,7 +75,7 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
         }
         /** Plain desk line, e.g. "Rent changes to $12.00 on 2026-10-15. 2 residents were told." */
         public String line() {
-            return "Rent changes to " + com.prosperitysmp.npc.util.Money.format(cents) + " on " + effectiveDay + ". "
+            return "Rent changes to " + Money.format(cents) + " on " + effectiveDay + ". "
                     + (notices == 1 ? "1 resident was told." : notices + " residents were told.");
         }
     }
@@ -86,7 +89,7 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
             if (accounts < 2 || dailyLimitCents < 0) throw new IllegalArgumentException("invalid linked accounts line");
         }
         /** Plain desk line, e.g. "Shares a $45 daily rent limit with your linked account." */
-        public String line() { return com.prosperitysmp.npc.economy.LinkedAccounts.deskLine(dailyLimitCents); }
+        public String line() { return LinkedAccounts.deskLine(dailyLimitCents); }
     }
 
     /**

@@ -15,7 +15,9 @@ public record ItemDeliveryEvidence(UUID playerId, String payloadSha256, String b
     public static final int MAX_OBSERVED_UNITS = 65_536;
     public ItemDeliveryEvidence {
         Objects.requireNonNull(playerId);
-        requireHash(payloadSha256); requireHash(beforeInventorySha256); requireHash(afterInventorySha256);
+        requireHash(payloadSha256);
+        requireHash(beforeInventorySha256);
+        requireHash(afterInventorySha256);
         if (beforeUnits < 0 || afterUnits < 0 || leftoverUnits < 0
                 || beforeUnits > MAX_OBSERVED_UNITS || afterUnits > MAX_OBSERVED_UNITS
                 || leftoverUnits > ItemCustody.MAX_QUANTITY)

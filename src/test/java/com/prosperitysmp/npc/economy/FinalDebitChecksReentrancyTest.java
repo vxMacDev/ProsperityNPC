@@ -69,10 +69,10 @@ class FinalDebitChecksReentrancyTest {
         void run(TransferProof.Leg leg, Runnable debitOnlyChecks, BooleanSupplier debitGate, BooleanSupplier awayHeld);
     }
 
-    /** The fix under test. */
+    /** The real implementation: it rereads the flags after the external floor read. */
     private static final Checks FIXED = UtilityPaymentRuntime::finalDebitChecks;
 
-    /** Negative control: the order before the fix (gates, then the external floor read, no reread). */
+    /** An order with no reread (gates, then the external floor read), used to show the tests can fail. */
     private static final Checks LEGACY = (leg, debitOnlyChecks, gate, away) -> {
         UtilityPaymentRuntime.requireDebitGate(leg, gate);
         UtilityPaymentRuntime.requireAwayDebitGate(leg, away);
@@ -189,7 +189,7 @@ class FinalDebitChecksReentrancyTest {
         }
         var flags = new Flags(); var ran = new AtomicBoolean();
         UtilityPaymentRuntime.finalDebitChecks(TransferProof.Leg.DEBIT, () -> ran.set(true), flags.debitGate, flags.awayHeld);
-        assertTrue(ran.get(), "positive control: no flip passes and runs the external checks");
+        assertTrue(ran.get(), "with no flip the external checks run");
     }
 
     @Test void payRentRoutesBothDebitCheckPointsThroughTheFinalChecks() throws Exception {

@@ -3,10 +3,10 @@ package com.prosperitysmp.npc.economy;
 import java.util.Arrays;
 
 /**
- * Pro-rata allocation of a capped pool (§3.3 step 5). When total requested exceeds
- * the cap, each request is scaled by cap/total and the leftover cents are handed
- * out by the largest-remainder method, so the allocation sums to EXACTLY
- * min(total, cap) and never depends on iteration order. All integer cents.
+ * Pro-rata allocation of a capped pool. When total requested exceeds the cap, each
+ * request is scaled by cap/total and the leftover cents are handed out by the
+ * largest-remainder method, so the allocation sums to exactly min(total, cap) and
+ * never depends on iteration order. All integer cents.
  */
 public final class CapAllocator {
 

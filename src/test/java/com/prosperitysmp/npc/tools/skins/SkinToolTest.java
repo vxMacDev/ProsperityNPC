@@ -137,7 +137,7 @@ class SkinToolTest {
         Path residents = dir.resolve("residents.yml");
         Files.copy(Path.of("examples/residents.extended.yml"), residents);
         SkinTool.prepare(List.of(candidate(dir, "resident/v1/otto-marsh/everyday", classic)), null, residents, out, verifier(classic));
-        assertTrue(Files.exists(out), "positive control: Otto is in the extended cast");
+        assertTrue(Files.exists(out), "Otto is in the extended cast");
         assertThrows(IllegalArgumentException.class, () -> SkinTool.prepare(List.of(a), null, null, dir.resolve("x.json"), verifier()),
                 "unverified");
         assertFalse(Files.exists(dir.resolve("x.json")), "nothing is written on refusal");

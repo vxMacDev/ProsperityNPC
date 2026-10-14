@@ -7,6 +7,9 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Types;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -140,7 +143,8 @@ public final class PropertyRepository {
         Objects.requireNonNull(propertyId);
         try (Connection c = database.getConnection();
              PreparedStatement ps = c.prepareStatement("SELECT * FROM npc_properties WHERE property_id=?")) {
-            ps.setQueryTimeout(5); ps.setBytes(1, Uuids.toBytes(propertyId));
+            ps.setQueryTimeout(5);
+            ps.setBytes(1, Uuids.toBytes(propertyId));
             try (ResultSet rs = ps.executeQuery()) {
                 Optional<Property> result = rs.next() ? Optional.of(checkedOwnerRow(rs).property()) : Optional.empty();
                 checkWarnings(c, ps, rs);
@@ -171,7 +175,8 @@ public final class PropertyRepository {
 
     private static OwnerRow ownerRow(Connection c, UUID id) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT * FROM npc_properties WHERE property_id=? FOR UPDATE")) {
-            ps.setQueryTimeout(5); ps.setBytes(1, Uuids.toBytes(id));
+            ps.setQueryTimeout(5);
+            ps.setBytes(1, Uuids.toBytes(id));
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) throw new SQLException("Ownership property missing");
                 OwnerRow row = checkedOwnerRow(rs);
@@ -199,9 +204,11 @@ public final class PropertyRepository {
                 WHERE property_id=? AND ownership_epoch=? AND owner_uuid <=> ? AND row_version=?
                 """)) {
             ps.setQueryTimeout(5);
-            setNullableUuid(ps, 1, newOwner); ps.setInt(2, newEpoch);
+            setNullableUuid(ps, 1, newOwner);
+            ps.setInt(2, newEpoch);
             ps.setBytes(3, Uuids.toBytes(row.property().propertyId()));
-            ps.setInt(4, row.property().ownershipEpoch()); setNullableUuid(ps, 5, row.property().ownerUuid());
+            ps.setInt(4, row.property().ownershipEpoch());
+            setNullableUuid(ps, 5, row.property().ownerUuid());
             ps.setLong(6, row.revision());
             if (ps.executeUpdate() != 1) throw new SQLException("Ownership compare-and-set lost");
             checkWarnings(c, ps, null);
@@ -245,12 +252,14 @@ public final class PropertyRepository {
 
     /** Caller holds the live ownership lease. Never disable a newer owner's incarnation. */
     public boolean disableExpected(Property expected) throws SQLException {
-        try(Connection c=database.getConnection();PreparedStatement ps=c.prepareStatement(
-                "UPDATE npc_properties SET enabled=0,row_version=row_version+1 WHERE property_id=? AND owner_uuid=? AND ownership_epoch=? AND enabled=1")) {
+        try (Connection c = database.getConnection(); PreparedStatement ps = c.prepareStatement(
+                "UPDATE npc_properties SET enabled=0,row_version=row_version+1 "
+                        + "WHERE property_id=? AND owner_uuid=? AND ownership_epoch=? AND enabled=1")) {
             ps.setQueryTimeout(10);
-            ps.setBytes(1,Uuids.toBytes(expected.propertyId()));ps.setBytes(2,Uuids.toBytes(expected.ownerUuid()));
-            ps.setInt(3,expected.ownershipEpoch());
-            return ps.executeUpdate()==1;
+            ps.setBytes(1, Uuids.toBytes(expected.propertyId()));
+            ps.setBytes(2, Uuids.toBytes(expected.ownerUuid()));
+            ps.setInt(3, expected.ownershipEpoch());
+            return ps.executeUpdate() == 1;
         }
     }
 
@@ -271,15 +280,13 @@ public final class PropertyRepository {
     }
 
     /**
-     * Same as resumeExpected, with a two-phase preparation in the same transaction. Order: preparation.lockFirst
-     * (the rent mutex, which precedes the property lock in the global order), property row lock and CAS check,
-     * the resume owner write when ARM shows a new owner (epoch + 1), preparation.prepare, then the unsettled-event
-     * check and the enable CAS. Payout retirement uses prepare to settle this home's own never-attempted
-     * reservations that can no longer be paid; because it runs after the owner write it sees the ARM sale that
-     * paused homes never reconcile, so an old owner's never-attempted current-day reservation retires as
-     * OWNER_CHANGED instead of refusing the resume. A refused resume rolls back the owner write and every
-     * retirement together, so a retirement is only durable with the epoch bump that makes the row unpayable.
-     * Null preparation: exactly the two-argument form, unsettled check before the owner write.
+     * resumeExpected with a two-phase preparation in the same transaction. Order: lockFirst (the rent mutex, which
+     * precedes the property lock), property row lock and CAS check, the owner write when ARM shows a new owner
+     * (epoch + 1), prepare, then the unsettled-event check and the enable CAS. Payout retirement runs in prepare,
+     * after the owner write, so it sees an ARM sale that a paused home never reconciled and an old owner's
+     * never-attempted reservation retires as OWNER_CHANGED instead of refusing the resume. A refused resume rolls
+     * back the owner write and every retirement together, so a retirement is only durable with the epoch bump that
+     * makes the row unpayable. With a null preparation the unsettled check runs before the owner write.
      */
     public Property resumeExpected(Property expected, UUID observedOwner, ResumePreparation preparation) throws SQLException {
         Objects.requireNonNull(observedOwner);
@@ -298,9 +305,12 @@ public final class PropertyRepository {
                 refuseUnsettled(c, expected.propertyId());
             }
             try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE npc_properties SET enabled=1,row_version=row_version+1 WHERE property_id=? AND enabled=0 AND owner_uuid=? AND ownership_epoch=?")) {
-                ps.setBytes(1, Uuids.toBytes(expected.propertyId())); ps.setBytes(2, Uuids.toBytes(observedOwner));
-                ps.setInt(3, epoch); ps.setQueryTimeout(5);
+                    "UPDATE npc_properties SET enabled=1,row_version=row_version+1 "
+                            + "WHERE property_id=? AND enabled=0 AND owner_uuid=? AND ownership_epoch=?")) {
+                ps.setBytes(1, Uuids.toBytes(expected.propertyId()));
+                ps.setBytes(2, Uuids.toBytes(observedOwner));
+                ps.setInt(3, epoch);
+                ps.setQueryTimeout(5);
                 if (ps.executeUpdate() != 1) throw new SQLException("Resume compare-and-set lost");
                 checkWarnings(c, ps, null);
             }
@@ -312,7 +322,8 @@ public final class PropertyRepository {
     private static void refuseUnsettled(Connection c, UUID propertyId) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
                 "SELECT event_id FROM npc_economy_events WHERE property_id=? AND state NOT IN ('PAID','FAILED') LIMIT 1 FOR UPDATE")) {
-            ps.setBytes(1, Uuids.toBytes(propertyId)); ps.setQueryTimeout(5);
+            ps.setBytes(1, Uuids.toBytes(propertyId));
+            ps.setQueryTimeout(5);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) throw new ResumeRefused("Unsettled property event requires review before resume");
             }
@@ -321,16 +332,16 @@ public final class PropertyRepository {
 
     /**
      * Checks current ownership snapshot and rent bounds under the property row lock, then sets the asking
-     * rent now. Pending state is read from SQL under the same lock, never assumed: with nothing pending this
-     * is exactly the legacy write; a pending change is resolved and its columns cleared in this transaction.
+     * rent now. Pending state is read from SQL under the same lock, never assumed: with nothing pending only the
+     * asking rent changes; a pending change is resolved and its columns cleared in this transaction.
      */
     public Property setAskingRentExpected(Property expected, long cents) throws SQLException {
         return ownerTransaction(c -> setRentNow(c, expected, cents));
     }
 
     /**
-     * Immediate rent under the row lock. No pending change: the pre-V31 UPDATE (asking_rent_cents and
-     * row_version only). A pending change of the same owner and epoch is REPLACED, an earlier owner's is
+     * Immediate rent under the row lock. No pending change: only asking_rent_cents and row_version are
+     * updated. A pending change of the same owner and epoch is REPLACED, an earlier owner's is
      * CANCELLED; either way it is resolved and the pending columns cleared before this transaction commits,
      * so no older schedule can reappear and overwrite this rent.
      */
@@ -343,8 +354,10 @@ public final class PropertyRepository {
         if (pending == null) {
             try (PreparedStatement ps = c.prepareStatement(
                     "UPDATE npc_properties SET asking_rent_cents=?,row_version=row_version+1 WHERE property_id=? AND row_version=?")) {
-                ps.setLong(1, cents); ps.setBytes(2, Uuids.toBytes(current.propertyId()));
-                ps.setLong(3, row.revision()); ps.setQueryTimeout(5);
+                ps.setLong(1, cents);
+                ps.setBytes(2, Uuids.toBytes(current.propertyId()));
+                ps.setLong(3, row.revision());
+                ps.setQueryTimeout(5);
                 if (ps.executeUpdate() != 1) throw new SQLException("Rent compare-and-set lost");
                 checkWarnings(c, ps, null);
             }
@@ -363,7 +376,7 @@ public final class PropertyRepository {
 
     /** Outcome of one owner rent command. property is the row after this transaction. */
     public record RentChange(Outcome outcome, Property property, long changeId, long cents,
-                             java.time.LocalDate effectiveDay, int notices) {
+                             LocalDate effectiveDay, int notices) {
         public enum Outcome { APPLIED_NOW, SCHEDULED, ALREADY_SCHEDULED, CANCELLED, UNCHANGED }
     }
     /**
@@ -377,10 +390,13 @@ public final class PropertyRepository {
     }
     /** deferred: due changes skipped because the caller excluded their property; they stay PENDING and count in stillPending. */
     public record DueRentResult(List<DueRent> changes, int stillPending, List<UUID> deferred) {
-        public DueRentResult { changes = List.copyOf(changes); deferred = List.copyOf(deferred); }
+        public DueRentResult {
+            changes = List.copyOf(changes);
+            deferred = List.copyOf(deferred);
+        }
         public DueRentResult(List<DueRent> changes, int stillPending) { this(changes, stillPending, List.of()); }
     }
-    private record PendingRent(long changeId, int cents, java.time.LocalDate effectiveDay) { }
+    private record PendingRent(long changeId, int cents, LocalDate effectiveDay) { }
 
     /**
      * Delay 0 is setAskingRentExpected: applies now, and any pending change is resolved in the same transaction
@@ -389,9 +405,10 @@ public final class PropertyRepository {
      * one, and writes one notice per current resident.
      * The same amount again keeps the pending change (no new notices); the current amount cancels it.
      */
-    public RentChange changeAskingRent(Property expected, long cents, java.time.LocalDate today, int delayDays)
+    public RentChange changeAskingRent(Property expected, long cents, LocalDate today, int delayDays)
             throws SQLException {
-        Objects.requireNonNull(expected); Objects.requireNonNull(today);
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(today);
         if (delayDays < 0 || delayDays > MAX_RENT_DELAY_DAYS || today.getYear() < 1 || today.getYear() > 9000)
             throw new IllegalArgumentException("Invalid rent change delay");
         if (delayDays == 0) {
@@ -422,17 +439,21 @@ public final class PropertyRepository {
                 return new RentChange(RentChange.Outcome.CANCELLED, current, pending.changeId(), cents, today, 0);
             }
             if (current.ownerUuid() == null) throw new ResumeRefused("Rent change needs an owner");
-            java.time.LocalDate effective = today.plusDays(delayDays);
+            LocalDate effective = today.plusDays(delayDays);
             if (pending != null) resolveRentChange(c, pending.changeId(), "REPLACED");
             long changeId;
             try (PreparedStatement ps = c.prepareStatement("""
                     INSERT INTO npc_rent_changes (property_id, owner_uuid, ownership_epoch, from_rent_cents, to_rent_cents,
                       requested_day, effective_day) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, java.sql.Statement.RETURN_GENERATED_KEYS)) {
+                    """, Statement.RETURN_GENERATED_KEYS)) {
                 ps.setQueryTimeout(5);
-                ps.setBytes(1, Uuids.toBytes(current.propertyId())); ps.setBytes(2, Uuids.toBytes(current.ownerUuid()));
-                ps.setInt(3, current.ownershipEpoch()); ps.setInt(4, current.askingRentCents()); ps.setLong(5, cents);
-                ps.setString(6, today.toString()); ps.setString(7, effective.toString());
+                ps.setBytes(1, Uuids.toBytes(current.propertyId()));
+                ps.setBytes(2, Uuids.toBytes(current.ownerUuid()));
+                ps.setInt(3, current.ownershipEpoch());
+                ps.setInt(4, current.askingRentCents());
+                ps.setLong(5, cents);
+                ps.setString(6, today.toString());
+                ps.setString(7, effective.toString());
                 if (ps.executeUpdate() != 1) throw new SQLException("Rent change not recorded");
                 try (ResultSet keys = ps.getGeneratedKeys()) {
                     if (!keys.next() || (changeId = keys.getLong(1)) <= 0) throw new SQLException("Rent change id missing");
@@ -444,8 +465,11 @@ public final class PropertyRepository {
                       pending_rent_effective_day=?, row_version=row_version+1 WHERE property_id=? AND row_version=?
                     """)) {
                 ps.setQueryTimeout(5);
-                ps.setLong(1, changeId); ps.setLong(2, cents); ps.setString(3, effective.toString());
-                ps.setBytes(4, Uuids.toBytes(current.propertyId())); ps.setLong(5, row.revision());
+                ps.setLong(1, changeId);
+                ps.setLong(2, cents);
+                ps.setString(3, effective.toString());
+                ps.setBytes(4, Uuids.toBytes(current.propertyId()));
+                ps.setLong(5, row.revision());
                 if (ps.executeUpdate() != 1) throw new SQLException("Rent compare-and-set lost");
                 checkWarnings(c, ps, null);
             }
@@ -455,7 +479,9 @@ public final class PropertyRepository {
                     SELECT ?, tenant_id, property_id, row_version, ? FROM npc_tenants WHERE property_id=? ORDER BY tenant_id LIMIT 5
                     """)) {
                 ps.setQueryTimeout(5);
-                ps.setLong(1, changeId); ps.setString(2, today.toString()); ps.setBytes(3, Uuids.toBytes(current.propertyId()));
+                ps.setLong(1, changeId);
+                ps.setString(2, today.toString());
+                ps.setBytes(3, Uuids.toBytes(current.propertyId()));
                 notices = ps.executeUpdate();
                 checkWarnings(c, ps, null);
             }
@@ -471,7 +497,7 @@ public final class PropertyRepository {
      * longer hold is cancelled instead; one whose from_rent is no longer the asking rent (a newer rent was set)
      * is marked REPLACED and the current rent kept. Nothing else is written, so a replay on the same day changes nothing.
      */
-    public DueRentResult applyDueRentChanges(java.time.LocalDate today, int limit) throws SQLException {
+    public DueRentResult applyDueRentChanges(LocalDate today, int limit) throws SQLException {
         return applyDueRentChanges(today, limit, Set.of());
     }
 
@@ -480,8 +506,9 @@ public final class PropertyRepository {
      * right now) is neither locked nor written: it stays PENDING with its effective day, counts in stillPending
      * and is listed in deferred, so a later step applies it. An empty set is exactly the call above.
      */
-    public DueRentResult applyDueRentChanges(java.time.LocalDate today, int limit, Set<UUID> excluded) throws SQLException {
-        Objects.requireNonNull(today); Objects.requireNonNull(excluded);
+    public DueRentResult applyDueRentChanges(LocalDate today, int limit, Set<UUID> excluded) throws SQLException {
+        Objects.requireNonNull(today);
+        Objects.requireNonNull(excluded);
         if (limit < 1 || limit > MAX_DUE_RENT_CHANGES) throw new IllegalArgumentException("Rent change batch");
         final Set<UUID> skip = Set.copyOf(excluded);
         return ownerTransaction(c -> {
@@ -491,7 +518,9 @@ public final class PropertyRepository {
                     SELECT property_id FROM npc_properties WHERE pending_rent_change_id IS NOT NULL AND enabled=TRUE
                       AND pending_rent_effective_day<=? ORDER BY property_id LIMIT ?
                     """)) {
-                ps.setQueryTimeout(5); ps.setString(1, today.toString()); ps.setInt(2, limit);
+                ps.setQueryTimeout(5);
+                ps.setString(1, today.toString());
+                ps.setInt(2, limit);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) ids.add(Uuids.fromBytes(rs.getBytes(1)));
                     checkWarnings(c, ps, rs);
@@ -500,24 +529,31 @@ public final class PropertyRepository {
             var out = new ArrayList<DueRent>();
             var deferred = new ArrayList<UUID>();
             for (UUID id : ids) {
-                if (skip.contains(id)) { deferred.add(id); continue; } // Held by a lease: untouched, applies later.
+                if (skip.contains(id)) {
+                    deferred.add(id);
+                    continue;
+                } // Held by a lease: untouched, applies later.
                 OwnerRow row = ownerRow(c, id);
                 Property before = row.property();
                 PendingRent pending = pendingRent(c, id);
                 if (!before.enabled() || pending == null || pending.effectiveDay().isAfter(today)) continue; // changed meanwhile
-                UUID owner; int epoch; long fromRent;
+                UUID owner;
+                int epoch;
+                long fromRent;
                 try (PreparedStatement ps = c.prepareStatement("""
                         SELECT property_id, owner_uuid, ownership_epoch, from_rent_cents, to_rent_cents, effective_day, state
                         FROM npc_rent_changes WHERE change_id=? FOR UPDATE
                         """)) {
-                    ps.setQueryTimeout(5); ps.setLong(1, pending.changeId());
+                    ps.setQueryTimeout(5);
+                    ps.setLong(1, pending.changeId());
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!rs.next() || !id.equals(Uuids.fromBytes(rs.getBytes("property_id")))
                                 || rs.getInt("to_rent_cents") != pending.cents()
                                 || !pending.effectiveDay().toString().equals(rs.getString("effective_day"))
                                 || !"PENDING".equals(rs.getString("state")))
                             throw new SQLException("Rent change evidence mismatch");
-                        owner = Uuids.fromBytes(rs.getBytes("owner_uuid")); epoch = rs.getInt("ownership_epoch");
+                        owner = Uuids.fromBytes(rs.getBytes("owner_uuid"));
+                        epoch = rs.getInt("ownership_epoch");
                         fromRent = rs.getLong("from_rent_cents");
                         if (rs.wasNull()) throw new SQLException("Rent change evidence mismatch");
                         checkWarnings(c, ps, rs);
@@ -549,13 +585,14 @@ public final class PropertyRepository {
      * Takes no row lock and writes nothing. The guarded rent step uses it so it takes no ownership leases on a day
      * when nothing is due.
      */
-    public DueRentStatus dueRentStatus(java.time.LocalDate today) throws SQLException {
+    public DueRentStatus dueRentStatus(LocalDate today) throws SQLException {
         Objects.requireNonNull(today);
         try (Connection c = database.getConnection(); PreparedStatement ps = c.prepareStatement("""
                 SELECT COALESCE(SUM(enabled=TRUE AND pending_rent_effective_day<=?), 0), COUNT(*)
                 FROM npc_properties WHERE pending_rent_change_id IS NOT NULL
                 """)) {
-            ps.setQueryTimeout(5); ps.setString(1, today.toString());
+            ps.setQueryTimeout(5);
+            ps.setString(1, today.toString());
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) throw new SQLException("Rent change status missing");
                 var status = new DueRentStatus(rs.getInt(1), rs.getInt(2));
@@ -593,7 +630,8 @@ public final class PropertyRepository {
                 SELECT pending_rent_change_id, pending_asking_rent_cents, pending_rent_effective_day
                 FROM npc_properties WHERE property_id=? FOR UPDATE
                 """)) {
-            ps.setQueryTimeout(5); ps.setBytes(1, Uuids.toBytes(id));
+            ps.setQueryTimeout(5);
+            ps.setBytes(1, Uuids.toBytes(id));
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) throw new SQLException("Rent property missing");
                 long change = rs.getLong(1);
@@ -603,7 +641,7 @@ public final class PropertyRepository {
                 checkWarnings(c, ps, rs);
                 if (none) return null;
                 if (change <= 0 || cents <= 0 || day == null) throw new SQLException("Invalid pending rent");
-                return new PendingRent(change, cents, java.time.LocalDate.parse(day));
+                return new PendingRent(change, cents, LocalDate.parse(day));
             }
         }
     }
@@ -611,7 +649,8 @@ public final class PropertyRepository {
     private static boolean pendingOwnedBy(Connection c, PendingRent pending, Property current) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
                 "SELECT property_id, owner_uuid, ownership_epoch, state FROM npc_rent_changes WHERE change_id=? FOR UPDATE")) {
-            ps.setQueryTimeout(5); ps.setLong(1, pending.changeId());
+            ps.setQueryTimeout(5);
+            ps.setLong(1, pending.changeId());
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next() || !current.propertyId().equals(Uuids.fromBytes(rs.getBytes("property_id")))
                         || !"PENDING".equals(rs.getString("state")))
@@ -626,7 +665,8 @@ public final class PropertyRepository {
 
     private static int notices(Connection c, long changeId) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM npc_rent_change_notices WHERE change_id=?")) {
-            ps.setQueryTimeout(5); ps.setLong(1, changeId);
+            ps.setQueryTimeout(5);
+            ps.setLong(1, changeId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) throw new SQLException("Rent notice count missing");
                 return rs.getInt(1);
@@ -637,7 +677,9 @@ public final class PropertyRepository {
     private static void resolveRentChange(Connection c, long changeId, String state) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
                 "UPDATE npc_rent_changes SET state=?, resolved_at=CURRENT_TIMESTAMP(3) WHERE change_id=? AND state='PENDING'")) {
-            ps.setQueryTimeout(5); ps.setString(1, state); ps.setLong(2, changeId);
+            ps.setQueryTimeout(5);
+            ps.setString(1, state);
+            ps.setLong(2, changeId);
             if (ps.executeUpdate() != 1) throw new SQLException("Rent change already resolved");
             checkWarnings(c, ps, null);
         }
@@ -650,7 +692,9 @@ public final class PropertyRepository {
                   pending_rent_effective_day=NULL, row_version=row_version+1 WHERE property_id=? AND row_version=?
                 """)) {
             ps.setQueryTimeout(5);
-            ps.setLong(1, cents); ps.setBytes(2, Uuids.toBytes(current.propertyId())); ps.setLong(3, revision);
+            ps.setLong(1, cents);
+            ps.setBytes(2, Uuids.toBytes(current.propertyId()));
+            ps.setLong(3, revision);
             if (ps.executeUpdate() != 1) throw new SQLException("Rent compare-and-set lost");
             checkWarnings(c, ps, null);
         }
@@ -741,7 +785,7 @@ public final class PropertyRepository {
 
     private static void setNullableUuid(PreparedStatement ps, int idx, UUID uuid) throws SQLException {
         if (uuid == null) {
-            ps.setNull(idx, java.sql.Types.BINARY);
+            ps.setNull(idx, Types.BINARY);
         } else {
             ps.setBytes(idx, Uuids.toBytes(uuid));
         }

@@ -26,7 +26,7 @@ class CapAllocatorTest {
     void overCap_sumsExactlyToCap() {
         long[] req = {100, 200, 300}; // total 600
         long[] out = CapAllocator.allocate(req, 300);
-        assertEquals(300, sum(out)); // exact
+        assertEquals(300, sum(out));
         // proportional: ~50/100/150
         assertArrayEquals(new long[]{50, 100, 150}, out);
     }

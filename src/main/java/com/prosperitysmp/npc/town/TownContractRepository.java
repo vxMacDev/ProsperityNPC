@@ -10,6 +10,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -17,21 +18,21 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Durable contracts and partnership hand-overs. SQL only: no Bukkit, Vault, transfer journal, cap or economy event.
- * Items flow one way (player to destroyed) and the only reward is an OBLIGATION_KEPT memory, still capped at four
- * points per resident per day by {@link RelationshipMemory}.
+ * Items flow one way (player to destroyed). The only reward is an OBLIGATION_KEPT memory, capped at four points per
+ * resident per day by {@link RelationshipMemory}.
  *
- * <p>Hand-over state machine: ACTIVE, then HANDOVER_INTENT (written before any item is taken), then COMPLETED only
- * when the take evidence shows exactly the asked quantity left and the saved player file was proven. Anything else,
- * or a restart that finds HANDOVER_INTENT, is AMBIGUOUS: held for staff, never retried, and it blocks the player's
- * next contract until /npctown contract-resolve settles it. A partnership start or renewal is a PARTNERSHIP row
- * (day_slot 0) that goes straight to HANDOVER_INTENT and runs the same machine.
+ * <p>A hand-over is ACTIVE, then HANDOVER_INTENT (written before any item is taken), then COMPLETED only on proven
+ * take evidence. Anything else is AMBIGUOUS: held for staff, never retried, and it blocks the player's next contract
+ * until /npctown contract-resolve settles it (see {@link #finishHandover}). A partnership start or renewal is a
+ * PARTNERSHIP row (day_slot 0) that goes straight to HANDOVER_INTENT.
  *
- * <p>Lock order: item custody player guard (only where a hand-over starts, so a delivery or an item repair can never
- * overlap it), contract player guard, contract row, sorted resident profiles, partnership rows, resident memory.
- * Never takes property, economy or commerce locks. All calls are bounded synchronous JDBC work for a database worker.
+ * <p>Lock order: item custody player guard (taken only where a hand-over starts, so a delivery or an item repair
+ * never overlaps it), contract player guard, contract row, sorted resident profiles, partnership rows, resident
+ * memory. No property, economy or commerce locks. All calls are bounded synchronous JDBC work for a database worker.
  */
 public final class TownContractRepository {
     public static final int MAX_LIST = 100;
@@ -78,7 +79,9 @@ public final class TownContractRepository {
     public record Result(Code code, Optional<TownContract> contract, Optional<Partnership> partnership, int detail,
                          NoPartnership noPartnership) {
         public Result {
-            Objects.requireNonNull(code); Objects.requireNonNull(contract); Objects.requireNonNull(partnership);
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(contract);
+            Objects.requireNonNull(partnership);
         }
         public Result(Code code, Optional<TownContract> contract, Optional<Partnership> partnership, int detail) {
             this(code, contract, partnership, detail, null);
@@ -91,7 +94,8 @@ public final class TownContractRepository {
     public record PartnerTerms(PartnerPerks perks, int termDays, int maxSeats, int renewWindowDays,
                                RelationshipMemory.Stage minimumStage, int minContracts, String material, int quantity) {
         public PartnerTerms {
-            Objects.requireNonNull(perks); Objects.requireNonNull(minimumStage);
+            Objects.requireNonNull(perks);
+            Objects.requireNonNull(minimumStage);
             if (termDays < 1 || termDays > 30 || maxSeats < 1 || maxSeats > 16 || renewWindowDays < 1
                     || renewWindowDays > termDays || minContracts < 0 || minContracts > 10
                     || material == null || !material.matches("[A-Z][A-Z0-9_]{0,63}")
@@ -126,8 +130,11 @@ public final class TownContractRepository {
      */
     public Result accept(ContractDefinition definition, UUID player, Instant at, LocalDate economyDay, int perDay)
             throws SQLException {
-        Objects.requireNonNull(definition); Objects.requireNonNull(player); Objects.requireNonNull(economyDay);
-        if (definition.kind() == ContractDefinition.Kind.PARTNERSHIP) throw new IllegalArgumentException("Partnerships start through beginPartnership");
+        Objects.requireNonNull(definition);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(economyDay);
+        if (definition.kind() == ContractDefinition.Kind.PARTNERSHIP)
+            throw new IllegalArgumentException("Partnerships start through beginPartnership");
         if (perDay < 1 || perDay > 3) throw new IllegalArgumentException("Contracts per day must be 1..3");
         Instant now = TownContract.normalize(at);
         ensureGuard(player);
@@ -139,7 +146,8 @@ public final class TownContractRepository {
                 return switch (existing.status()) {
                     case AMBIGUOUS -> result(Code.HELD_FOR_REVIEW, existing);
                     case HANDOVER_INTENT -> result(Code.BUSY, existing);
-                    default -> result(existing.definition().id().equals(definition.id()) ? Code.ALREADY_ACTIVE : Code.ACTIVE_CONFLICT, existing);
+                    default -> result(existing.definition().id().equals(definition.id()) ? Code.ALREADY_ACTIVE : Code.ACTIVE_CONFLICT,
+                            existing);
                 };
             }
             if (regressed(c, player, now, economyDay)) return result(Code.TIME_REGRESSION);
@@ -165,7 +173,8 @@ public final class TownContractRepository {
 
     /** Cancelling writes no memory, positive or negative, and keeps today's slot used. */
     public Result cancel(UUID contractId, UUID player, Instant at) throws SQLException {
-        Objects.requireNonNull(contractId); Objects.requireNonNull(player);
+        Objects.requireNonNull(contractId);
+        Objects.requireNonNull(player);
         Instant now = TownContract.normalize(at);
         return transaction(c -> {
             if (!guardExists(c, player)) return result(Code.NOT_FOUND);
@@ -194,7 +203,9 @@ public final class TownContractRepository {
      * held for this player.
      */
     public Result beginHandover(UUID contractId, UUID player, UUID actualResident, UUID runId, Instant at) throws SQLException {
-        Objects.requireNonNull(contractId); Objects.requireNonNull(player); Objects.requireNonNull(actualResident);
+        Objects.requireNonNull(contractId);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(actualResident);
         Objects.requireNonNull(runId);
         Instant now = TownContract.normalize(at);
         ensureCustodyGuard(player);
@@ -233,8 +244,11 @@ public final class TownContractRepository {
      */
     public Result beginPartnership(boolean start, UUID player, PartnerOffer offer, PartnerTerms terms, UUID runId,
                                    Instant at, LocalDate economyDay) throws SQLException {
-        Objects.requireNonNull(player); Objects.requireNonNull(offer); Objects.requireNonNull(terms);
-        Objects.requireNonNull(runId); Objects.requireNonNull(economyDay);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(offer);
+        Objects.requireNonNull(terms);
+        Objects.requireNonNull(runId);
+        Objects.requireNonNull(economyDay);
         // Nothing is taken for an offer with no perk, or for terms that are not this offer's.
         if (!terms.material().equals(offer.material()) || terms.quantity() != offer.quantity() || !terms.perks().equals(offer.perks())
                 || !terms.perks().any())
@@ -285,18 +299,20 @@ public final class TownContractRepository {
 
     /**
      * Records the take evidence (an exact replay is a no-op, a different one throws) and settles in one transaction.
-     * COMPLETED, with OBLIGATION_KEPT for the giver and recipient (and the partnership started or renewed), needs:
-     * the same player, the before count recorded when the hand-over was asked, exactly quantity gone, a changed
-     * inventory, a normal return and a proven save. Anything else is AMBIGUOUS. Late evidence never releases a
-     * hand-over that recovery already held. A partnership check that fails at this point throws, so the caller
-     * holds the hand-over for staff; it never completes without the partnership it paid for. terms are the current
-     * ones: the partnership gets the lower of them and the perks and term kept at begin, and a current offer with
-     * another material or a higher quantity throws (held for staff).
+     * COMPLETED, with OBLIGATION_KEPT for the giver and recipient, needs the same player, the before count recorded
+     * when the hand-over was asked, exactly quantity gone, a changed inventory, a normal return and a proven save.
+     * Anything else is AMBIGUOUS, and late evidence never releases a hand-over that recovery already held. A
+     * partnership hand-over never completes without the partnership it paid for: if its check fails, or the current
+     * terms ask for another material or a higher quantity, the call throws and the caller holds it for staff. The
+     * partnership gets the lower of the current terms and the perks and term kept at begin.
      */
     public Result finishHandover(UUID contractId, UUID player, UUID runId, int expectedBefore, ItemCollectionEvidence evidence,
                                  Instant at, LocalDate economyDay, PartnerTerms terms) throws SQLException {
-        Objects.requireNonNull(contractId); Objects.requireNonNull(player); Objects.requireNonNull(runId);
-        Objects.requireNonNull(evidence); Objects.requireNonNull(economyDay);
+        Objects.requireNonNull(contractId);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(runId);
+        Objects.requireNonNull(evidence);
+        Objects.requireNonNull(economyDay);
         Instant now = TownContract.normalize(at);
         return transaction(c -> {
             lockGuard(c, player);
@@ -326,7 +342,9 @@ public final class TownContractRepository {
 
     /** HANDOVER_INTENT to AMBIGUOUS for its own run. Never retried. */
     public Optional<TownContract> markAmbiguous(UUID contractId, UUID player, UUID runId) throws SQLException {
-        Objects.requireNonNull(contractId); Objects.requireNonNull(player); Objects.requireNonNull(runId);
+        Objects.requireNonNull(contractId);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(runId);
         return transaction(c -> {
             lockGuard(c, player);
             Optional<TownContract> found = findLocked(c, contractId, player);
@@ -343,7 +361,9 @@ public final class TownContractRepository {
      * and only while no evidence exists.
      */
     public Optional<TownContract> cancelBeforeTake(UUID contractId, UUID player, UUID runId) throws SQLException {
-        Objects.requireNonNull(contractId); Objects.requireNonNull(player); Objects.requireNonNull(runId);
+        Objects.requireNonNull(contractId);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(runId);
         return transaction(c -> {
             lockGuard(c, player);
             Optional<TownContract> found = findLocked(c, contractId, player);
@@ -367,7 +387,8 @@ public final class TownContractRepository {
      * this run's HANDOVER_INTENT row exists it is undone exactly as {@link #cancelBeforeTake} does. No row: nothing.
      */
     public Optional<TownContract> cancelUnconfirmedBegin(UUID player, UUID runId) throws SQLException {
-        Objects.requireNonNull(player); Objects.requireNonNull(runId);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(runId);
         UUID contractId;
         try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c, """
                 SELECT contract_id FROM npc_town_contracts WHERE player_id=? AND handover_run_id=? AND status='HANDOVER_INTENT'
@@ -418,8 +439,11 @@ public final class TownContractRepository {
      */
     public Result resolve(UUID contractId, Decision decision, String operatorRef, String caseRef, Instant at,
                           LocalDate economyDay, PartnerTerms terms) throws SQLException {
-        Objects.requireNonNull(contractId); Objects.requireNonNull(decision); Objects.requireNonNull(economyDay);
-        requireRef(operatorRef); requireRef(caseRef);
+        Objects.requireNonNull(contractId);
+        Objects.requireNonNull(decision);
+        Objects.requireNonNull(economyDay);
+        requireRef(operatorRef);
+        requireRef(caseRef);
         Instant now = TownContract.normalize(at);
         UUID player = owner(contractId).orElse(null);
         if (player == null) return result(Code.NOT_FOUND);
@@ -521,7 +545,10 @@ public final class TownContractRepository {
                     """)) {
                 ps.setBytes(1, Uuids.toBytes(resident));
                 ps.setString(2, day.toString());
-                try (ResultSet rs = ps.executeQuery()) { rs.next(); active = rs.getInt(1); }
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    active = rs.getInt(1);
+                }
             }
             return active + reservedSeats(c, resident, null, false);
         }
@@ -535,7 +562,10 @@ public final class TownContractRepository {
                 WHERE p.owner_uuid=? AND p.enabled=TRUE
                 """)) {
             ps.setBytes(1, Uuids.toBytes(player));
-            try (ResultSet rs = ps.executeQuery()) { rs.next(); return rs.getInt(1) > 0 && rs.getInt(2) == rs.getInt(1); }
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1) > 0 && rs.getInt(2) == rs.getInt(1);
+            }
         }
     }
 
@@ -625,9 +655,12 @@ public final class TownContractRepository {
             ps.setBytes(1, Uuids.toBytes(contractId));
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) throw new SQLException("Partnership hand-in row missing");
-                int fee = rs.getInt(1); boolean noFee = rs.wasNull();
-                int rank = rs.getInt(2); boolean noRank = rs.wasNull();
-                int term = rs.getInt(3); boolean noTerm = rs.wasNull();
+                int fee = rs.getInt(1);
+                boolean noFee = rs.wasNull();
+                int rank = rs.getInt(2);
+                boolean noRank = rs.wasNull();
+                int term = rs.getInt(3);
+                boolean noTerm = rs.wasNull();
                 if (noFee || noRank || noTerm) return Optional.empty();
                 try {
                     if (term < 1 || term > 30) throw new IllegalArgumentException("term");
@@ -700,7 +733,10 @@ public final class TownContractRepository {
             ps.setBytes(1, Uuids.toBytes(resident));
             ps.setBytes(2, Uuids.toBytes(player));
             ps.setString(3, since.toString());
-            try (ResultSet rs = ps.executeQuery()) { rs.next(); return rs.getInt(1); }
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
         }
     }
 
@@ -710,7 +746,10 @@ public final class TownContractRepository {
                 """)) {
             ps.setBytes(1, Uuids.toBytes(player));
             ps.setString(2, day.toString());
-            try (ResultSet rs = ps.executeQuery()) { rs.next(); return rs.getInt(1); }
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
         }
     }
 
@@ -742,8 +781,10 @@ public final class TownContractRepository {
     /** A delivery mid-flight or held, or an item repair running or held: that runtime owns the inventory. */
     private static boolean itemsBusy(Connection c, UUID player) throws SQLException {
         for (String sql : List.of(
-                "SELECT request_nonce FROM npc_item_custody WHERE player_id=? AND state IN ('DELIVERY_INTENT','AMBIGUOUS') LIMIT 1 FOR UPDATE",
-                "SELECT collection_id FROM npc_item_repair_collections WHERE player_id=? AND state IN ('INTENT','AMBIGUOUS') LIMIT 1 FOR UPDATE")) {
+                "SELECT request_nonce FROM npc_item_custody WHERE player_id=? AND state IN ('DELIVERY_INTENT','AMBIGUOUS') "
+                        + "LIMIT 1 FOR UPDATE",
+                "SELECT collection_id FROM npc_item_repair_collections WHERE player_id=? AND state IN ('INTENT','AMBIGUOUS') "
+                        + "LIMIT 1 FOR UPDATE")) {
             try (PreparedStatement ps = prepare(c, sql)) {
                 ps.setBytes(1, Uuids.toBytes(player));
                 try (ResultSet rs = ps.executeQuery()) { if (rs.next()) return true; }
@@ -842,7 +883,7 @@ public final class TownContractRepository {
 
     private static List<UUID> sortedResidents(ContractDefinition d) {
         return d.giverId().equals(d.recipientId()) ? List.of(d.giverId())
-                : java.util.stream.Stream.of(d.giverId(), d.recipientId()).sorted().toList();
+                : Stream.of(d.giverId(), d.recipientId()).sorted().toList();
     }
 
     private static Code lockResidents(Connection c, ContractDefinition d) throws SQLException {
@@ -874,7 +915,7 @@ public final class TownContractRepository {
                         events.add(new RelationshipMemory.Event(resident, player, rs.getString("source_ref"),
                                 RelationshipMemory.Kind.valueOf(rs.getString("kind")),
                                 Instant.ofEpochMilli(rs.getLong("occurred_at_millis")), LocalDate.parse(rs.getString("economy_day"))));
-                    } catch (IllegalArgumentException | java.time.DateTimeException | NullPointerException e) {
+                    } catch (IllegalArgumentException | DateTimeException | NullPointerException e) {
                         throw new SQLException("invalid stored resident memory", e);
                     }
                 }
@@ -905,7 +946,8 @@ public final class TownContractRepository {
             ps.setInt(15, t.daySlot());
             ps.setLong(16, t.expiresAt().toEpochMilli());
             ps.setString(17, t.status().name());
-            if (t.runId() == null) ps.setNull(18, Types.BINARY); else ps.setBytes(18, Uuids.toBytes(t.runId()));
+            if (t.runId() == null) ps.setNull(18, Types.BINARY);
+            else ps.setBytes(18, Uuids.toBytes(t.runId()));
             ps.setNull(19, Types.BIGINT);
             ps.setNull(20, Types.VARCHAR);
             one(ps.executeUpdate());
@@ -920,8 +962,10 @@ public final class TownContractRepository {
                 updated_at=CURRENT_TIMESTAMP(3) WHERE contract_id=? AND player_id=? AND status=?
                 """)) {
             ps.setString(1, next.name());
-            if (run == null) ps.setNull(2, Types.BINARY); else ps.setBytes(2, Uuids.toBytes(run));
-            if (updated.closedAt() == null) ps.setNull(3, Types.BIGINT); else ps.setLong(3, updated.closedAt().toEpochMilli());
+            if (run == null) ps.setNull(2, Types.BINARY);
+            else ps.setBytes(2, Uuids.toBytes(run));
+            if (updated.closedAt() == null) ps.setNull(3, Types.BIGINT);
+            else ps.setLong(3, updated.closedAt().toEpochMilli());
             ps.setString(4, completed == null ? null : completed.toString());
             ps.setBytes(5, Uuids.toBytes(t.contractId()));
             ps.setBytes(6, Uuids.toBytes(t.playerId()));
@@ -952,7 +996,7 @@ public final class TownContractRepository {
                     rs.getInt("day_slot"), Instant.ofEpochMilli(rs.getLong("expires_at_millis")),
                     TownContract.Status.valueOf(rs.getString("status")), run == null ? null : Uuids.fromBytes(run),
                     closedAt, completed == null ? null : LocalDate.parse(completed));
-        } catch (IllegalArgumentException | java.time.DateTimeException | NullPointerException e) {
+        } catch (IllegalArgumentException | DateTimeException | NullPointerException e) {
             throw new SQLException("invalid stored contract", e);
         }
     }
@@ -1016,7 +1060,11 @@ public final class TownContractRepository {
                 c.commit();
                 return result;
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }
@@ -1028,7 +1076,13 @@ public final class TownContractRepository {
 
     private static PreparedStatement prepare(Connection c, String sql) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); return ps; }
-        catch (SQLException failure) { ps.close(); throw failure; }
+        try {
+            ps.setQueryTimeout(5);
+            return ps;
+        }
+        catch (SQLException failure) {
+            ps.close();
+            throw failure;
+        }
     }
 }

@@ -8,6 +8,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -35,7 +36,7 @@ public final class IncidentRepository {
         }
     }
 
-    /** True if a roll already exists for this (property, day) — prevents rerolls. */
+    /** True if a roll already exists for this (property, day), so a day is never rerolled. */
     public boolean hasRollForDay(UUID propertyId, String economyDay) throws SQLException {
         try (Connection c = database.getConnection();
              PreparedStatement ps = c.prepareStatement(
@@ -64,8 +65,8 @@ public final class IncidentRepository {
     /**
      * Legacy record-only import/fixture API, not the runtime generation path.
      * Runtime generation uses IncidentRollRepository so damage and evidence commit together.
-     * {@code prevented} true means insurance
-     * absorbed it (still recorded for audit, but it does no damage and is resolved).
+     * {@code prevented} true means insurance absorbed it: still recorded for audit, but it does no damage
+     * and is resolved.
      */
     public void create(UUID propertyId, IncidentType type, String affectedUpgradeType,
                        String economyDay, long dueAtEpochMillis, boolean prevented) throws SQLException {
@@ -82,7 +83,7 @@ public final class IncidentRepository {
             ps.setString(4, type.itemRepairSpec());
             ps.setInt(5, prevented ? 0 : type.conditionDamage());
             if (affectedUpgradeType == null) {
-                ps.setNull(6, java.sql.Types.VARCHAR);
+                ps.setNull(6, Types.VARCHAR);
             } else {
                 ps.setString(6, affectedUpgradeType);
             }
@@ -93,7 +94,7 @@ public final class IncidentRepository {
                 ps.setObject(9, LocalDateTime.ofInstant(
                         Instant.ofEpochMilli(System.currentTimeMillis()), ZoneOffset.UTC));
             } else {
-                ps.setNull(9, java.sql.Types.TIMESTAMP);
+                ps.setNull(9, Types.TIMESTAMP);
             }
             ps.setBoolean(10, prevented);
             ps.executeUpdate();

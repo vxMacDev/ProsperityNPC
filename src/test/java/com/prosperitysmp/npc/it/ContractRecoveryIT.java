@@ -28,7 +28,7 @@ class ContractRecoveryIT extends ContractItBase {
         var held = contracts.recoverStaleIntents(100);
         assertEquals(1, held.size());
         assertEquals(id, held.getFirst().contractId());
-        // Mutation guard: recovering to ACTIVE instead would let the player retry and the next accept conflict instead.
+        // Recovering to ACTIVE instead would let the player retry, and the next accept would conflict.
         assertEquals(TownContract.Status.AMBIGUOUS, contracts.find(id, player).orElseThrow().status());
         assertTrue(contracts.recoverStaleIntents(100).isEmpty(), "a second sweep finds nothing");
         var next = contracts.accept(contract("mara-wall-stone"), player, NOW.plusSeconds(60), DAY.plusDays(1), 1);

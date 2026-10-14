@@ -7,14 +7,14 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Commerce with item repairs off behaves as dev.58. The oracles below are the dev.58 ProsperityNpcPlugin logic,
- * read from the dev.58 source and checked against the dev.58 jar's bytecode: commerceStatus(), the delivery gate
- * lambda in initCommerce, and the commerce block of onDisable.
+ * With item repairs off, commerce keeps the plain wiring. The oracles below restate the plugin's own logic
+ * independently of CommerceWiring: commerceStatus(), the delivery gate lambda in initCommerce, and the commerce block
+ * of onDisable.
  */
 class CommerceWiringTest {
     private static final boolean[] FLAGS = {false, true};
 
-    /** dev.58: commercePayments == null || commerce == null || itemDelivery == null ? "HELD_RUNTIME" : status + ... */
+    /** The status as the plugin builds it: commercePayments == null || commerce == null || itemDelivery == null ? "HELD_RUNTIME" : status + ... */
     private static String dev58Status(boolean payments, boolean commerce, boolean delivery, String status, boolean ready) {
         return !payments || !commerce || !delivery ? "HELD_RUNTIME" : status + "; item custody " + (ready ? "READY" : "STARTUP_PENDING");
     }
@@ -42,12 +42,12 @@ class CommerceWiringTest {
             boolean dev58 = system && economy && commerce;
             assertEquals(dev58, gate.test(ItemCustody.Source.WORKER_OUTPUT));
             assertEquals(dev58, gate.test(ItemCustody.Source.MERCHANT_GOODS));
-            assertFalse(dbRead[0], "commerce goods never read the database switch, as in dev.58");
+            assertFalse(dbRead[0], "commerce goods never read the database switch");
             assertEquals(system && db, gate.test(ItemCustody.Source.REPAIR_RETURN));
             assertEquals(dev58, ItemDeliveryRuntime.sourceAllowed(ItemCustody.Source.MERCHANT_GOODS, system, economy, commerce, db));
             assertEquals(system && db, ItemDeliveryRuntime.sourceAllowed(ItemCustody.Source.REPAIR_RETURN, system, economy, commerce, db));
         }
-        // dev.58 short-circuits left to right; a later switch is not read once an earlier one is off.
+        // The gate short-circuits left to right; a later switch is not read once an earlier one is off.
         int[] reads = new int[3];
         var gate = CommerceWiring.deliveryGate(() -> { reads[0]++; return false; }, () -> { reads[1]++; return true; },
                 () -> { reads[2]++; return true; }, () -> true);
@@ -61,9 +61,23 @@ class CommerceWiringTest {
         assertTrue(live.test(ItemCustody.Source.WORKER_OUTPUT));
     }
 
+    /** A safety check: missing or true is on, false is off, and anything else stays on and is reported. */
+    @Test void saveMarkerParsesAsASafetyCheck() {
+        assertEquals("town.commerce.delivery-save-marker", CommerceWiring.SAVE_MARKER);
+        assertTrue(CommerceWiring.saveMarkerOn(null), "a missing value is on");
+        assertTrue(CommerceWiring.saveMarkerOn(Boolean.TRUE));
+        assertFalse(CommerceWiring.saveMarkerOn(Boolean.FALSE), "false turns it off");
+        for (Object malformed : new Object[] {"yes", 1, "false", 0}) {
+            assertTrue(CommerceWiring.saveMarkerOn(malformed), "stays on: " + malformed);
+            assertTrue(CommerceWiring.saveMarkerMalformed(malformed), "reported: " + malformed);
+        }
+        for (Object wellFormed : new Object[] {null, Boolean.TRUE, Boolean.FALSE})
+            assertFalse(CommerceWiring.saveMarkerMalformed(wellFormed), String.valueOf(wellFormed));
+    }
+
     @Test void closeOrderWithoutItemRepairsIsDev58() {
         for (boolean commerce : FLAGS) for (boolean payments : FLAGS) for (boolean delivery : FLAGS) {
-            // dev.58 onDisable: commerce, then commercePayments, then itemDelivery, each only if it exists.
+            // The plugin's onDisable closes commerce, then commercePayments, then itemDelivery, each only if it exists.
             var dev58 = new ArrayList<Part>();
             if (commerce) dev58.add(Part.COMMERCE);
             if (payments) dev58.add(Part.COMMERCE_PAYMENTS);

@@ -11,6 +11,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -18,7 +19,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Persistence for district navigation graphs (§10.1): draft → validate → publish,
+ * Persistence for district navigation graphs: draft → validate → publish,
  * versioned and district-scoped. A scan writes a {@code DRAFT}; publishing flips it
  * {@code ACTIVE} and archives the previously active graph for that world+region, so
  * a material scan can never silently replace the live graph.
@@ -277,7 +278,7 @@ public final class NavGraphRepository {
                         long id = rs.getLong(1);
                         List<String> t = tags.getOrDefault(id, List.of());
                         b.addNode(new NavGraph.Node(id, rs.getInt(2), rs.getInt(3), rs.getInt(4),
-                                new java.util.HashSet<>(t)));
+                                new HashSet<>(t)));
                     }
                 }
             }

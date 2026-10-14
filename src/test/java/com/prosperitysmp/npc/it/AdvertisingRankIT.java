@@ -105,7 +105,7 @@ class AdvertisingRankIT {
         execute("INSERT INTO npc_upgrades(property_id,upgrade_type,level) VALUES (?,'ADVERTISING',2)", OTHER);
         var before = data();
         var off = read(database, options(1));
-        assertEquals(HOME, off.requests().getFirst().propertyId(), "flag off keeps the old order");
+        assertEquals(HOME, off.requests().getFirst().propertyId(), "flag off: advertising gives no bonus");
         var on = read(database, advertising(1, true));
         assertEquals(OTHER, on.requests().getFirst().propertyId());
         assertEquals(1, on.requests().size());

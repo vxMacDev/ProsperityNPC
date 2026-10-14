@@ -50,7 +50,7 @@ class RentChangeDelayConfigTest {
         assertTrue(PropertyService.pendingRentChangesAtStartup(() -> { throw new IllegalStateException("pool closed"); }, warnings::add));
         assertTrue(PropertyService.pendingRentChangesAtStartup(() -> -1, warnings::add), "a nonsense count is unreadable too");
         assertEquals(3, warnings.size());
-        // Positive controls: a readable count is used as is, and only 0 means none.
+        // A readable count is used as is, and only 0 means none.
         assertFalse(PropertyService.pendingRentChangesAtStartup(() -> 0, warnings::add));
         assertTrue(PropertyService.pendingRentChangesAtStartup(() -> 2, warnings::add));
         assertEquals(3, warnings.size(), "readable counts log nothing");

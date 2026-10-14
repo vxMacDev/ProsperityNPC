@@ -40,8 +40,11 @@ public record HousingMarketSnapshot(LocalDate day, Instant capturedAt, HousingMo
                     referenceRentCents, askingRentCents, condition, installedFacilities, effectiveFacilities, freeSlots, 0);
         }
         public Home {
-            Objects.requireNonNull(propertyId); Objects.requireNonNull(ownerId); Objects.requireNonNull(worldId);
-            HousingPolicy.key(marketId); HousingPolicy.key(classKey);
+            Objects.requireNonNull(propertyId);
+            Objects.requireNonNull(ownerId);
+            Objects.requireNonNull(worldId);
+            HousingPolicy.key(marketId);
+            HousingPolicy.key(classKey);
             if (regionId == null || regionId.isBlank() || regionId.length() > 128 || ownershipEpoch < 0
                     || revision < 0 || revision == Long.MAX_VALUE || capacity < 1 || capacity > 4
                     || referenceRentCents < 1 || referenceRentCents > Integer.MAX_VALUE
@@ -62,15 +65,21 @@ public record HousingMarketSnapshot(LocalDate day, Instant capturedAt, HousingMo
             this(member, tenancyRevision, cooldownUntil, status, null);
         }
         public Participant {
-            Objects.requireNonNull(member); Objects.requireNonNull(cooldownUntil); Objects.requireNonNull(status);
+            Objects.requireNonNull(member);
+            Objects.requireNonNull(cooldownUntil);
+            Objects.requireNonNull(status);
             if (tenancyRevision < -1 || tenancyRevision == Long.MAX_VALUE)
                 throw new IllegalArgumentException("Invalid housing snapshot tenancy");
         }
     }
     public HousingMarketSnapshot {
-        Objects.requireNonNull(day); Objects.requireNonNull(capturedAt); Objects.requireNonNull(policy);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(capturedAt);
+        Objects.requireNonNull(policy);
         if (day.getYear() < 1 || day.getYear() > 9999) throw new IllegalArgumentException("Invalid snapshot day");
-        homes = List.copyOf(homes); participants = List.copyOf(participants); admissions = List.copyOf(admissions);
+        homes = List.copyOf(homes);
+        participants = List.copyOf(participants);
+        admissions = List.copyOf(admissions);
         if (homes.size() > 512 || participants.size() > 512 || admissions.size() > 512)
             throw new IllegalArgumentException("Housing snapshot exceeds bounds");
         var ids = new HashSet<UUID>();
@@ -130,7 +139,8 @@ public record HousingMarketSnapshot(LocalDate day, Instant capturedAt, HousingMo
     }
 
     public HousingMoveRequest quote(UUID requestId, FiniteHousingPlanner.Assignment assignment, boolean premiumEnabled) {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(assignment);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(assignment);
         Participant p = participants.stream().filter(x -> x.member().residentId().equals(assignment.residentId()))
                 .findFirst().orElseThrow(() -> new IllegalArgumentException("Resident absent from snapshot"));
         Home h = homes.stream().filter(x -> x.propertyId().equals(assignment.propertyId())).findFirst()

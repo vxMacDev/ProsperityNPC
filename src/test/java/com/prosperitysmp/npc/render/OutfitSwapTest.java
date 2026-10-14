@@ -93,7 +93,7 @@ class OutfitSwapTest {
         Map<UUID, RenderManager.Render> rendered = new HashMap<>(Map.of(UUID.randomUUID(), dressed));
         assertEquals(0, RenderManager.changeOutfits(rendered, host, 2, 16, 1_000));
         assertEquals(0, host.scans);
-        // Positive control: an avatar that does need a change is scanned.
+        // An avatar that does need a change is scanned, so the zero above is real.
         host.nearest = 5;
         rendered.put(UUID.randomUUID(), render("plain"));
         assertEquals(0, RenderManager.changeOutfits(rendered, host, 2, 16, 1_000));
@@ -162,10 +162,10 @@ class OutfitSwapTest {
             assertEquals(0, RenderManager.changeOutfits(new HashMap<>(Map.of(resident, other)), host, 2, 16, 1_000), flag);
         }
         assertTrue(host.events.isEmpty());
-        assertEquals(1, RenderManager.changeOutfits(rendered, host, 2, 16, 1_000), "positive control");
+        assertEquals(1, RenderManager.changeOutfits(rendered, host, 2, 16, 1_000), "an ordinary resident does get its outfit changed");
     }
 
-    /** Integrator correction: a swap must not reset the pause window, or a resident could be stopped again at once. */
+    /** A swap must not reset the pause window, or a resident could be stopped again at once. */
     @Test void aSwapAfterTheDeadlineKeepsThePauseCooldown() {
         var host = new Host();
         var r = render("old");

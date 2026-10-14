@@ -2,14 +2,19 @@ package com.prosperitysmp.npc.property;
 
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.Uuids;
+import com.prosperitysmp.npc.economy.AccountLinkRepository;
 import com.prosperitysmp.npc.economy.EventSource;
 import com.prosperitysmp.npc.economy.EventState;
+import com.prosperitysmp.npc.formulas.PropertyFormulas;
 import com.prosperitysmp.npc.formulas.UpgradeType;
+import com.prosperitysmp.npc.market.OwnerHousingView;
+import com.prosperitysmp.npc.town.PartnerPerks;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.Clock;
 import java.time.Duration;
@@ -24,6 +29,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /** Worker-only SQL reader; callers own live ARM/session authorization before delivery. */
 public final class OwnerDeskRepository {
@@ -36,20 +45,20 @@ public final class OwnerDeskRepository {
     private final ZoneId zone;
     private final int resetHour;
     // Read live per snapshot: the pending-rent line needs V31 columns and housing.rent-change-delay-days above 0.
-    private final java.util.function.BooleanSupplier pendingRent;
+    private final BooleanSupplier pendingRent;
     // linked-accounts.enabled and benefit-unit-daily-cap-cents, read live per snapshot. Off: no link table is read.
-    private final java.util.function.BooleanSupplier linkedEnabled;
-    private final java.util.function.LongSupplier linkedLimitCents;
+    private final BooleanSupplier linkedEnabled;
+    private final LongSupplier linkedLimitCents;
     // town.partnerships, read live per snapshot. Off: no partnership table is read.
-    private final java.util.function.Supplier<PartnerConfig> partners;
+    private final Supplier<PartnerConfig> partners;
 
     /**
      * Live partnership settings for the desk line: enabled (town.enabled and town.partnerships.enabled), rankLive
      * (the rank perk acts on matching) and the current config perks per resident, for min(snapshot, config).
      */
     public record PartnerConfig(boolean enabled, boolean rankLive,
-                                java.util.function.Function<UUID, com.prosperitysmp.npc.town.PartnerPerks> configPerks) {
-        public static final PartnerConfig OFF = new PartnerConfig(false, false, id -> com.prosperitysmp.npc.town.PartnerPerks.NONE);
+                                Function<UUID, PartnerPerks> configPerks) {
+        public static final PartnerConfig OFF = new PartnerConfig(false, false, id -> PartnerPerks.NONE);
         public PartnerConfig { Objects.requireNonNull(configPerks); }
     }
 
@@ -70,22 +79,22 @@ public final class OwnerDeskRepository {
     }
 
     public OwnerDeskRepository(Database database, Clock clock, ZoneId zone, int resetHour,
-                               java.util.function.BooleanSupplier pendingRent) {
+                               BooleanSupplier pendingRent) {
         this(database, clock, zone, resetHour, pendingRent, () -> false, () -> 0L);
     }
 
     /** linkedEnabled on: the desk shows one line when the owner shares the daily rent limit with linked accounts. */
     public OwnerDeskRepository(Database database, Clock clock, ZoneId zone, int resetHour,
-                               java.util.function.BooleanSupplier pendingRent,
-                               java.util.function.BooleanSupplier linkedEnabled, java.util.function.LongSupplier linkedLimitCents) {
+                               BooleanSupplier pendingRent,
+                               BooleanSupplier linkedEnabled, LongSupplier linkedLimitCents) {
         this(database, clock, zone, resetHour, pendingRent, linkedEnabled, linkedLimitCents, () -> PartnerConfig.OFF);
     }
 
     /** partners on: the desk shows the owner's active partnership line. */
     public OwnerDeskRepository(Database database, Clock clock, ZoneId zone, int resetHour,
-                               java.util.function.BooleanSupplier pendingRent,
-                               java.util.function.BooleanSupplier linkedEnabled, java.util.function.LongSupplier linkedLimitCents,
-                               java.util.function.Supplier<PartnerConfig> partners) {
+                               BooleanSupplier pendingRent,
+                               BooleanSupplier linkedEnabled, LongSupplier linkedLimitCents,
+                               Supplier<PartnerConfig> partners) {
         this.partners = Objects.requireNonNull(partners);
         this.linkedEnabled = Objects.requireNonNull(linkedEnabled);
         this.linkedLimitCents = Objects.requireNonNull(linkedLimitCents);
@@ -122,7 +131,11 @@ public final class OwnerDeskRepository {
                 c.rollback();
                 return result;
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 if (failure instanceof SQLException sql) throw sql;
                 throw new SQLException("Invalid owner desk snapshot", failure);
             }
@@ -154,10 +167,10 @@ public final class OwnerDeskRepository {
                     && revision >= 0 && captured != null && !rs.next(), "invalid property");
         }
         var upgrades = upgrades(c, property.propertyId());
-        Optional<com.prosperitysmp.npc.market.OwnerHousingView> housing = Optional.empty();
+        Optional<OwnerHousingView> housing = Optional.empty();
         if (services != null) {
             var assessment = services.readInTransaction(c, captured, owner, captured.minus(Duration.ofDays(29)), 7);
-            housing = Optional.of(com.prosperitysmp.npc.market.OwnerHousingView.from(property, revision, upgrades,
+            housing = Optional.of(OwnerHousingView.from(property, revision, upgrades,
                     assessment, zone, resetHour));
         }
         return Optional.of(new OwnerDeskData(property, revision, captured, residents(c, property),
@@ -174,7 +187,7 @@ public final class OwnerDeskRepository {
         UUID resident;
         String name;
         LocalDate last;
-        com.prosperitysmp.npc.town.PartnerPerks stored;
+        PartnerPerks stored;
         try (PreparedStatement ps = prepare(c, """
                 SELECT p.resident_id, r.name, p.last_active_day, p.fee_discount_pct, p.rank_bonus_points
                 FROM npc_partnerships p JOIN npc_resident_profiles r ON r.resident_id=p.resident_id
@@ -184,12 +197,12 @@ public final class OwnerDeskRepository {
             resident = Uuids.fromBytes(rs.getBytes("resident_id"));
             name = rs.getString("name");
             last = LocalDate.parse(rs.getString("last_active_day"));
-            stored = new com.prosperitysmp.npc.town.PartnerPerks(rs.getInt("fee_discount_pct"), rs.getInt("rank_bonus_points"));
+            stored = new PartnerPerks(rs.getInt("fee_discount_pct"), rs.getInt("rank_bonus_points"));
             require(!rs.next(), "two active partnerships");
-        } catch (IllegalArgumentException | java.time.DateTimeException invalid) {
+        } catch (IllegalArgumentException | DateTimeException invalid) {
             throw new SQLException("Invalid stored partnership", invalid);
         }
-        var perks = com.prosperitysmp.npc.town.PartnerPerks.effective(stored, config.configPerks().apply(resident));
+        var perks = PartnerPerks.effective(stored, config.configPerks().apply(resident));
         boolean rank = perks.rankBonusPoints() > 0 && config.rankLive();
         boolean top = false;
         if (rank) try (PreparedStatement ps = prepare(c, """
@@ -205,7 +218,7 @@ public final class OwnerDeskRepository {
 
     /** Today's active links in the same snapshot; empty for an owner alone in its group. */
     private Optional<OwnerDeskData.Linked> linked(Connection c, UUID owner, LocalDate day) throws SQLException {
-        int accounts = com.prosperitysmp.npc.economy.AccountLinkRepository.groupSize(c, owner, day);
+        int accounts = AccountLinkRepository.groupSize(c, owner, day);
         return accounts > 1 ? Optional.of(new OwnerDeskData.Linked(accounts, linkedLimitCents.getAsLong())) : Optional.empty();
     }
 
@@ -229,7 +242,7 @@ public final class OwnerDeskRepository {
     private static OwnerDeskData.Insurance insurance(Connection c, Property p, LocalDate day, Instant at)
             throws SQLException {
         var view = new InsuranceRepository().snapshot(c, p, at, day);
-        long premium = com.prosperitysmp.npc.formulas.PropertyFormulas.insurancePriceCents(p.capacity());
+        long premium = PropertyFormulas.insurancePriceCents(p.capacity());
         if (view.isEmpty()) return new OwnerDeskData.Insurance(premium, null, null, false, true);
         var term = view.get().receipt();
         return new OwnerDeskData.Insurance(premium, term.startDay(), term.endDayExclusive(), view.get().used(),
@@ -329,7 +342,8 @@ public final class OwnerDeskRepository {
                     case FAILED -> require(finalized != null && (paid == null || paid == 0), "invalid failure");
                     case PENDING, CLAIMED -> {
                         require(finalized == null && paid == null, "invalid unconfirmed receipt");
-                        if (state == EventState.PENDING) pending++; else review++;
+                        if (state == EventState.PENDING) pending++;
+                        else review++;
                     }
                     case AMBIGUOUS -> {
                         require(paid == null, "invalid ambiguous receipt");
@@ -366,7 +380,11 @@ public final class OwnerDeskRepository {
             }
             return ps;
         } catch (SQLException failure) {
-            try { ps.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+            try {
+                ps.close();
+            } catch (SQLException close) {
+                failure.addSuppressed(close);
+            }
             throw failure;
         }
     }

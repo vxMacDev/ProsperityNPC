@@ -12,10 +12,10 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * An immutable navigation graph for a district (§10.1): waypoint nodes with a
- * world position and semantic tags, plus directed, positively-weighted edges. A
- * graph is <em>derived from block material</em> by the scanner (map-change
- * resilient — nothing is pinned to hardcoded coordinates), then validated and
+ * An immutable navigation graph for a district: waypoint nodes with a world
+ * position and semantic tags, plus directed, positively-weighted edges. The
+ * scanner derives a graph from block material, so nothing is pinned to hardcoded
+ * coordinates and it survives map changes. The graph is then validated and
  * published. Pathfinding ({@link Dijkstra}) and validation ({@link NavGraphValidator})
  * operate purely on this structure with no world or database access.
  */

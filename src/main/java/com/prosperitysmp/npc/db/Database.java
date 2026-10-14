@@ -34,9 +34,9 @@ public final class Database implements AutoCloseable {
         cfg.setMaximumPoolSize(settings.poolSize());
         cfg.setMinimumIdle(1);
         cfg.setConnectionTimeout(settings.connectionTimeoutMs());
-        // SQL defaults/updates must store UTC in timezone-less DATETIME columns.
-        // No legacy rows are converted: populated databases with unknown timestamp
-        // provenance require an audit before deploying this session change.
+        // SQL defaults and updates must store UTC in timezone-less DATETIME columns.
+        // Existing rows are not converted, so a populated database with unknown
+        // timestamp provenance needs an audit before this setting is deployed.
         cfg.setConnectionInitSql("SET SESSION time_zone = '+00:00'");
         // Pool admission is not a JDBC/network deadline. A lost localhost peer must
         // not permanently occupy the single encounter worker (or the pool).

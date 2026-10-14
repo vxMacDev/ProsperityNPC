@@ -10,10 +10,10 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * The named residents this server runs with, read once at full startup. Built in: Mara Vale, Ellis Ward and Nico
- * Reed, with the same UUIDs as always. From residents.yml when residents.cast-file-enabled is on. Never empty, and
- * never half loaded: a rejected file gives the built-in three with source FILE_REJECTED. Immutable; passed in by
- * constructor, never held in a static.
+ * The named residents this server runs with, read once at full startup. By default these are the built-in three:
+ * Mara Vale, Ellis Ward and Nico Reed. With residents.cast-file-enabled on, the cast comes from residents.yml. It is
+ * never empty and never half loaded: a rejected file gives the built-in three with source FILE_REJECTED. Immutable,
+ * and passed in by constructor rather than held in a static.
  */
 public record ResidentCast(List<ResidentProfile> profiles, Map<UUID, ResidentLines> lines, Source source) {
     public enum Source { BUILT_IN, FILE, FILE_REJECTED }
@@ -45,7 +45,7 @@ public record ResidentCast(List<ResidentProfile> profiles, Map<UUID, ResidentLin
         return new ResidentCast(ResidentCatalogue.betaCast(), Map.of(), Source.FILE_REJECTED);
     }
 
-    /** Same match as dev.58: the first word of the name, equalsIgnoreCase. */
+    /** Matches the first word of the name, ignoring case (equalsIgnoreCase). */
     public Optional<ResidentProfile> byFirstName(String name) {
         if (name == null) return Optional.empty();
         return profiles.stream().filter(p -> p.name().split(" ", 2)[0].equalsIgnoreCase(name)).findFirst();

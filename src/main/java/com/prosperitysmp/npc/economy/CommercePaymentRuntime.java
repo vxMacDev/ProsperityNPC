@@ -1,12 +1,14 @@
 package com.prosperitysmp.npc.economy;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import com.prosperitysmp.npc.alert.StaffAlerts;
 import com.prosperitysmp.npc.clock.EconomyClock;
 import com.prosperitysmp.npc.commerce.CommerceCatalogue;
 import com.prosperitysmp.npc.commerce.CommerceOrder;
 import com.prosperitysmp.npc.commerce.CommerceOrderRepository;
 import com.prosperitysmp.npc.commerce.CommercePriceBook;
 import com.prosperitysmp.npc.db.Database;
+import java.util.concurrent.RejectedExecutionException;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -45,13 +47,17 @@ public final class CommercePaymentRuntime {
     private boolean ready, busy, held;
 
     public CommercePaymentRuntime(ProsperityNpcPlugin plugin, CommercePriceBook prices, EconomyClock days) {
-        main(); this.plugin = Objects.requireNonNull(plugin); this.prices = Objects.requireNonNull(prices);
+        main();
+        this.plugin = Objects.requireNonNull(plugin);
+        this.prices = Objects.requireNonNull(prices);
         this.days = Objects.requireNonNull(days);
         reserve = ReserveAccount.fromConfig(plugin.getConfig());
         database = Objects.requireNonNull(plugin.database());
         orders = new CommerceOrderRepository(database, reserve);
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(16), r -> {
-            Thread t = new Thread(r, "npc-commerce-payment"); t.setDaemon(true); return t;
+            Thread t = new Thread(r, "npc-commerce-payment");
+            t.setDaemon(true);
+            return t;
         }, new ThreadPoolExecutor.AbortPolicy()) {
             @Override protected void terminated() { drained.complete(null); }
         };
@@ -59,7 +65,11 @@ public final class CommercePaymentRuntime {
         try {
             plugin.trackDatabaseWorker(worker);
             scheduled = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-                for (int i = 0; i < 8; i++) { Runnable next = completions.poll(); if (next == null) break; next.run(); }
+                for (int i = 0; i < 8; i++) {
+                    Runnable next = completions.poll();
+                    if (next == null) break;
+                    next.run();
+                }
             }, 1, 1);
             ticker = scheduled;
             CompletableFuture.supplyAsync(() -> {
@@ -80,9 +90,15 @@ public final class CommercePaymentRuntime {
                         }
                     }
                 } catch (Exception failure) { return false; }
-            }, worker).thenAccept(clear -> post(() -> { ready = clear; held = !clear; }));
+            }, worker).thenAccept(clear -> post(() -> {
+                ready = clear;
+                held = !clear;
+            }));
         } catch (RuntimeException | Error failure) {
-            closed = true; if (scheduled != null) scheduled.cancel(); worker.shutdown(); throw failure;
+            closed = true;
+            if (scheduled != null) scheduled.cancel();
+            worker.shutdown();
+            throw failure;
         }
     }
 
@@ -95,39 +111,66 @@ public final class CommercePaymentRuntime {
     /**
      * feeDiscountPct is the partner rate the caller read on its worker (town.partnerships; 0 otherwise). It only lowers
      * the service fee in the quote check below; the material part and every cap are unchanged. With 0 and no check
-     * this is exactly the legacy request. A rate above 0 needs partnerCheck, which re-checks that rate against the
+     * this is the plain request above. A rate above 0 needs partnerCheck, which re-checks that rate against the
      * current partnership inside the debit-intent transaction; when it fails the order is cancelled there and the
      * reply is EXPIRED with nothing moved.
      */
     public boolean request(Player player, CommerceOrder order, CommerceCatalogue.Entry entry, int feeDiscountPct,
                            CommerceOrderRepository.DebitCheck partnerCheck, BooleanSupplier authorized, Consumer<Result> reply) {
-        main(); Objects.requireNonNull(player); Objects.requireNonNull(order); Objects.requireNonNull(entry);
-        Objects.requireNonNull(authorized); Objects.requireNonNull(reply);
+        main();
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(order);
+        Objects.requireNonNull(entry);
+        Objects.requireNonNull(authorized);
+        Objects.requireNonNull(reply);
         if (feeDiscountPct > 0 && partnerCheck == null) {
-            reply.accept(new Result(Status.UNAVAILABLE, null)); return false;
+            reply.accept(new Result(Status.UNAVAILABLE, null));
+            return false;
         }
         if (!available() || busy || !actor(player, order, entry, feeDiscountPct, authorized) || reserve.equals(order.playerId())) {
-            reply.accept(new Result(busy ? Status.BUSY : Status.UNAVAILABLE, null)); return false;
+            reply.accept(new Result(busy ? Status.BUSY : Status.UNAVAILABLE, null));
+            return false;
         }
         var pinned = registration();
         final Path jar;
         try {
             if (pinned == null || !pinned.getPlugin().isEnabled() || !pinned.getProvider().isEnabled()) {
-                reply.accept(new Result(Status.UNAVAILABLE, null)); return false;
+                reply.accept(new Result(Status.UNAVAILABLE, null));
+                return false;
             }
             long balance = TransferProof.toCents(pinned.getProvider().getBalance(player)).orElseThrow();
-            if (balance < order.costCents()) { reply.accept(new Result(Status.INSUFFICIENT_FUNDS, null)); return false; }
+            if (balance < order.costCents()) {
+                reply.accept(new Result(Status.INSUFFICIENT_FUNDS, null));
+                return false;
+            }
             jar = Path.of(pinned.getProvider().getClass().getProtectionDomain().getCodeSource().getLocation().toURI());
-        } catch (Exception unavailable) { reply.accept(new Result(Status.UNAVAILABLE, null)); return false; }
+        } catch (Exception unavailable) {
+            reply.accept(new Result(Status.UNAVAILABLE, null));
+            return false;
+        }
         final FinancialFence.Lease lease;
         try { lease = plugin.financialFence().acquire("commerce:" + order.orderId()); }
-        catch (RuntimeException occupied) { reply.accept(new Result(Status.BUSY, null)); return false; }
+        catch (RuntimeException occupied) {
+            reply.accept(new Result(Status.BUSY, null));
+            return false;
+        }
         final CommerceOrderRepository.Budgets limits;
-        try { limits = limits(); } catch (RuntimeException invalid) { lease.releaseVerified(); reply.accept(new Result(Status.UNAVAILABLE, null)); return false; }
+        try {
+            limits = limits();
+        } catch (RuntimeException invalid) {
+            lease.releaseVerified();
+            reply.accept(new Result(Status.UNAVAILABLE, null));
+            return false;
+        }
         busy = true;
         final CompletableFuture<String> fingerprint;
         try { fingerprint = CompletableFuture.supplyAsync(() -> UtilityPaymentRuntime.hash(jar), worker); }
-        catch (RuntimeException rejected) { busy = false; lease.releaseVerified(); reply.accept(new Result(Status.BUSY, null)); return false; }
+        catch (RuntimeException rejected) {
+            busy = false;
+            lease.releaseVerified();
+            reply.accept(new Result(Status.BUSY, null));
+            return false;
+        }
         fingerprint.thenComposeAsync(sha -> {
             if (!actor(player, order, entry, feeDiscountPct, authorized)) {
                 return CompletableFuture.completedFuture(new Result(Status.CANCELLED, null));
@@ -159,7 +202,8 @@ public final class CommercePaymentRuntime {
                             catch (Exception failure) { throw new IllegalStateException("Commerce credit intent unconfirmed"); }
                         }, worker).thenComposeAsync(credit -> {
                             if (!credit.newlyStarted()) return completed(credit.receipt());
-                            var credited = observe(player, order, entry, feeDiscountPct, authorized, pinned, lease, TransferProof.Leg.CREDIT);
+                            var credited = observe(player, order, entry, feeDiscountPct, authorized, pinned, lease,
+                                    TransferProof.Leg.CREDIT);
                             Instant funded = Instant.now();
                             return CompletableFuture.supplyAsync(() -> {
                                 try {
@@ -181,17 +225,22 @@ public final class CommercePaymentRuntime {
                 if (actual.status() == Status.HELD) {
                     held = true;
                     plugin.getLogger().warning("Commerce held for recovery; order " + order.orderId());
-                    plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "order-" + order.orderId(),
+                    plugin.alerts().raise(StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "order-" + order.orderId(),
                             "Commerce payment held for review. Order " + order.orderId() + ".");
-                } else { lease.releaseVerified(); busy = false; }
+                } else {
+                    lease.releaseVerified();
+                    busy = false;
+                }
                 if (!closed && player.isOnline() && Bukkit.getPlayer(player.getUniqueId()) == player) reply.accept(actual);
-            }); } catch (RuntimeException stopping) { /* Journal intent survives shutdown; no further provider call. */ }
+            });
+            } catch (RuntimeException stopping) { /* Journal intent survives shutdown; no further provider call. */ }
         });
         return true;
     }
 
     private TransferProof.Observation observe(Player player, CommerceOrder order, CommerceCatalogue.Entry entry,
-            int feeDiscountPct, BooleanSupplier authorized, RegisteredServiceProvider<Economy> pinned, FinancialFence.Lease lease, TransferProof.Leg leg) {
+            int feeDiscountPct, BooleanSupplier authorized, RegisteredServiceProvider<Economy> pinned, FinancialFence.Lease lease,
+            TransferProof.Leg leg) {
         var observation = new VaultLegObservation(pinned.getProvider(), () -> {
             provider(pinned, lease);
             // Completing a verified debit does not depend on the player staying in the menu or online.
@@ -204,7 +253,8 @@ public final class CommercePaymentRuntime {
     }
 
     private void provider(RegisteredServiceProvider<Economy> pinned, FinancialFence.Lease lease) {
-        main(); lease.validate();
+        main();
+        lease.validate();
         if (closed || !plugin.isEnabled() || registration() != pinned || !pinned.getPlugin().isEnabled()
                 || !pinned.getProvider().isEnabled() || !reserve.toString().equals(plugin.getConfig().getString("centralbank.uuid")))
             throw new IllegalStateException("Commerce provider unavailable");
@@ -218,7 +268,8 @@ public final class CommercePaymentRuntime {
                     && days.today().equals(order.economyDay()) && authorized.getAsBoolean() && unit.isPresent()
                     && entry.id().equals(order.catalogueId()) && entry.source() == order.source()
                     && entry.material().equals(order.material()) && entry.quantity() == order.quantity()
-                    && entry.delaySeconds() == order.outputDelaySeconds() && entry.cost(unit.getAsLong(), feeDiscountPct) <= order.costCents();
+                    && entry.delaySeconds() == order.outputDelaySeconds()
+                    && entry.cost(unit.getAsLong(), feeDiscountPct) <= order.costCents();
         } catch (RuntimeException changed) { return false; }
     }
     public boolean available() {
@@ -252,7 +303,9 @@ public final class CommercePaymentRuntime {
             default -> Status.HELD;
         }, receipt);
     }
-    private RegisteredServiceProvider<Economy> registration() { return plugin.getServer().getServicesManager().getRegistration(Economy.class); }
+    private RegisteredServiceProvider<Economy> registration() {
+        return plugin.getServer().getServicesManager().getRegistration(Economy.class);
+    }
     private static boolean knownLimit(Throwable failure) {
         for (Throwable next = failure; next != null; next = next.getCause()) {
             if (next.getSuppressed().length != 0) return false;
@@ -261,10 +314,18 @@ public final class CommercePaymentRuntime {
         return false;
     }
     private synchronized void post(Runnable callback) {
-        if (closed || !completions.offer(callback)) throw new java.util.concurrent.RejectedExecutionException("Commerce main queue unavailable");
+        if (closed || !completions.offer(callback)) throw new RejectedExecutionException("Commerce main queue unavailable");
     }
     public CompletionStage<Void> closeAsync() {
-        main(); closed = true; ready = false; ticker.cancel(); completions.clear(); worker.shutdown(); return drained.minimalCompletionStage();
+        main();
+        closed = true;
+        ready = false;
+        ticker.cancel();
+        completions.clear();
+        worker.shutdown();
+        return drained.minimalCompletionStage();
     }
-    private static void main() { if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Commerce settlement requires main thread"); }
+    private static void main() {
+        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Commerce settlement requires main thread");
+    }
 }

@@ -11,7 +11,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -20,7 +22,7 @@ public final class HousingDecisionRepository {
     public record Options(Instant evidenceFrom, int retentionHorizonDays, HousingMoveRequest.Policy admissionPolicy,
                           HousingDecisionPlan.ColdStartPolicy coldStartPolicy, int maxOwners,
                           int maxCases, Duration maxReadTime, boolean premiumEnabled,
-                          boolean advertisingRankEnabled, java.util.Map<UUID, Integer> partnerRankCaps) {
+                          boolean advertisingRankEnabled, Map<UUID, Integer> partnerRankCaps) {
         /**
          * partnerRankCaps: town.partnerships rank points per resident from the current config, read live like
          * advertisingRankEnabled. Empty (partnerships, the rank bonus or advertising rank off) reads nothing and adds
@@ -30,21 +32,24 @@ public final class HousingDecisionRepository {
                        HousingDecisionPlan.ColdStartPolicy coldStartPolicy, int maxOwners, int maxCases,
                        Duration maxReadTime, boolean premiumEnabled, boolean advertisingRankEnabled) {
             this(evidenceFrom, retentionHorizonDays, admissionPolicy, coldStartPolicy, maxOwners, maxCases, maxReadTime,
-                    premiumEnabled, advertisingRankEnabled, java.util.Map.of());
+                    premiumEnabled, advertisingRankEnabled, Map.of());
         }
         public Options(Instant evidenceFrom, int retentionHorizonDays, HousingMoveRequest.Policy admissionPolicy,
                        HousingDecisionPlan.ColdStartPolicy coldStartPolicy, int maxOwners, int maxCases,
                        Duration maxReadTime, boolean premiumEnabled) {
-            this(evidenceFrom, retentionHorizonDays, admissionPolicy, coldStartPolicy, maxOwners, maxCases, maxReadTime, premiumEnabled, false);
+            this(evidenceFrom, retentionHorizonDays, admissionPolicy, coldStartPolicy, maxOwners, maxCases, maxReadTime, premiumEnabled,
+                    false);
         }
         public Options(Instant evidenceFrom, int retentionHorizonDays, HousingMoveRequest.Policy admissionPolicy,
                        HousingDecisionPlan.ColdStartPolicy coldStartPolicy, int maxOwners, int maxCases, Duration maxReadTime) {
             this(evidenceFrom, retentionHorizonDays, admissionPolicy, coldStartPolicy, maxOwners, maxCases, maxReadTime, false);
         }
         public Options {
-            Objects.requireNonNull(evidenceFrom); Objects.requireNonNull(admissionPolicy); Objects.requireNonNull(coldStartPolicy);
+            Objects.requireNonNull(evidenceFrom);
+            Objects.requireNonNull(admissionPolicy);
+            Objects.requireNonNull(coldStartPolicy);
             Objects.requireNonNull(maxReadTime);
-            partnerRankCaps = java.util.Map.copyOf(partnerRankCaps);
+            partnerRankCaps = Map.copyOf(partnerRankCaps);
             if (partnerRankCaps.values().stream().anyMatch(points -> points < 1 || points > 4))
                 throw new IllegalArgumentException("Invalid partner rank points");
             if (retentionHorizonDays < 1 || retentionHorizonDays > 30 || maxOwners < 1 || maxOwners > 512
@@ -70,8 +75,10 @@ public final class HousingDecisionRepository {
     }
 
     public HousingDecisionRepository(Database database, Clock clock, ZoneId zone, int resetHour, int evictedSlotLockDays) {
-        this.database = Objects.requireNonNull(database); this.clock = Objects.requireNonNull(clock);
-        this.zone = Objects.requireNonNull(zone); this.resetHour = resetHour;
+        this.database = Objects.requireNonNull(database);
+        this.clock = Objects.requireNonNull(clock);
+        this.zone = Objects.requireNonNull(zone);
+        this.resetHour = resetHour;
         days = new EconomyClock(clock, zone, resetHour);
         market = new HousingMarketRepository(database, clock, zone, resetHour, evictedSlotLockDays);
         services = new ServiceAssessmentRepository(database, clock, zone, resetHour);
@@ -79,7 +86,8 @@ public final class HousingDecisionRepository {
 
     /** Owner budget is a rejection threshold, never permission to rank only an arbitrary prefix. */
     public HousingDecisionPlan read(LocalDate day, Options options) throws SQLException {
-        Objects.requireNonNull(day); Objects.requireNonNull(options);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(options);
         long started = System.nanoTime();
         checkBudget(started, options);
         try (ReadSnapshot shared = ReadSnapshot.open(database, clock)) {
@@ -88,11 +96,11 @@ public final class HousingDecisionRepository {
             if (window.isNegative() || window.isZero() || window.compareTo(Duration.ofDays(30)) > 0)
                 throw new SQLException("Housing evidence requires a positive <=30-day window");
             // The partner bonus needs advertising rank on too, so it can never be the only rank lever.
-            var partnerCaps = options.advertisingRankEnabled() ? options.partnerRankCaps() : java.util.Map.<UUID, Integer>of();
+            var partnerCaps = options.advertisingRankEnabled() ? options.partnerRankCaps() : Map.<UUID, Integer>of();
             HousingMarketSnapshot snapshot = market.read(shared, day, options.admissionPolicy(), partnerCaps);
             checkBudget(started, options);
             var owners = snapshot.homes().stream().map(HousingMarketSnapshot.Home::ownerId).distinct()
-                    .sorted(java.util.Comparator.comparing(UUID::toString)).toList();
+                    .sorted(Comparator.comparing(UUID::toString)).toList();
             if (owners.size() > options.maxOwners()) throw new SQLException("Housing service owner budget exceeded");
             var evidence = new LinkedHashMap<UUID, ServiceAssessment>();
             int caseCount = 0;

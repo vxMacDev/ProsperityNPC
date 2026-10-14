@@ -5,7 +5,10 @@ import java.util.Objects;
 /** Observed presentation state, not evidence of employment, home ownership or economic activity. */
 public record ResidentActivity(State state, ResidentRoutine.Activity intended) {
     public enum State { PREVIEW, WALKING, AT_STOP, PAUSED, WAITING_ROUTE }
-    public ResidentActivity { Objects.requireNonNull(state); Objects.requireNonNull(intended); }
+    public ResidentActivity {
+        Objects.requireNonNull(state);
+        Objects.requireNonNull(intended);
+    }
 
     public static State observed(boolean connected, boolean walking, boolean interruptedWalk, boolean paused, boolean atStop) {
         return !connected ? State.PREVIEW : paused && interruptedWalk ? State.PAUSED : walking ? State.WALKING

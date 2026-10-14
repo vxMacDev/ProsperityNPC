@@ -8,12 +8,12 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Structural validation for a draft navigation graph (§10.1). A material scan is
- * "a seed, not unquestioned truth", so a draft must pass validation before an
- * admin may publish it. This checks graph <em>integrity</em> (no dangling edges,
- * self-loops, or non-positive costs), <em>reachability</em> (orphans, disconnected
- * districts), and required semantic tags — not the per-block walkability rules,
- * which the scanner enforces while building nodes.
+ * Structural validation for a draft navigation graph. A scan is only a starting
+ * point, so a draft must pass validation before an admin may publish it. This
+ * checks graph <em>integrity</em> (no dangling edges, self-loops, or non-positive
+ * costs), <em>reachability</em> (orphans, disconnected districts), and required
+ * semantic tags. It does not check per-block walkability, which the scanner
+ * enforces while building nodes.
  */
 public final class NavGraphValidator {
 

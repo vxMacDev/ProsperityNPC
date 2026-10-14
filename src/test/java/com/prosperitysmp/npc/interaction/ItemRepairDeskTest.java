@@ -14,7 +14,7 @@ import java.util.UUID;
 import java.util.stream.IntStream;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Off: the desk and the Bedrock form read exactly as before. On: one note line and a three-button choice. */
+/** Off: the desk and the Bedrock form show the same text as without item repairs. On: one note line and a three-button choice. */
 class ItemRepairDeskTest {
     private static final Instant AT = Instant.parse("2026-09-08T18:00:00Z");
     private static final LocalDate DAY = LocalDate.of(2026, 9, 8);
@@ -52,7 +52,7 @@ class ItemRepairDeskTest {
                 "item-repairs off, runtime running for earlier hand-ins, items waiting: the line shows");
         assertEquals(List.of(), OwnerDeskMenu.itemRepairLines(false, true, waiting, new UUID(9, 8)), "nothing waiting for this owner");
         assertEquals(List.of(), OwnerDeskMenu.itemRepairLines(false, false, id -> { throw new AssertionError("asked while not running"); }, owner),
-                "off with no runtime: no lines, as before");
+                "flag off with no runtime: no lines");
         assertEquals(List.of(ItemRepairCopy.DESK_NOTE), OwnerDeskMenu.itemRepairLines(true, false, id -> { throw new AssertionError(); }, owner));
         assertEquals(List.of(ItemRepairCopy.DESK_NOTE, ItemRepairCopy.ITEMS_TO_COLLECT), OwnerDeskMenu.itemRepairLines(true, true, waiting, owner));
     }
@@ -77,7 +77,7 @@ class ItemRepairDeskTest {
         }
     }
 
-    /** Every dev.59 desk addition at once, at its longest: the Bedrock form still fits 4096 characters and 12 buttons. */
+    /** Every optional desk line at once, at its longest: the Bedrock form still fits 4096 characters and 12 buttons. */
     @Test void worstCaseOwnerFormWithEveryFeatureStillFits() {
         var base = OwnerDeskMenuTest.housingData(false);
         var residents = base.residents().stream().map(r -> new OwnerDeskData.Resident(r.id(), "N".repeat(64), r.slot(), r.tier(),
@@ -104,7 +104,7 @@ class ItemRepairDeskTest {
         String without = BedrockNpcUi.ownerBody(data, true);
         String body = BedrockNpcUi.ownerBody(data, true, OwnerDeskMenu.itemRepairLines(true, true));
         assertTrue(body.contains(data.pendingRent().orElseThrow().line()) && body.contains(data.linked().orElseThrow().line()),
-                "positive control: the rent change and linked lines are in the body");
+                "the rent change and linked lines are in the body");
         assertTrue(body.contains(data.partner().orElseThrow().line()), "the partner line is in the body");
         assertEquals(without.length() + ("\n" + ItemRepairCopy.DESK_NOTE + "\n" + ItemRepairCopy.ITEMS_TO_COLLECT).length(), body.length(),
                 "item repairs add exactly their two lines");

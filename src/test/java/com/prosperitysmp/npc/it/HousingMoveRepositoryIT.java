@@ -551,7 +551,7 @@ class HousingMoveRepositoryIT {
         var sends=new com.prosperitysmp.npc.publication.ChronicleSendIntentRepository(database,clock);
         var intent=sends.reserve(held,generation,destination).orElseThrow();sends.uncertain(intent);
         // MariaDB4j's isolated server uses skip-grant-tables. This exercises stdin/SQL
-        // binding, not database authentication (separately checked on the real VPS).
+        // binding, not database authentication.
         var body=new com.google.gson.JsonObject();body.addProperty("id","789");body.addProperty("webhook_id","123");body.addProperty("channel_id","456");
         body.addProperty("content","");body.addProperty("tts",false);body.addProperty("mention_everyone",false);
         for(String field:List.of("mentions","mention_roles","attachments"))body.add(field,new com.google.gson.JsonArray());

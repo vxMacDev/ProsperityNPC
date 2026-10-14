@@ -301,13 +301,13 @@ class RentChangeDelayIT {
         assertFalse(pending.line().contains("—"));
         assertEquals(1000, shown.property().askingRentCents());
         assertTrue(new OwnerDeskRepository(db, clock, ZoneOffset.UTC, 4).read(WORLD, p.regionId(), owner, DAY)
-                .orElseThrow().pendingRent().isEmpty(), "flag off: desk unchanged");
+                .orElseThrow().pendingRent().isEmpty(), "flag off: no pending line");
         repo.applyDueRentChanges(DAY.plusDays(2), 512);
         assertTrue(new OwnerDeskRepository(db, clock, ZoneOffset.UTC, 4, () -> true)
                 .read(WORLD, p.regionId(), owner, DAY).orElseThrow().pendingRent().isEmpty());
     }
 
-    // --- Codex P2: a stale schedule must never overwrite a newer immediate rent. ---
+    // --- A stale schedule must never overwrite a newer immediate rent. ---
 
     private long revision(Property p) throws SQLException {
         return ((Number) scalar("SELECT row_version FROM npc_properties WHERE property_id=?", p.propertyId())).longValue();
@@ -322,8 +322,8 @@ class RentChangeDelayIT {
         tenant(p, 0);
         var scheduled = repo.changeAskingRent(p, 1200, DAY, 2);
         assertEquals(Outcome.SCHEDULED, scheduled.outcome());
-        assertEquals(1, pendingColumnsSet(p), "positive control: the schedule is visible in SQL");
-        // Delay now 0 and the service believes nothing is pending (the old pendingAware=false path).
+        assertEquals(1, pendingColumnsSet(p), "the schedule is visible in SQL");
+        // Delay 0 with a schedule pending in SQL: no caller flag tells the repository about it.
         var now = repo.changeAskingRent(scheduled.property(), 900, DAY, 0);
         assertEquals(Outcome.APPLIED_NOW, now.outcome());
         assertEquals(900, asking(p));
@@ -368,11 +368,11 @@ class RentChangeDelayIT {
         var change = repo.changeAskingRent(p, 1200, DAY, 0);
         assertEquals(Outcome.APPLIED_NOW, change.outcome());
         assertEquals(p.withAskingRent(1200), change.property(), "only asking rent changed");
-        assertEquals(rev + 1, revision(p), "one write, row_version +1, as before V31");
+        assertEquals(rev + 1, revision(p), "one write, row_version +1");
         assertEquals(0, count("npc_rent_changes"));
         assertEquals(0, count("npc_rent_change_notices"));
         assertEquals(0, pendingColumnsSet(p));
-        // Same for the public setter, and refusals are unchanged.
+        // Same for the public setter, and stale or out-of-range requests still refuse.
         assertEquals(p.withAskingRent(1300), repo.setAskingRentExpected(change.property(), 1300));
         assertEquals(rev + 2, revision(p));
         assertThrows(PropertyRepository.ResumeRefused.class, () -> repo.changeAskingRent(p, 1100, DAY, 0), "stale snapshot");
@@ -384,9 +384,9 @@ class RentChangeDelayIT {
     @Test void applierReplacesInsteadOfOverwritingANewerRent() throws Exception {
         Property p = property(1000, 1000);
         var stale = repo.changeAskingRent(p, 1200, DAY, 1);
-        // Simulates a rent written by the pre-fix path: asking rent moves, pending columns stay.
+        // A rent written by the legacy setter: asking rent moves, pending columns stay.
         repo.setAskingRent(p.propertyId(), 1100);
-        assertEquals(1, pendingColumnsSet(p), "positive control: the stale schedule is still visible");
+        assertEquals(1, pendingColumnsSet(p), "the stale schedule is still visible");
         var due = repo.applyDueRentChanges(DAY.plusDays(3), 512);
         assertEquals(1, due.changes().size());
         var r = due.changes().getFirst();

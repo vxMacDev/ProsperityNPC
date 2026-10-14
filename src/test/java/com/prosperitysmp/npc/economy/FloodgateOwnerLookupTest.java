@@ -57,7 +57,7 @@ class FloodgateOwnerLookupTest {
         assertEquals(0, playerLinkCalls.get());
         assertEquals(0, linkCalls.get());
         assertTrue(saved.isEmpty() && info.isEmpty());
-        // Positive control: on, the same owners are asked.
+        // With the sub-flag on, the same owners are asked, so the zero counts above are real.
         assertEquals(2, lookup.start(true, DAY, List.of(bedrock(1), bedrock(2)), 50, saver));
         assertEquals(2, linkCalls.get());
     }

@@ -8,6 +8,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Objects;
 import java.util.UUID;
 
 /** Data access for property upgrades (ADVERTISING / FACILITIES, levels 0-3). */
@@ -41,11 +42,13 @@ public final class UpgradeRepository {
 
     /** Operational benefit only; installed-level billing and sequential upgrade checks remain separate. */
     public int effectiveLevel(UUID propertyId, UpgradeType type) throws SQLException {
-        java.util.Objects.requireNonNull(propertyId); java.util.Objects.requireNonNull(type);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(type);
         try (Connection c = database.getConnection(); PreparedStatement ps = c.prepareStatement(
                 "SELECT level,disabled_incident_id FROM npc_upgrades WHERE property_id=? AND upgrade_type=?")) {
             ps.setQueryTimeout(5);
-            ps.setBytes(1, Uuids.toBytes(propertyId)); ps.setString(2, type.name());
+            ps.setBytes(1, Uuids.toBytes(propertyId));
+            ps.setString(2, type.name());
             try (ResultSet rs = ps.executeQuery()) {
                 checkWarnings(c, ps, rs);
                 boolean present = rs.next();

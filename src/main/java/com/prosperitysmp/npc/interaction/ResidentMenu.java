@@ -17,8 +17,10 @@ import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.BooleanSupplier;
 
 /** Java chest presentation; items never represent an entitlement or a payment. */
@@ -57,7 +59,7 @@ final class ResidentMenu implements Listener {
     }
 
     private static void populate(View view, EncounterView data) {
-        List<String> body = new java.util.ArrayList<>();
+        List<String> body = new ArrayList<>();
         body.add(data.occupation() + " | " + data.familiarity());
         body.add("");
         body.addAll(EncounterView.wrap(data.line(), 38));
@@ -80,7 +82,7 @@ final class ResidentMenu implements Listener {
             view.inventory.setItem(18 + index * 3, item(Material.PAPER, data.actions().get(index).label(), List.of()));
     }
 
-    void closeOwned(Player player, java.util.UUID token) {
+    void closeOwned(Player player, UUID token) {
         var inventory = player.getOpenInventory().getTopInventory();
         if (inventory.getHolder() instanceof View view && view.ticket.token().equals(token)) {
             inventory.clear();

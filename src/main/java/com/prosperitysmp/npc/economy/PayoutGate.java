@@ -6,7 +6,7 @@ import com.prosperitysmp.npc.formulas.Funding;
  * Pure enforcement of the safe cash envelope for a single TO_PUBLIC (faucet)
  * payout. Every constraint is applied as a hard ceiling; the result is the most
  * that may be paid and is never negative. FROM_PUBLIC sinks do not pass through
- * this gate — they are unbounded reductions in liquidity.
+ * this gate, because they only ever reduce liquidity.
  */
 public final class PayoutGate {
 

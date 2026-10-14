@@ -24,12 +24,17 @@ import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.sql.SQLException;
+import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.Optional;
@@ -37,21 +42,20 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
 
 /**
- * Renders tenant avatars on demand (§10.2) and walks them along the district's
- * published nav graph. It runs entirely off a repeating task and READS simulation
- * state only — rendering is cosmetic and can never affect economy, occupancy, or
- * settlement. Selection grants at most {@code max-per-viewer} slots per viewer;
- * the global cap includes debug avatars and grace-period survivors. This is not
- * per-player packet visibility filtering. SQL runs on a single read worker.
+ * Renders tenant avatars on demand and walks them along the district's published nav graph. It runs off a
+ * repeating task and only reads simulation state, so rendering never affects economy, occupancy or settlement.
+ * Each viewer gets at most {@code max-per-viewer} slots, and the global cap includes debug avatars and
+ * grace-period survivors. This is not per-player packet visibility filtering. SQL runs on a single read worker.
  *
- * <p>Walking: {@link Dijkstra} chooses a node path across the graph and the avatar
- * is driven one edge at a time; after {@code max-fails} edge attempts it despawns
- * and the simulation simply continues abstractly.
+ * <p>Walking: {@link Dijkstra} chooses a node path and the avatar is driven one edge at a time. After
+ * {@code max-fails} failed edge attempts it despawns and the simulation continues abstractly.
  */
 public final class RenderManager {
 
@@ -64,8 +68,8 @@ public final class RenderManager {
 
     record GraphKey(UUID worldId, String region) {
         GraphKey {
-            // WG ids are case-insensitive; V1's region lookup also uses a CI collation.
-            region = region.toLowerCase(java.util.Locale.ROOT);
+            // WorldGuard region ids are case-insensitive, and so are the region_id columns (utf8mb4_unicode_ci).
+            region = region.toLowerCase(Locale.ROOT);
         }
     }
     record Candidate(Property property, String name, NavGraph graph, ResidentProfile profile, CivicPlacement civic) {
@@ -92,7 +96,7 @@ public final class RenderManager {
                     new GraphKey(c.worldId(), c.district())));
             Map<GraphKey, NavGraph> keptGraphs = new HashMap<>(graphs);
             keptGraphs.remove(changed);
-            Set<GraphKey> keptChecked = new java.util.HashSet<>(checked);
+            Set<GraphKey> keptChecked = new HashSet<>(checked);
             keptChecked.remove(changed);
             return new Snapshot(keptCandidates, keptGraphs, keptChecked);
         }
@@ -105,7 +109,7 @@ public final class RenderManager {
         GraphKey key;
     }
 
-    /** What we need to (re)spawn + walk one tenant avatar. */
+    /** What is needed to spawn and walk one tenant avatar. */
     private static final class Ctx {
         Property property;
         CivicPlacement civic;
@@ -189,8 +193,8 @@ public final class RenderManager {
         this.navGraphs = navGraphs;
         this.citizens = citizens;
         this.residents = residents;
-        this.appearances = java.util.Objects.requireNonNull(appearances);
-        this.civicPlacements = java.util.Objects.requireNonNull(civicPlacements);
+        this.appearances = Objects.requireNonNull(appearances);
+        this.civicPlacements = Objects.requireNonNull(civicPlacements);
         // Read once, like the session idle limit: restart after changing. Not re-read on /npcadmin reload.
         this.pausePolicy = ConversationPause.Policy.of(
                 plugin.getConfig().getBoolean("ux.conversation-sliding-deadline", false),
@@ -273,7 +277,7 @@ public final class RenderManager {
     public Set<UUID> activeResidentIds() {
         CitizensAdapter.requireMainThread();
         return rendered.entrySet().stream().filter(e -> !e.getValue().debug || e.getValue().encounterPreview)
-                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                .map(Map.Entry::getKey).collect(Collectors.toUnmodifiableSet());
     }
 
     /** Stable identity hook only. Interaction/schedules remain owned by the resident layer. */
@@ -301,7 +305,7 @@ public final class RenderManager {
         properties.getEnrolled().forEach(property -> current.put(property.propertyId(), property));
         return snapshot.candidates().entrySet().stream()
                 .filter(entry -> worldId.equals(entry.getValue().worldId()) && bindingCurrent(entry.getValue(), current))
-                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                .map(Map.Entry::getKey).collect(Collectors.toUnmodifiableSet());
     }
 
     /** An authored public meeting point, never a live home/private-work location. */
@@ -321,7 +325,7 @@ public final class RenderManager {
         if (!routableResidents(worldId).contains(residentId)) return Set.of();
         Candidate candidate = snapshots.value(now()).candidates().get(residentId);
         return Set.of("market", "leisure").stream().filter(tag -> candidate.graph().nodes().stream()
-                .anyMatch(node -> node.hasTag(tag))).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                .anyMatch(node -> node.hasTag(tag))).collect(Collectors.toUnmodifiableSet());
     }
 
     public Optional<Location> publicStop(UUID residentId, UUID worldId, String tag) {
@@ -353,7 +357,7 @@ public final class RenderManager {
                 .map(Map.Entry::getKey).findFirst();
     }
 
-    /** DEV-only authored cast preview; shares the real registry, identity mapping and global cap. */
+    /** Staff-only authored resident preview, behind the beta flags; shares the real registry, identity mapping and global cap. */
     public String previewResident(Player owner, ResidentProfile profile, String district) {
         CitizensAdapter.requireMainThread();
         if (stopped || !previewEnabled() || !owner.isOnline() || !owner.hasPermission("prosperitynpc.admin")) {
@@ -386,7 +390,8 @@ public final class RenderManager {
                 current == null ? null : current.getWorld().getUID(), current == null ? null : CitizensAdapter.vec(current));
         if (eligibility == PreviewRequests.Eligibility.REVOKED) return "Resident preview cancelled: access is unavailable.";
         if (eligibility == PreviewRequests.Eligibility.EXPIRED) return "The visit could not be prepared in time. Please try again later.";
-        if (eligibility == PreviewRequests.Eligibility.MOVED) return "Preview cancelled because you moved. Request it again where you want to meet.";
+        if (eligibility == PreviewRequests.Eligibility.MOVED)
+            return "Preview cancelled because you moved. Request it again where you want to meet.";
         UUID residentId = request.profile().id();
         String name = request.profile().name();
         if (rendered.containsKey(residentId)) return "That resident already has an active avatar.";
@@ -454,7 +459,7 @@ public final class RenderManager {
     /**
      * Reading a native form must not make the resident walk out of authorization range. With longer conversations
      * on, this is also the renewal entry point for admitted choices and actions, up to the shared cap. A premium
-     * relocation walk never renews, so its 10 minute walk deadline keeps today's margin.
+     * relocation walk never renews, so its 10 minute walk deadline is never extended.
      */
     public void acknowledge(UUID residentId, Player visitor) {
         CitizensAdapter.requireMainThread();
@@ -604,8 +609,8 @@ public final class RenderManager {
 
     private void advance(long time) {
         Set<UUID> eligible = rendered.entrySet().stream().filter(e -> wantsPlan(e.getValue(), time))
-                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
-        planBudget.begin(eligible,time);
+                .map(Map.Entry::getKey).collect(Collectors.toSet());
+        planBudget.begin(eligible, time);
         updateDebugs(time);
         if (!enabledLastTick || time < nextRenderMs) return;
         if (plugin.getConfig().getBoolean("appearance.outfit-change-while-rendered", false)) {
@@ -716,7 +721,7 @@ public final class RenderManager {
     }
 
     private void updateEnabled() {
-        // Gate: rendering must be explicitly enabled AND the system on. Off -> clear avatars.
+        // Rendering needs both its own switch and the system switch on. When either is off, clear the avatars.
         if (!plugin.killSwitches().isSystemEnabled() || !plugin.killSwitches().isRenderingEnabled()) {
             if (enabledLastTick) {
                 despawnAll();
@@ -902,7 +907,8 @@ public final class RenderManager {
 
     /**
      * Main thread, after a premium relocation commits. Remembered briefly so a rendered avatar can walk to the new
-     * home when the display snapshot catches up. Off by default; a lost or expired note only means the old respawn.
+     * home when the display snapshot catches up. Off by default; a lost or expired note only means the avatar
+     * despawns and the resident respawns at the new home.
      */
     public void premiumRelocated(List<PremiumWalk.Move> moves) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Main thread required");
@@ -919,7 +925,7 @@ public final class RenderManager {
     /**
      * Keeps a rendered avatar through a premium move when both homes share one published graph and a home route
      * exists. Never teleports: the avatar is rebound where it stands and walks edge by edge. Any doubt returns false
-     * and the caller despawns it, so the resident reappears at the new home as before.
+     * and the caller despawns it, so the resident reappears at the new home.
      */
     private boolean adoptPremiumWalk(UUID residentId, Render r, Candidate candidate, Map<UUID, Property> current, long now) {
         PremiumWalk.Move move = pendingWalks.get(residentId);
@@ -953,7 +959,7 @@ public final class RenderManager {
     private boolean walk(UUID residentId, Render r, long now, long edgeTimeout, int maxFails) {
         Location loc = citizens.location(r.npc);
         if (!CitizensAdapter.loaded(loc) || loc.getWorld() != r.view.world) {
-            return false; // gone
+            return false; // the avatar or its world is no longer loaded
         }
         if (r.path == null && !CitizensAdapter.standable(loc)) return false;
         if (now < r.pausedUntilMs) return true;
@@ -961,7 +967,7 @@ public final class RenderManager {
             r.pausedUntilMs = 0;
             if (r.path != null && r.pathIdx < r.path.size()) return issueEdge(r, now, maxFails);
         }
-        // Need a fresh destination path?
+        // Plan a fresh destination path when there is none or the last one is finished.
         if (r.path == null || r.pathIdx >= r.path.size()) {
             if (r.debug && !r.encounterPreview) {
                 return true;
@@ -986,7 +992,8 @@ public final class RenderManager {
             r.nextPlanMs = now + RETRY_MS;
             if (r.walkingHome) {
                 if (r.route.status() == ResidentRoutePlanner.Status.AT_DESTINATION) r.walkingHome = false;
-                else if (r.route.status() != ResidentRoutePlanner.Status.WALK) return false; // respawn fallback
+                else if (r.route.status() != ResidentRoutePlanner.Status.WALK)
+                    return false; // no home route: despawn, the resident respawns at the new home
             }
             if (r.route.status() != ResidentRoutePlanner.Status.WALK) return true;
             r.path = r.route.nodes();
@@ -1012,7 +1019,8 @@ public final class RenderManager {
             r.pathIdx++;
             r.edgeRetry.arrived();
             r.edgeStartMs = now;
-            if (walkEnds(r.walkingHome, r.walkPlanned, r.pathIdx, r.path.size())) r.walkingHome = false; // arrived; routine resumes
+            if (walkEnds(r.walkingHome, r.walkPlanned, r.pathIdx, r.path.size()))
+                r.walkingHome = false; // arrived at the new home; the routine resumes
             if (!r.walkingHome && r.profile != null && !ResidentRoutine.at(r.profile, r.view.world.getTime()).equals(r.intent)) {
                 // A time skip changes the next destination only after finishing this safe edge.
                 r.path = null;
@@ -1069,16 +1077,16 @@ public final class RenderManager {
             Snapshot cached = snapshots.value(now);
             if (cached == null || !cached.checked().contains(debugKey)) snapshots.expedite();
         }
-        Set<GraphKey> keys = new java.util.HashSet<>();
+        Set<GraphKey> keys = new HashSet<>();
         if (requestedDebugGraph != null) keys.add(requestedDebugGraph);
-        rendered.values().stream().map(r -> r.previewGraph).filter(java.util.Objects::nonNull).forEach(keys::add);
+        rendered.values().stream().map(r -> r.previewGraph).filter(Objects::nonNull).forEach(keys::add);
         previewRequests.snapshot().stream().filter(request -> request.district() != null)
                 .map(request -> new GraphKey(request.world(), request.district())).forEach(keys::add);
         Set<GraphKey> requested = Set.copyOf(keys);
         Set<UUID> viewerWorlds = Bukkit.getOnlinePlayers().stream().map(p -> p.getWorld().getUID())
-                .collect(java.util.stream.Collectors.toSet());
-        Set<UUID> previewWorlds = requested.stream().map(GraphKey::worldId).collect(java.util.stream.Collectors.toSet());
-        Set<UUID> included = scopeWorlds(worlds,viewerWorlds,previewWorlds);
+                .collect(Collectors.toSet());
+        Set<UUID> previewWorlds = requested.stream().map(GraphKey::worldId).collect(Collectors.toSet());
+        Set<UUID> included = scopeWorlds(worlds, viewerWorlds, previewWorlds);
         if (!requestedWorldScope.containsAll(included)) snapshots.expedite();
         requestedWorldScope = included;
         List<Property> input = properties.getEnrolled().stream()
@@ -1097,7 +1105,7 @@ public final class RenderManager {
     private Snapshot readSnapshot(List<Property> input, Set<GraphKey> debugKeys, Set<UUID> civicWorlds) throws Exception {
         Map<UUID, Candidate> candidates = new HashMap<>();
         Map<GraphKey, NavGraph> graphs = new HashMap<>();
-        Set<GraphKey> read = new java.util.HashSet<>();
+        Set<GraphKey> read = new HashSet<>();
         for (GraphKey key : debugKeys.stream().sorted(Comparator.comparing(GraphKey::worldId).thenComparing(GraphKey::region)).toList())
             loadGraph(key, graphs, read);
         for (Property property : input) {
@@ -1115,7 +1123,7 @@ public final class RenderManager {
                     break;
                 }
                 if (candidates.putIfAbsent(tenant.tenantId(), new Candidate(property, tenant.displayName(), graph, null)) != null)
-                    throw new java.sql.SQLException("Resident appeared in multiple display properties");
+                    throw new SQLException("Resident appeared in multiple display properties");
             }
         }
         for (CivicPlacement placement : civicPlacements.listForDisplay(civicWorlds, HARD_AVATAR_CAP)) {
@@ -1173,10 +1181,10 @@ public final class RenderManager {
                 .findFirst().orElse(null);
     }
 
-    private long now() { return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos); }
+    private long now() { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos); }
 
     static Set<UUID> scopeWorlds(Set<UUID> requested, Set<UUID> viewers, Set<UUID> previews) {
-        Set<UUID> result = new java.util.HashSet<>(requested);
+        Set<UUID> result = new HashSet<>(requested);
         result.addAll(viewers);
         result.addAll(previews);
         return Set.copyOf(result);
@@ -1206,10 +1214,16 @@ public final class RenderManager {
     static final class PlanBudget {
         private long nextWindow;
         private int used;
-        private final java.util.ArrayDeque<UUID> waiting = new java.util.ArrayDeque<>();
+        private final ArrayDeque<UUID> waiting = new ArrayDeque<>();
         void begin(Set<UUID> eligible, long now) {
-            if (now < 0 || eligible.size() > HARD_AVATAR_CAP) { waiting.clear(); return; }
-            if (now >= nextWindow) { nextWindow = now + 1_000; used = 0; }
+            if (now < 0 || eligible.size() > HARD_AVATAR_CAP) {
+                waiting.clear();
+                return;
+            }
+            if (now >= nextWindow) {
+                nextWindow = now + 1_000;
+                used = 0;
+            }
             waiting.removeIf(id -> !eligible.contains(id));
             eligible.stream().sorted().filter(id -> !waiting.contains(id)).forEach(waiting::addLast);
         }

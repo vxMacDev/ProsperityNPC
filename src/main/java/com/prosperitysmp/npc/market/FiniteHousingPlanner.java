@@ -176,16 +176,14 @@ public final class FiniteHousingPlanner {
     }
 
     /**
-     * Fewest initially compatible free slots first, then oldest availability, then UUID text.
-     * Each seeker takes the highest score, lowest rent, lexically first property and lowest
-     * supplied slot allowed by the caps. This deterministic greedy heuristic is not globally
-     * optimal. Compatibility is precomputed once; allocation scans each edge once (bounded
-     * O(seekers * homes * slots) matching work, plus O(seekers log seekers) ordering).
-     * Assignments retain decision order; unmatched residents are ordered by UUID text.
-     * Future availability precedes cooldown. A metadata match without initial slots is
-     * NO_VACANCY; DAILY_LIMIT requires a still-free compatible slot blocked by caps.
-     * No departure can add slots. Committers must revalidate the snapshot and revisions.
-     * Every supplied home requires explicit market and property allowances, even at zero.
+     * Seekers with the fewest initially compatible free slots go first, then oldest availability,
+     * then UUID text. Each seeker takes the highest score, lowest rent, lexically first property and
+     * lowest supplied slot that the caps allow. This greedy pass is deterministic but not globally
+     * optimal. Assignments keep decision order; unmatched residents are ordered by UUID text.
+     * Future availability is reported before cooldown. A metadata match with no initial slots is
+     * NO_VACANCY; DAILY_LIMIT means a compatible slot was still free but the caps blocked it.
+     * No departure can add slots. Every supplied home needs explicit market and property allowances,
+     * even at zero. Committers must revalidate the snapshot and revisions.
      */
     public static Plan planWithRemaining(LocalDate day, List<Seeker> seekers, List<Home> homes,
                                          Remaining remaining) {

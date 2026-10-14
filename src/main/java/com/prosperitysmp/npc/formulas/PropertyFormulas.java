@@ -2,8 +2,7 @@ package com.prosperitysmp.npc.formulas;
 
 /**
  * Pure, side-effect-free property math. Money is integer cents; probabilities
- * are integer basis points (bp, out of 10000); scores are 0-100. Section
- * references are to the implementation plan.
+ * are integer basis points (bp, out of 10000); scores are 0-100.
  */
 public final class PropertyFormulas {
 
@@ -13,7 +12,7 @@ public final class PropertyFormulas {
     private PropertyFormulas() {
     }
 
-    // ---- Rent & expenses (§7.2) --------------------------------------------
+    // ---- Rent & expenses --------------------------------------------
 
     /** Per-tenant daily rent: min(asking, reference*tierPct/100, tenant cap). All cents. */
     public static long tenantRentCents(long askingCents, long referenceCents, int tierMultPct, long tenantCapCents) {
@@ -26,7 +25,7 @@ public final class PropertyFormulas {
         return 100L + 75L * Math.max(0, occupiedTenants) + 50L * Math.max(0, totalUpgradeLevels);
     }
 
-    // ---- Condition & incidents (§7.3, §7.4) --------------------------------
+    // ---- Condition & incidents --------------------------------
 
     /** Incident chance in basis points: clamp(2% + (80-condition)*0.1%, 1%, 8%). */
     public static int incidentChanceBp(int conditionScore) {
@@ -34,14 +33,14 @@ public final class PropertyFormulas {
         return clampInt(bp, 100, 800);
     }
 
-    // ---- Insurance (§7.5) --------------------------------------------------
+    // ---- Insurance --------------------------------------------------
 
     /** Insurance premium for a 7-day term: $12 + $2*capacity. Cents. */
     public static long insurancePriceCents(int capacity) {
         return 1200L + 200L * capacity;
     }
 
-    // ---- Rating (§8.1) -----------------------------------------------------
+    // ---- Rating -----------------------------------------------------
 
     /** Rent fairness 0-100: 100 when asking<=reference, else falls to 0 at 150% of reference. */
     public static int rentFairness(long askingCents, long referenceCents) {
@@ -64,7 +63,7 @@ public final class PropertyFormulas {
         return clampDouble(s, 0.0, 100.0);
     }
 
-    // ---- Operator reputation (§8.2) ----------------------------------------
+    // ---- Operator reputation ----------------------------------------
 
     /** Existing policy: attainable score 25-75 for on-time / SLA / retention rates in 0-1. */
     public static int operatorScore(double expenseOnTimeRate, double incidentSlaRate, double retentionRate) {
@@ -75,7 +74,7 @@ public final class PropertyFormulas {
         return clampInt((int) Math.round(s), 0, 100);
     }
 
-    // ---- Premium eligibility (§8.4) ----------------------------------------
+    // ---- Premium eligibility ----------------------------------------
 
     public static final int PREMIUM_MIN_SCORE = 80;
     public static final int PREMIUM_MIN_CONDITION = 80;
@@ -88,7 +87,7 @@ public final class PropertyFormulas {
     public static final int PREMIUM_MOVE_COOLDOWN_DAYS = 7;
 
     /**
-     * Whether a property may host premium tenants (§8.4). All conditions must hold:
+     * Whether a property may host premium tenants. All conditions must hold:
      * score ≥ 80, condition ≥ 80, operator score ≥ 70 with ≥ 7 observations,
      * asking ≤ 125% of reference, and no overdue incident or utility delinquency.
      */
@@ -111,15 +110,15 @@ public final class PropertyFormulas {
         return !overdueIncident && !utilityDelinquent;
     }
 
-    // ---- Occupancy (§8.3) --------------------------------------------------
+    // ---- Occupancy --------------------------------------------------
 
-    /** Daily vacancy-fill chance in bp: clamp(10% + 0.5%*(score-50) + 5%*advLevel, 2%, 60%). */
     /** Match-rank points per advertising level; orders compatible vacancies only, never a public score. */
     public static final double ADVERTISING_RANK_POINTS_PER_LEVEL = 4.0;
     public static double advertisingRankBonus(int effectiveLevel) {
         return ADVERTISING_RANK_POINTS_PER_LEVEL * Math.max(0, Math.min(3, effectiveLevel));
     }
 
+    /** Daily vacancy-fill chance in bp: clamp(10% + 0.5%*(score-50) + 5%*advLevel, 2%, 60%). */
     public static int fillChanceBp(double propertyScore, int advertisingLevel) {
         double bp = 1000.0 + 50.0 * (propertyScore - 50.0) + 500.0 * advertisingLevel;
         return clampInt((int) Math.round(bp), 200, 6000);
@@ -131,7 +130,7 @@ public final class PropertyFormulas {
         return clampInt((int) Math.round(bp), 100, 3500);
     }
 
-    // ---- Appreciation (§8.5) -----------------------------------------------
+    // ---- Appreciation -----------------------------------------------
 
     /** Daily appreciation dividend: min($3.00, max(0, score-70) * $0.10). Cents. */
     public static long appreciationCents(double propertyScore, long appreciationCapCents) {

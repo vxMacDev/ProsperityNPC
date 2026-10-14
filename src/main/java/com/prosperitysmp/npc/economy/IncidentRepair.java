@@ -466,7 +466,11 @@ final class IncidentRepair {
             warnings(c, ps, null);
             return ps;
         } catch (SQLException | RuntimeException failure) {
-            try { ps.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+            try {
+                ps.close();
+            } catch (SQLException close) {
+                failure.addSuppressed(close);
+            }
             throw failure;
         }
     }

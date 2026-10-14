@@ -23,7 +23,11 @@ public final class StaffAlerts {
         /** An item repair hand-in is held for the offline tool (item-repairs). */
         ITEM_REPAIR_HELD,
         /** A contract or partnership hand-over is held for staff review (/npctown contract-resolve). */
-        HANDOVER_HELD }
+        HANDOVER_HELD,
+        /** A paid order's save before delivery could not be read back repeatedly; nothing was given or held. */
+        COMMERCE_SAVE_CHECK,
+        /** A paid order delivery is held for staff after it started (save marker on). */
+        COMMERCE_DELIVERY_HELD }
 
     public static final int MAX_QUEUED = 64;
     public static final int MAX_DRAIN = 20;
@@ -52,18 +56,29 @@ public final class StaffAlerts {
         try {
             if (!enabled.getAsBoolean()) return false;
             day = today.get();
-        } catch (RuntimeException unavailable) { return false; }
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
         line = oneLine(text);
         key = kind.name() + "|" + oneLine(subject == null ? "" : subject);
         synchronized (this) {
-            if (!day.equals(seenDay)) { seen.clear(); seenDay = day; }
+            if (!day.equals(seenDay)) {
+                seen.clear();
+                seenDay = day;
+            }
             if (seen.size() >= MAX_SEEN) seen.clear();
             if (!seen.add(key)) return false;
-            if (queue.size() >= MAX_QUEUED) { queue.pollFirst(); dropped++; }
+            if (queue.size() >= MAX_QUEUED) {
+                queue.pollFirst();
+                dropped++;
+            }
             queue.addLast(line);
         }
-        try { warn.accept("Staff alert " + kind.name() + ": " + line); }
-        catch (RuntimeException logging) { /* The queue entry stands. */ }
+        try {
+            warn.accept("Staff alert " + kind.name() + ": " + line);
+        } catch (RuntimeException logging) {
+            /* The queue entry stands. */
+        }
         return true;
     }
 
@@ -81,9 +96,13 @@ public final class StaffAlerts {
         return List.copyOf(out);
     }
 
-    public synchronized int size() { return queue.size(); }
+    public synchronized int size() {
+        return queue.size();
+    }
 
-    public synchronized long droppedCount() { return dropped; }
+    public synchronized long droppedCount() {
+        return dropped;
+    }
 
     /** True when at least 90 percent of a positive cap is used. */
     public static boolean capNear(long spentCents, long capCents) {

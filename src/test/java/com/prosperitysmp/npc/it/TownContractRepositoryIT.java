@@ -79,7 +79,7 @@ class TownContractRepositoryIT extends ContractItBase {
         var done = contracts.finishHandover(id, player, run, 20, evidence, NOW.plusSeconds(8), DAY, null);
         assertEquals(Code.COMPLETED, done.code());
         assertEquals(TownContract.Status.COMPLETED, contracts.find(id, player).orElseThrow().status());
-        // Mutation guard: skipping the memory insert leaves 0 rows here.
+        // Without the memory insert there would be 0 rows here.
         assertEquals(2, count("npc_resident_memory"));
         assertEquals(List.of(List.of("OBLIGATION_KEPT", "town-contract:" + id)), rows(
                 "SELECT DISTINCT kind, source_ref FROM npc_resident_memory WHERE player_id=?", player));
@@ -107,7 +107,7 @@ class TownContractRepositoryIT extends ContractItBase {
         UUID id = accept(player, "nico-coal-run");
         UUID run = UUID.randomUUID();
         contracts.beginHandover(id, player, MARA, run, NOW.plusSeconds(5));
-        // after == before - (N-1): never completes. Mutation guard: allowing N-1 evidence fails this.
+        // after == before - (N-1) never completes: one unit short is held.
         var short1 = new ItemCollectionEvidence(player, run, "a".repeat(64), "b".repeat(64), List.of(20), List.of(5), true, true);
         assertEquals(Code.HANDOVER_HELD, contracts.finishHandover(id, player, run, 20, short1, NOW.plusSeconds(6), DAY, null).code());
         assertEquals(TownContract.Status.AMBIGUOUS, contracts.find(id, player).orElseThrow().status());
@@ -119,7 +119,7 @@ class TownContractRepositoryIT extends ContractItBase {
         contracts.beginHandover(next.contractId(), other, MARA, run2, NOW.plusSeconds(5));
         var unproven = new ItemCollectionEvidence(other, run2, "a".repeat(64), "b".repeat(64), List.of(64), List.of(0), true, false);
         assertEquals(Code.HANDOVER_HELD, contracts.finishHandover(next.contractId(), other, run2, 64, unproven, NOW.plusSeconds(6), DAY, null).code());
-        // Mutation guard: without AMBIGUOUS in open_player_id the held row stops blocking.
+        // The held row blocks only because AMBIGUOUS counts in open_player_id.
         var blocked = contracts.accept(contract("mara-wall-stone"), player, NOW.plusSeconds(30), DAY.plusDays(1), 1);
         assertEquals(Code.HELD_FOR_REVIEW, blocked.code());
         assertEquals(id, blocked.contract().orElseThrow().contractId());
@@ -153,7 +153,7 @@ class TownContractRepositoryIT extends ContractItBase {
     }
 
     @Test void aPartnershipHandOverIsRefusedWhileAContractIsOpen() throws SQLException {
-        // Integrator correction: checked before the insert, so the unique open key is never hit.
+        // Checked before the insert, so the unique open key is never hit.
         UUID player = UUID.randomUUID();
         trusted(ELLIS, player);
         kept(ELLIS, player, 2);
@@ -195,7 +195,7 @@ class TownContractRepositoryIT extends ContractItBase {
     }
 
     @Test void anItemRepairRunningOrHeldBlocksBothHandOvers() throws SQLException {
-        // Integrator correction: an item-repair collection in INTENT or AMBIGUOUS owns the inventory.
+        // An item-repair collection in INTENT or AMBIGUOUS owns the inventory.
         UUID player = UUID.randomUUID();
         trusted(ELLIS, player); kept(ELLIS, player, 2); home(player);
         execute("INSERT IGNORE INTO npc_item_custody_players(player_id) VALUES (?)", player);
@@ -212,7 +212,7 @@ class TownContractRepositoryIT extends ContractItBase {
             assertEquals(Code.ITEMS_BUSY, contracts.beginHandover(id, player, MARA, UUID.randomUUID(), NOW.plusSeconds(5)).code(), state);
             assertEquals(TownContract.Status.ACTIVE, contracts.find(id, player).orElseThrow().status(), state);
         }
-        // Positive control: once the repair is settled both hand-overs start.
+        // Once the repair is settled both hand-overs start, so the refusals above are real.
         repairCollection(collection, player, "CANCELLED");
         UUID run = UUID.randomUUID();
         assertEquals(Code.HANDOVER_STARTED, contracts.beginHandover(id, player, MARA, run, NOW.plusSeconds(6)).code());

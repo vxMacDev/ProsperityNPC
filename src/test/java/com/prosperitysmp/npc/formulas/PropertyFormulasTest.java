@@ -118,7 +118,7 @@ class PropertyFormulasTest {
         assertEquals(0, PropertyFormulas.appreciationCents(65.0, 300));    // below threshold
     }
 
-    // ---- Funding invariant (§3.2) ------------------------------------------
+    // ---- Funding invariant ------------------------------------------
 
     @Test
     void funding_neverExceedsSeedPlusRatioSinks() {
@@ -168,7 +168,7 @@ class PropertyFormulasTest {
         assertThrows(IllegalArgumentException.class, () -> UpgradeType.ADVERTISING.costToLevelCents(4));
     }
 
-    // ---- Premium eligibility (§8.4) ----------------------------------------
+    // ---- Premium eligibility ----------------------------------------
 
     @Test
     void premiumEligible_allConditionsMet() {

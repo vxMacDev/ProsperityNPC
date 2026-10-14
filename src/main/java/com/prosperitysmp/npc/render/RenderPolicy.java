@@ -10,10 +10,10 @@ import java.util.Set;
 
 /**
  * Pure, deterministic selection of which tenant avatars to render, given viewer
- * positions and the on-demand limits (§10.2): a viewer sees at most
+ * positions and the on-demand limits: a viewer sees at most
  * {@code maxPerViewer} of its nearest candidates within {@code radius}, and the
- * server renders at most {@code maxServer} total. No Bukkit/Citizens coupling —
- * the {@link RenderManager} maps tenants→positions, applies this, and spawns/walks.
+ * server renders at most {@code maxServer} total. It has no Bukkit or Citizens
+ * coupling. The {@link RenderManager} maps tenants to positions, applies this, and spawns and walks.
  *
  * <p>Rendering is purely cosmetic: this decides visibility only and never touches
  * economy, occupancy, or settlement.
@@ -47,7 +47,7 @@ public final class RenderPolicy {
             return result;
         }
         double r2 = radius * radius;
-        Map<String, Double> bestDist = new HashMap<>(); // candidate -> min dist² to a granting viewer
+        Map<String, Double> bestDist = new HashMap<>(); // candidate id to smallest squared distance from a granting viewer
 
         for (Vec viewer : viewers.values()) {
             List<Map.Entry<String, Double>> inRange = new ArrayList<>();

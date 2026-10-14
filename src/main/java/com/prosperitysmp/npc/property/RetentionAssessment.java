@@ -31,7 +31,8 @@ public record RetentionAssessment(UUID ownerId, Instant capturedAt, Instant admi
 
     public RetentionAssessment {
         Objects.requireNonNull(ownerId);
-        time(capturedAt); time(admittedFrom);
+        time(capturedAt);
+        time(admittedFrom);
         if (!admittedFrom.isBefore(capturedAt)
                 || Duration.between(admittedFrom, capturedAt).compareTo(Duration.ofDays(30)) > 0
                 || horizonDays < 1 || horizonDays > 30)

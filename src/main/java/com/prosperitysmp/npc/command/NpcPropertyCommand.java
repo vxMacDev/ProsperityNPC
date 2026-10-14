@@ -3,16 +3,21 @@ package com.prosperitysmp.npc.command;
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
 import com.prosperitysmp.npc.arm.ArmAdapter;
 import com.prosperitysmp.npc.arm.ArmRegionView;
+import com.prosperitysmp.npc.property.OwnershipReconcilePump;
 import com.prosperitysmp.npc.property.Property;
 import com.prosperitysmp.npc.property.PropertyService;
 import com.prosperitysmp.npc.util.Money;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.command.RemoteConsoleCommandSender;
 import org.bukkit.command.TabExecutor;
+import org.bukkit.entity.Player;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -20,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 /** {@code /npcproperty enroll|list|info|reconcile}. Enrollment is read-only against ARM. */
 public final class NpcPropertyCommand implements TabExecutor {
@@ -122,18 +128,22 @@ public final class NpcPropertyCommand implements TabExecutor {
             Property property = new Property(
                     UUID.randomUUID(), world.getUID(), regionId, market, clazz, capacity,
                     (int) rentCents, (int) rentCents, view.ownerUuid(), 0, 80, true);
-            if (!(sender instanceof org.bukkit.entity.Player player)) {
-                send(sender, NamedTextColor.RED, "Stand inside the owned plot to enroll it."); return;
+            if (!(sender instanceof Player player)) {
+                send(sender, NamedTextColor.RED, "Stand inside the owned plot to enroll it.");
+                return;
             }
-            org.bukkit.Location location = player.getLocation().clone();
+            Location location = player.getLocation().clone();
             var owner = arm.ownerReadAt(location, view.ownerUuid()).orElse(null);
             if (owner == null || !owner.regionId().equals(regionId) || !owner.worldId().equals(world.getUID())) {
-                send(sender, NamedTextColor.RED, "Stand inside that plot; it must have one UUID owner and no inherited ownership."); return;
+                send(sender, NamedTextColor.RED,
+                        "Stand inside that plot; it must have one UUID owner and no inherited ownership.");
+                return;
             }
             boolean queued = plugin.propertyService().enrollCoordinated(property, owner,
                     () -> arm.ownerReadAt(location, view.ownerUuid()).orElse(null), ok -> {
                         if (player.isOnline()) send(player, ok ? NamedTextColor.GREEN : NamedTextColor.RED,
-                                ok ? "Enrolled " + property.regionId() + "." : "Enrollment held for recovery. Do not retry; contact staff.");
+                                ok ? "Enrolled " + property.regionId() + "."
+                                        : "Enrollment held for recovery. Do not retry; contact staff.");
                     });
             send(sender, queued ? NamedTextColor.YELLOW : NamedTextColor.RED,
                     queued ? "Enrolling property..." : "Enrollment unavailable or busy; ownership coordination must be ready.");
@@ -143,12 +153,18 @@ public final class NpcPropertyCommand implements TabExecutor {
     }
 
     private void doResume(CommandSender sender, String[] args) {
-        if (args.length != 3) { send(sender, NamedTextColor.RED, "Usage: /npcproperty resume <world> <region>"); return; }
+        if (args.length != 3) {
+            send(sender, NamedTextColor.RED, "Usage: /npcproperty resume <world> <region>");
+            return;
+        }
         World world = Bukkit.getWorld(args[1]);
-        if (world == null) { send(sender, NamedTextColor.RED, "Unknown world: " + args[1]); return; }
+        if (world == null) {
+            send(sender, NamedTextColor.RED, "Unknown world: " + args[1]);
+            return;
+        }
         boolean accepted = plugin.propertyService().resumeCoordinated(world.getUID(), args[2],
                 () -> sender.hasPermission("prosperitynpc.admin")
-                        && (!(sender instanceof org.bukkit.entity.Player p) || p.isOnline()),
+                        && (!(sender instanceof Player p) || p.isOnline()),
                 message -> send(sender, NamedTextColor.YELLOW, message));
         send(sender, accepted ? NamedTextColor.YELLOW : NamedTextColor.RED,
                 accepted ? "Checking paused property and ownership..." : "Resume unavailable or busy; nothing started.");
@@ -164,10 +180,11 @@ public final class NpcPropertyCommand implements TabExecutor {
             send(sender, NamedTextColor.RED, "Unknown world: " + args[1]);
             return;
         }
-        boolean accepted=plugin.propertyService().unenrollCoordinated(world.getUID(),args[2],
-                ()->sender.hasPermission("prosperitynpc.admin"),message->send(sender,NamedTextColor.YELLOW,message));
-        send(sender,accepted?NamedTextColor.YELLOW:NamedTextColor.RED,accepted
-                ?"Disabling property under ownership coordination...":"Property busy, unavailable or not enrolled; no disable started.");
+        boolean accepted = plugin.propertyService().unenrollCoordinated(world.getUID(), args[2],
+                () -> sender.hasPermission("prosperitynpc.admin"), message -> send(sender, NamedTextColor.YELLOW, message));
+        send(sender, accepted ? NamedTextColor.YELLOW : NamedTextColor.RED, accepted
+                ? "Disabling property under ownership coordination..."
+                : "Property busy, unavailable or not enrolled; no disable started.");
     }
 
     private void doList(CommandSender sender) {
@@ -228,29 +245,29 @@ public final class NpcPropertyCommand implements TabExecutor {
                     + (r.deferred() == 0 ? "" : ", held by a payment in progress (retried automatically) " + r.deferred())
                     + ". Not admission authorization.";
             // RCON has no persistent response channel after command dispatch returns.
-            if (sender instanceof org.bukkit.command.RemoteConsoleCommandSender) {
+            if (sender instanceof RemoteConsoleCommandSender) {
                 plugin.getLogger().info(outcome);
             } else if (canReceive(sender, Bukkit::getPlayer)) {
                 send(sender, NamedTextColor.YELLOW, outcome);
             }
         });
         String receipt = "ARM reconcile request: " + accepted + ".";
-        if (sender instanceof org.bukkit.command.RemoteConsoleCommandSender
-                && accepted == com.prosperitysmp.npc.property.OwnershipReconcilePump.Acceptance.ACCEPTED)
+        if (sender instanceof RemoteConsoleCommandSender
+                && accepted == OwnershipReconcilePump.Acceptance.ACCEPTED)
             receipt += " Completion will be recorded in the server log.";
         send(sender, NamedTextColor.YELLOW, receipt);
     }
 
-    static boolean canStart(CommandSender sender, java.util.function.Function<UUID, org.bukkit.entity.Player> online) {
-        return sender instanceof org.bukkit.command.RemoteConsoleCommandSender
+    static boolean canStart(CommandSender sender, Function<UUID, Player> online) {
+        return sender instanceof RemoteConsoleCommandSender
                 ? sender.hasPermission("prosperitynpc.admin") : canReceive(sender, online);
     }
 
-    static boolean canReceive(CommandSender sender, java.util.function.Function<UUID, org.bukkit.entity.Player> online) {
+    static boolean canReceive(CommandSender sender, Function<UUID, Player> online) {
         if (!sender.hasPermission("prosperitynpc.admin")) return false;
-        if (sender instanceof org.bukkit.entity.Player p)
+        if (sender instanceof Player p)
             return p.isOnline() && online.apply(p.getUniqueId()) == p;
-        return sender instanceof org.bukkit.command.ConsoleCommandSender;
+        return sender instanceof ConsoleCommandSender;
     }
 
     private static String shortId(UUID id) {

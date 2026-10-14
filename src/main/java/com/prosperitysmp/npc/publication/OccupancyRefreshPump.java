@@ -42,8 +42,10 @@ public final class OccupancyRefreshPump implements AutoCloseable {
     /** maxAge is explicit policy. The monotonic supplier uses nanoseconds, like System.nanoTime. */
     public OccupancyRefreshPump(Executor executor, Reader reader, Clock clock,
                                 LongSupplier monotonic, Duration maxAge) {
-        this.executor = Objects.requireNonNull(executor); this.reader = Objects.requireNonNull(reader);
-        this.clock = Objects.requireNonNull(clock); this.monotonic = Objects.requireNonNull(monotonic);
+        this.executor = Objects.requireNonNull(executor);
+        this.reader = Objects.requireNonNull(reader);
+        this.clock = Objects.requireNonNull(clock);
+        this.monotonic = Objects.requireNonNull(monotonic);
         Objects.requireNonNull(maxAge);
         try { maxAgeNanos = maxAge.toNanos(); }
         catch (ArithmeticException overflow) { throw new IllegalArgumentException("Invalid occupancy max age"); }
@@ -54,7 +56,10 @@ public final class OccupancyRefreshPump implements AutoCloseable {
     public synchronized void configure(List<Approval> replacement) {
         main();
         if (closed) throw new IllegalStateException("Occupancy pump closed");
-        generation = new Object(); current = null; latestCapture = null; approvals = List.of();
+        generation = new Object();
+        current = null;
+        latestCapture = null;
+        approvals = List.of();
         disposition = Disposition.DISABLED;
         approvals = checkedScope(replacement);
         disposition = approvals.isEmpty() ? Disposition.DISABLED : Disposition.INVALIDATED;
@@ -80,11 +85,14 @@ public final class OccupancyRefreshPump implements AutoCloseable {
     public synchronized Acceptance request() {
         main();
         if (closed) return Acceptance.CLOSED;
-        Time now = time(); expire(now);
+        Time now = time();
+        expire(now);
         if (inFlight) return Acceptance.BUSY;
         if (approvals.isEmpty()) return Acceptance.DISABLED;
-        Object token = generation; List<Approval> scope = approvals;
-        inFlight = true; disposition = Disposition.READING;
+        Object token = generation;
+        List<Approval> scope = approvals;
+        inFlight = true;
+        disposition = Disposition.READING;
         try {
             executor.execute(() -> {
                 Evidence evidence = null;
@@ -101,7 +109,8 @@ public final class OccupancyRefreshPump implements AutoCloseable {
             });
             return Acceptance.ACCEPTED;
         } catch (RuntimeException rejected) {
-            inFlight = false; disposition = Disposition.FAILED;
+            inFlight = false;
+            disposition = Disposition.FAILED;
             return Acceptance.REJECTED;
         }
     }
@@ -109,29 +118,50 @@ public final class OccupancyRefreshPump implements AutoCloseable {
     public synchronized void tick() {
         main();
         Completion done;
-        synchronized (completionLock) { done = completion; completion = null; }
+        synchronized (completionLock) {
+            done = completion;
+            completion = null;
+        }
         if (closed) return;
-        Time now = time(); expire(now);
+        Time now = time();
+        expire(now);
         if (done == null) return;
         inFlight = false;
         if (done.generation() != generation) return;
         Evidence evidence = done.evidence();
         if (evidence == null || !evidence.capturedAt().equals(evidence.snapshot().capturedAt())) {
-            disposition = Disposition.FAILED; return;
+            disposition = Disposition.FAILED;
+            return;
         }
         PublicOccupancySnapshot candidate = evidence.snapshot();
-        if (candidate.isEmpty()) { disposition = Disposition.EMPTY_HELD; return; }
+        if (candidate.isEmpty()) {
+            disposition = Disposition.EMPTY_HELD;
+            return;
+        }
         Instant captured = candidate.capturedAt();
-        if (captured.isAfter(now.wall())) { disposition = Disposition.FUTURE; return; }
-        if (latestCapture != null && captured.isBefore(latestCapture)) { disposition = Disposition.OLDER; return; }
-        if (captured.isBefore(done.requestedAt())) { disposition = Disposition.EXPIRED; return; }
+        if (captured.isAfter(now.wall())) {
+            disposition = Disposition.FUTURE;
+            return;
+        }
+        if (latestCapture != null && captured.isBefore(latestCapture)) {
+            disposition = Disposition.OLDER;
+            return;
+        }
+        if (captured.isBefore(done.requestedAt())) {
+            disposition = Disposition.EXPIRED;
+            return;
+        }
         long wallAge = age(captured, now.wall());
         long elapsed = now.mono() - done.started();
         if (elapsed < 0 || elapsed >= maxAgeNanos || wallAge >= maxAgeNanos) {
-            disposition = Disposition.EXPIRED; return;
+            disposition = Disposition.EXPIRED;
+            return;
         }
-        current = evidence; latestCapture = captured; acceptedMono = now.mono();
-        initialAge = Math.max(wallAge, elapsed); disposition = Disposition.READY;
+        current = evidence;
+        latestCapture = captured;
+        acceptedMono = now.mono();
+        initialAge = Math.max(wallAge, elapsed);
+        disposition = Disposition.READY;
     }
 
     /**
@@ -155,22 +185,40 @@ public final class OccupancyRefreshPump implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.snapshot());
     }
 
-    public synchronized Disposition disposition() { main(); if (!closed) expire(time()); return disposition; }
-    public synchronized boolean busy() { main(); return inFlight; }
+    public synchronized Disposition disposition() {
+        main();
+        if (!closed) expire(time());
+        return disposition;
+    }
+    public synchronized boolean busy() {
+        main();
+        return inFlight;
+    }
 
     @Override public synchronized void close() {
         main();
-        synchronized (completionLock) { closed = true; completion = null; }
-        generation = new Object(); current = null; approvals = List.of();
-        inFlight = false; disposition = Disposition.CLOSED;
+        synchronized (completionLock) {
+            closed = true;
+            completion = null;
+        }
+        generation = new Object();
+        current = null;
+        approvals = List.of();
+        inFlight = false;
+        disposition = Disposition.CLOSED;
     }
 
     private Time time() {
-        Instant wall = clock.instant(); long mono = monotonic.getAsLong();
+        Instant wall = clock.instant();
+        long mono = monotonic.getAsLong();
         if (sampled && (wall.isBefore(lastWall) || mono - lastMono < 0)) {
-            current = null; generation = new Object(); disposition = Disposition.CLOCK_ROLLBACK;
+            current = null;
+            generation = new Object();
+            disposition = Disposition.CLOCK_ROLLBACK;
         }
-        sampled = true; lastWall = wall; lastMono = mono;
+        sampled = true;
+        lastWall = wall;
+        lastMono = mono;
         return new Time(wall, mono);
     }
 
@@ -179,7 +227,8 @@ public final class OccupancyRefreshPump implements AutoCloseable {
         long elapsed = now.mono() - acceptedMono;
         if (current.capturedAt().isAfter(now.wall()) || age(current.capturedAt(), now.wall()) >= maxAgeNanos
                 || elapsed < 0 || elapsed >= maxAgeNanos - initialAge) {
-            current = null; disposition = Disposition.EXPIRED;
+            current = null;
+            disposition = Disposition.EXPIRED;
         }
     }
 

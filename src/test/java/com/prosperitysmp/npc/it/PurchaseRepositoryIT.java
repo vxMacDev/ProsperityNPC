@@ -189,7 +189,7 @@ class PurchaseRepositoryIT {
         switch (fixture) {
             case "missing-property" -> request = new PurchaseRequest(UUID.randomUUID(), UUID.randomUUID(), owner,
                     0, Kind.UPGRADE, UpgradeType.ADVERTISING, 1, null, DAY);
-            // Deliberate damaged row: the ownership producer now rejects a zero-epoch change.
+            // Deliberately damaged row, written by raw SQL because the ownership producer rejects a zero-epoch change.
             case "wrong-owner" -> execute("UPDATE npc_properties SET owner_uuid=? WHERE property_id=?", UUID.randomUUID(), property);
             case "no-owner" -> properties.applyOwnerChange(property, owner, null, 1, "fixture");
             case "disabled" -> properties.setEnabled(property, false);

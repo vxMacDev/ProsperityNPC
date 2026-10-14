@@ -37,7 +37,7 @@ public final class ResidentAppearanceManifest {
 
     private ResidentAppearanceManifest() { }
 
-    /** The built-in universe, with no skipping: any key outside it rejects the file, exactly as before. */
+    /** The built-in universe, with no skipping: any key outside it rejects the file. */
     public static Map<String, SignedResidentSkin> read(InputStream input) {
         return read(input, SignedResidentSkin::verify);
     }

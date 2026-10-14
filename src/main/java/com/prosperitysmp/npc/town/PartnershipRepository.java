@@ -6,6 +6,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -22,8 +24,9 @@ import java.util.UUID;
  * refunds anything. A partnership past its last day lapses lazily (status ENDED, reason LAPSED) the next time its
  * owner or its resident's seats are read.
  * Lock order (shared with TownContractRepository): contract player guard, contract row, sorted resident profiles,
- * partnership rows, resident memory. Standalone methods here take only partnership rows. Never takes property,
- * economy or commerce locks. {@link #activeForDebit} runs inside a commerce transaction, after its commerce locks. All calls are bounded synchronous JDBC work for a database worker.
+ * partnership rows, resident memory. Standalone methods here take only partnership rows. No property, economy or
+ * commerce locks. {@link #activeForDebit} runs inside a commerce transaction, after its commerce locks. All calls are
+ * bounded synchronous JDBC work for a database worker.
  */
 public final class PartnershipRepository {
     public static final int MAX_LIST = 200;
@@ -35,13 +38,18 @@ public final class PartnershipRepository {
 
     /** The owner's partnership that is active today, after lazily lapsing an old one. */
     public Optional<Partnership> current(UUID owner, LocalDate today, Instant now) throws SQLException {
-        Objects.requireNonNull(owner); Objects.requireNonNull(today); Objects.requireNonNull(now);
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(today);
+        Objects.requireNonNull(now);
         return transaction(c -> currentLocked(c, owner, today, now));
     }
 
     /** Ends the owner's active partnership now. No refund. Empty when there was none. */
     public Optional<Partnership> end(UUID owner, Partnership.EndReason reason, Instant now, LocalDate today) throws SQLException {
-        Objects.requireNonNull(owner); Objects.requireNonNull(reason); Objects.requireNonNull(now); Objects.requireNonNull(today);
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(reason);
+        Objects.requireNonNull(now);
+        Objects.requireNonNull(today);
         if (reason == Partnership.EndReason.LAPSED) throw new IllegalArgumentException("Lapses are written by the lazy read");
         return transaction(c -> {
             var current = currentLocked(c, owner, today, now);
@@ -73,7 +81,10 @@ public final class PartnershipRepository {
         try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c,
                 "SELECT COUNT(*) FROM npc_partnerships WHERE status='ACTIVE' AND last_active_day>=?")) {
             ps.setString(1, today.toString());
-            try (ResultSet rs = ps.executeQuery()) { rs.next(); return rs.getInt(1); }
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
         }
     }
 
@@ -83,7 +94,9 @@ public final class PartnershipRepository {
      * so it writes nothing (no lazy lapse) and takes no lock.
      */
     public static Map<UUID, Integer> rankBonusByOwner(Connection c, LocalDate day, Map<UUID, Integer> caps) throws SQLException {
-        Objects.requireNonNull(c); Objects.requireNonNull(day); Objects.requireNonNull(caps);
+        Objects.requireNonNull(c);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(caps);
         var out = new HashMap<UUID, Integer>();
         if (caps.isEmpty()) return Map.of();
         try (PreparedStatement ps = prepare(c, """
@@ -113,7 +126,8 @@ public final class PartnershipRepository {
      * transactions never take commerce locks, so the two cannot wait on each other in a cycle.
      */
     public static Optional<Partnership> activeForDebit(Connection c, UUID owner) throws SQLException {
-        Objects.requireNonNull(c); Objects.requireNonNull(owner);
+        Objects.requireNonNull(c);
+        Objects.requireNonNull(owner);
         try (PreparedStatement ps = prepare(c, "SELECT " + COLUMNS + " FROM npc_partnerships WHERE active_owner_id=? LOCK IN SHARE MODE")) {
             ps.setBytes(1, Uuids.toBytes(owner));
             try (ResultSet rs = ps.executeQuery()) {
@@ -152,7 +166,8 @@ public final class PartnershipRepository {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Partnership row = read(rs);
-                    if (row.activeOn(today)) active++; else stale.add(row);
+                    if (row.activeOn(today)) active++;
+                    else stale.add(row);
                 }
             }
         }
@@ -175,8 +190,8 @@ public final class PartnershipRepository {
             ps.setInt(6, perks.feeDiscountPct());
             ps.setInt(7, perks.rankBonusPoints());
             ps.setString(8, "ACTIVE");
-            ps.setNull(9, java.sql.Types.VARCHAR);
-            ps.setNull(10, java.sql.Types.BIGINT);
+            ps.setNull(9, Types.VARCHAR);
+            ps.setNull(10, Types.BIGINT);
             ps.setBytes(11, Uuids.toBytes(contractId));
             ps.setLong(12, 1);
             one(ps.executeUpdate());
@@ -239,7 +254,7 @@ public final class PartnershipRepository {
                     new PartnerPerks(rs.getInt("fee_discount_pct"), rs.getInt("rank_bonus_points")),
                     Partnership.Status.valueOf(rs.getString("status")), reason == null ? null : Partnership.EndReason.valueOf(reason),
                     endedAt, Uuids.fromBytes(rs.getBytes("start_contract_id")), rs.getLong("revision"));
-        } catch (IllegalArgumentException | java.time.DateTimeException | NullPointerException invalid) {
+        } catch (IllegalArgumentException | DateTimeException | NullPointerException invalid) {
             throw new SQLException("Invalid stored partnership", invalid);
         }
     }
@@ -257,7 +272,11 @@ public final class PartnershipRepository {
                 c.commit();
                 return result;
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }
@@ -269,7 +288,13 @@ public final class PartnershipRepository {
 
     static PreparedStatement prepare(Connection c, String sql) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); return ps; }
-        catch (SQLException failure) { ps.close(); throw failure; }
+        try {
+            ps.setQueryTimeout(5);
+            return ps;
+        }
+        catch (SQLException failure) {
+            ps.close();
+            throw failure;
+        }
     }
 }

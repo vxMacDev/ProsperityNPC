@@ -658,7 +658,7 @@ class ServiceAssessmentRepositoryIT {
         }
 
         private void assertSnapshot(int selects) {
-            // Assert after outcome checks so concurrency mutants must reach their semantic consequence.
+            // Asserted after the outcome checks, so a concurrency fault fails on its visible result first.
             assertTrue(transactionFaults.isEmpty(), transactionFaults::toString);
             assertEquals(1, borrowed.size(), "all components must share one connection, never reopen independent snapshots");
             List<String> begins = sqls.stream().filter(sql -> sql.startsWith("START TRANSACTION")).toList();
@@ -689,7 +689,7 @@ class ServiceAssessmentRepositoryIT {
         }
 
         @Override public void close() throws SQLException {
-            // Only after assertions: release leaked mutant/failing-test handles so later cases stay isolated.
+            // Runs after the assertions: closes any connection a failing test left borrowed, so later cases stay isolated.
             try { for (Connection actual : borrowed) if (!actual.isClosed()) actual.close(); }
             finally { routed.close(); }
         }

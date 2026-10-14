@@ -1,6 +1,7 @@
 package com.prosperitysmp.npc.render;
 
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -32,7 +33,7 @@ final class ConversationPause {
 
     ConversationPause() { this(Policy.LEGACY); }
 
-    ConversationPause(Policy policy) { this.policy = java.util.Objects.requireNonNull(policy); }
+    ConversationPause(Policy policy) { this.policy = Objects.requireNonNull(policy); }
 
     long acquire(UUID visitor, long now) { return acquire(visitor, now, true); }
 

@@ -27,7 +27,8 @@ final class PublicOccupancyArtifactCodec {
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
             try (var reader = new JsonReader(new StringReader(text))) {
                 reader.setStrictness(Strictness.STRICT);
-                token(reader, JsonToken.BEGIN_OBJECT); reader.beginObject();
+                token(reader, JsonToken.BEGIN_OBJECT);
+                reader.beginObject();
                 name(reader, "version");
                 String version = string(reader, 32);
                 if (!version.equals("npc-public-occupancy-v1")) throw invalid();
@@ -37,30 +38,43 @@ final class PublicOccupancyArtifactCodec {
                 if (!instant.toString().equals(captured) || instant.getNano() % 1_000_000 != 0
                         || instant.isBefore(Instant.parse("0001-01-01T00:00:00Z"))
                         || !instant.isBefore(Instant.parse("+10000-01-01T00:00:00Z"))) throw invalid();
-                name(reader, "properties"); token(reader, JsonToken.BEGIN_ARRAY); reader.beginArray();
+                name(reader, "properties");
+                token(reader, JsonToken.BEGIN_ARRAY);
+                reader.beginArray();
                 var properties = new JsonArray();
                 String previousWorld = null, previousRegion = null;
                 while (reader.peek() != JsonToken.END_ARRAY) {
                     if (properties.size() >= 512) throw invalid();
-                    token(reader, JsonToken.BEGIN_OBJECT); reader.beginObject();
-                    name(reader, "world"); String world = string(reader, 64);
-                    name(reader, "region"); String region = string(reader, 128);
-                    name(reader, "occupancy"); String occupancy = string(reader, 7);
+                    token(reader, JsonToken.BEGIN_OBJECT);
+                    reader.beginObject();
+                    name(reader, "world");
+                    String world = string(reader, 64);
+                    name(reader, "region");
+                    String region = string(reader, 128);
+                    name(reader, "occupancy");
+                    String occupancy = string(reader, 7);
                     if (!WORLD.matcher(world).matches() || !REGION.matcher(region).matches()
                             || !(occupancy.equals("EMPTY") || occupancy.equals("PARTIAL") || occupancy.equals("FULL"))) throw invalid();
-                    token(reader, JsonToken.END_OBJECT); reader.endObject();
+                    token(reader, JsonToken.END_OBJECT);
+                    reader.endObject();
                     if (previousWorld != null && (previousWorld.compareTo(world) > 0
                             || (previousWorld.equals(world) && previousRegion.compareTo(region) >= 0))) throw invalid();
-                    previousWorld = world; previousRegion = region;
+                    previousWorld = world;
+                    previousRegion = region;
                     var entry = new JsonObject();
-                    entry.addProperty("world", world); entry.addProperty("region", region); entry.addProperty("occupancy", occupancy);
+                    entry.addProperty("world", world);
+                    entry.addProperty("region", region);
+                    entry.addProperty("occupancy", occupancy);
                     properties.add(entry);
                 }
                 if (properties.isEmpty()) throw invalid();
-                reader.endArray(); token(reader, JsonToken.END_OBJECT); reader.endObject();
+                reader.endArray();
+                token(reader, JsonToken.END_OBJECT);
+                reader.endObject();
                 token(reader, JsonToken.END_DOCUMENT);
                 var canonical = new JsonObject();
-                canonical.addProperty("version", version); canonical.addProperty("capturedAt", captured);
+                canonical.addProperty("version", version);
+                canonical.addProperty("capturedAt", captured);
                 canonical.add("properties", properties);
                 if (!Arrays.equals(bytes, canonical.toString().getBytes(StandardCharsets.UTF_8))) throw invalid();
                 return instant;

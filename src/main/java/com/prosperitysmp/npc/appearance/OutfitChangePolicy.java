@@ -36,7 +36,7 @@ public final class OutfitChangePolicy {
         return !appliedKey.equals(current.applied().get().assetKey());
     }
 
-    /** 8 to 48 blocks, and never above the rendering radius (but never below 8). */
+    /** Clamped to 8..48 blocks and to no more than the rendering radius, but never below 8. */
     public static double hiddenRadius(double configured, double renderingRadius) {
         double value = Double.isFinite(configured) ? configured : DEFAULT_HIDDEN_RADIUS;
         double ceiling = Double.isFinite(renderingRadius) ? Math.clamp(renderingRadius, 8, 48) : 48;

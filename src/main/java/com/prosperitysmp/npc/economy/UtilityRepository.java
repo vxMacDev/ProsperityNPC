@@ -71,7 +71,9 @@ public final class UtilityRepository {
     /** The caller's maximum is enforced before inserting a bill, event or payment attempt. */
     public Preparation preparePayment(UUID requestId, UUID propertyId, UUID ownerId,
                                       int ownershipEpoch, LocalDate day, long maximumCents) throws SQLException {
-        Objects.requireNonNull(requestId); Objects.requireNonNull(propertyId); Objects.requireNonNull(ownerId);
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(ownerId);
         requireDay(day);
         if (maximumCents <= 0) throw new IllegalArgumentException("Invalid utility maximum");
         if (ownershipEpoch < 0 || reserve.equals(ownerId)) throw new IllegalArgumentException("Invalid utility payer");
@@ -121,8 +123,12 @@ public final class UtilityRepository {
                       (request_id,property_id,economy_day,attempt_number,event_id,state)
                     VALUES (?,?,?,?,?,'WAITING')
                     """)) {
-                id(ps, 1, requestId); id(ps, 2, propertyId); ps.setString(3, day.toString());
-                ps.setInt(4, receipt.attemptNumber()); ps.setLong(5, eventId); one(ps.executeUpdate());
+                id(ps, 1, requestId);
+                id(ps, 2, propertyId);
+                ps.setString(3, day.toString());
+                ps.setInt(4, receipt.attemptNumber());
+                ps.setLong(5, eventId);
+                one(ps.executeUpdate());
             }
             // A blocked insert may cross reset. Roll back all three new rows together.
             if (!preparationDay.equals(economyClock.today())) throw new SQLException("Utility preparation crossed reset");
@@ -153,16 +159,21 @@ public final class UtilityRepository {
                 paidAt = ledger.finalizedAt();
                 if (paidAt == null || paidAt.isBefore(bill.issuedAt()) || paidAt.isAfter(clock.instant()))
                     throw new SQLException("Utility payment chronology invalid");
-                state = State.PAID; outcome = "TRANSFER_CONFIRMED";
+                state = State.PAID;
+                outcome = "TRANSFER_CONFIRMED";
             } else if ("FAILED".equals(ledger.state()) && transfers.confirmedDeclined(c, eventId)) {
-                state = State.DECLINED; outcome = "PAYMENT_DECLINED";
+                state = State.DECLINED;
+                outcome = "PAYMENT_DECLINED";
             }
             try (PreparedStatement ps = prepare(c, """
                     UPDATE npc_utility_payments SET state=?,outcome_code=?,paid_at=?
                     WHERE event_id=? AND state='WAITING'
                     """)) {
-                ps.setString(1, state.name()); ps.setString(2, outcome); time(ps, 3, paidAt);
-                ps.setLong(4, eventId); one(ps.executeUpdate());
+                ps.setString(1, state.name());
+                ps.setString(2, outcome);
+                time(ps, 3, paidAt);
+                ps.setLong(4, eventId);
+                one(ps.executeUpdate());
             }
             return Optional.of(new Receipt(bill, receipt.requestId(), receipt.attemptNumber(), eventId, state, outcome, paidAt));
         });
@@ -170,7 +181,8 @@ public final class UtilityRepository {
 
     /** Complete bounded history for one bill; reads are not fresh ARM/payment authorization. */
     public List<Receipt> history(UUID propertyId, LocalDate day) throws SQLException {
-        Objects.requireNonNull(propertyId); requireDay(day);
+        Objects.requireNonNull(propertyId);
+        requireDay(day);
         return transaction(c -> {
             property(c, propertyId);
             UtilityBill bill = bill(c, propertyId, day);
@@ -242,7 +254,8 @@ public final class UtilityRepository {
 
     private static UtilityBill bill(Connection c, UUID property, LocalDate day) throws SQLException {
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_utility_bills WHERE property_id=? AND economy_day=? FOR UPDATE")) {
-            id(ps, 1, property); ps.setString(2, day.toString());
+            id(ps, 1, property);
+            ps.setString(2, day.toString());
             try (ResultSet rs = ps.executeQuery()) {
                 if (!next(c, ps, rs)) return null;
                 UtilityBill bill = readBill(rs);
@@ -273,11 +286,22 @@ public final class UtilityRepository {
                   capacity,occupied_tenants,installed_upgrade_levels,issued_at,period_start,due_at,clock_zone,
                   reset_hour,amount_cents,payload_sha256) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """)) {
-            id(ps, 1, b.propertyId()); ps.setString(2, b.day().toString()); id(ps, 3, b.ownerId());
-            ps.setInt(4, b.ownershipEpoch()); ps.setLong(5, b.propertyRevision()); ps.setInt(6, b.capacity());
-            ps.setInt(7, b.occupiedTenants()); ps.setInt(8, b.installedUpgradeLevels()); time(ps, 9, b.issuedAt());
-            time(ps, 10, b.periodStart()); time(ps, 11, b.dueAt()); ps.setString(12, b.zoneId());
-            ps.setInt(13, b.resetHour()); ps.setLong(14, b.cents()); ps.setString(15, b.fingerprint()); one(ps.executeUpdate());
+            id(ps, 1, b.propertyId());
+            ps.setString(2, b.day().toString());
+            id(ps, 3, b.ownerId());
+            ps.setInt(4, b.ownershipEpoch());
+            ps.setLong(5, b.propertyRevision());
+            ps.setInt(6, b.capacity());
+            ps.setInt(7, b.occupiedTenants());
+            ps.setInt(8, b.installedUpgradeLevels());
+            time(ps, 9, b.issuedAt());
+            time(ps, 10, b.periodStart());
+            time(ps, 11, b.dueAt());
+            ps.setString(12, b.zoneId());
+            ps.setInt(13, b.resetHour());
+            ps.setLong(14, b.cents());
+            ps.setString(15, b.fingerprint());
+            one(ps.executeUpdate());
         }
     }
 
@@ -287,7 +311,8 @@ public final class UtilityRepository {
                 SELECT * FROM npc_utility_payments WHERE property_id=? AND economy_day=?
                 ORDER BY attempt_number LIMIT 17 ROWS EXAMINED 512 FOR UPDATE
                 """)) {
-            id(ps, 1, bill.propertyId()); ps.setString(2, bill.day().toString());
+            id(ps, 1, bill.propertyId());
+            ps.setString(2, bill.day().toString());
             try (ResultSet rs = ps.executeQuery()) {
                 while (next(c, ps, rs)) {
                     try {
@@ -330,7 +355,9 @@ public final class UtilityRepository {
                 SELECT event_id FROM npc_economy_events WHERE property_id=? AND source=? AND economy_day=?
                 ORDER BY event_id LIMIT 17 ROWS EXAMINED 512 FOR UPDATE
                 """)) {
-            id(ps, 1, property); ps.setString(2, EventSource.UTILITY.key()); ps.setString(3, day.toString());
+            id(ps, 1, property);
+            ps.setString(2, EventSource.UTILITY.key());
+            ps.setString(3, day.toString());
             try (ResultSet rs = ps.executeQuery()) {
                 while (next(c, ps, rs)) if (!remaining.remove(number(rs, "event_id")))
                     throw new SQLException("Unmanaged utility event requires review");
@@ -375,7 +402,8 @@ public final class UtilityRepository {
             default -> throw new IllegalArgumentException("Unknown utility lookup");
         };
         try (PreparedStatement ps = prepare(c, sql)) {
-            if (request == null) ps.setLong(1, event); else id(ps, 1, request);
+            if (request == null) ps.setLong(1, event);
+            else id(ps, 1, request);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!next(c, ps, rs)) return null;
                 RequestScope scope = new RequestScope(uuid(rs, "property_id", false), parseDay(rs.getString("economy_day")));
@@ -392,7 +420,8 @@ public final class UtilityRepository {
     }
     private static LocalDate parseDay(String value) throws SQLException {
         try {
-            LocalDate day = LocalDate.parse(value); requireDay(day);
+            LocalDate day = LocalDate.parse(value);
+            requireDay(day);
             if (!day.toString().equals(value)) throw new IllegalArgumentException("Noncanonical day");
             return day;
         } catch (RuntimeException invalid) { throw new SQLException("Invalid utility day", invalid); }
@@ -421,7 +450,10 @@ public final class UtilityRepository {
         return (int) value;
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        warnings(c, ps, rs); boolean next = rs.next(); warnings(c, ps, rs); return next;
+        warnings(c, ps, rs);
+        boolean next = rs.next();
+        warnings(c, ps, rs);
+        return next;
     }
     private static void warnings(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
         if (c.getWarnings() != null || ps.getWarnings() != null || rs.getWarnings() != null)
@@ -433,8 +465,13 @@ public final class UtilityRepository {
     }
     private static PreparedStatement prepare(Connection c, String sql) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); return ps; }
-        catch (SQLException failure) { ps.close(); throw failure; }
+        try {
+            ps.setQueryTimeout(5);
+            return ps;
+        } catch (SQLException failure) {
+            ps.close();
+            throw failure;
+        }
     }
     private static void one(int count) throws SQLException { if (count != 1) throw new SQLException("Utility write count mismatch"); }
     @FunctionalInterface private interface Transaction<T> { T run(Connection c) throws SQLException; }
@@ -442,9 +479,16 @@ public final class UtilityRepository {
         try (Connection c = database.getConnection()) {
             c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
             c.setAutoCommit(false);
-            try { T result = work.run(c); c.commit(); return result; }
-            catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+            try {
+                T result = work.run(c);
+                c.commit();
+                return result;
+            } catch (SQLException | RuntimeException failure) {
+                try {
+                    c.rollback();
+                } catch (SQLException rollback) {
+                    failure.addSuppressed(rollback);
+                }
                 throw failure;
             }
         }

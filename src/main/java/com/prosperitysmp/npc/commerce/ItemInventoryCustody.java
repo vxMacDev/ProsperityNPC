@@ -1,32 +1,40 @@
 package com.prosperitysmp.npc.commerce;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataType;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /** One adjacent main-thread mutation, across storage and ender chest; never a world drop. */
 public final class ItemInventoryCustody {
     /** One plain material and how many to take. No feature-specific types, so every hand-in can use it. */
-    public record Take(org.bukkit.Material material, int quantity) {
+    public record Take(Material material, int quantity) {
         public Take {
-            java.util.Objects.requireNonNull(material);
+            Objects.requireNonNull(material);
             if (quantity < 1 || quantity > ItemCustody.MAX_QUANTITY) throw new IllegalArgumentException("Invalid take quantity");
         }
     }
     private ItemInventoryCustody() { }
 
     /** A fresh one-item stack: only stacks similar to it count, so named, enchanted or damaged items never do. */
-    public static ItemStack prototype(org.bukkit.Material material) {
+    public static ItemStack prototype(Material material) {
         return new ItemStack(material, 1);
     }
 
     /** Main only: plain units in inventory storage slots 0-35. Armor, offhand, cursor and ender chest are not counted. */
-    public static int storageUnits(Player player, org.bukkit.Material material) {
+    public static int storageUnits(Player player, Material material) {
         requireMain();
         ItemStack prototype = prototype(material);
         int total = 0;
@@ -36,7 +44,7 @@ public final class ItemInventoryCustody {
     }
 
     /** Main only: plain units in storage plus the ender chest, the scope the save proof reads back. */
-    public static int totalUnits(Player player, org.bukkit.Material material) {
+    public static int totalUnits(Player player, Material material) {
         requireMain();
         return count(player, prototype(material));
     }
@@ -48,14 +56,14 @@ public final class ItemInventoryCustody {
      * slot change is reported as returnedNormally=false. durable starts true; the caller clears it unless the
      * saved file is proven.
      */
-    public static ItemCollectionEvidence collect(Player player, java.util.UUID collectionId, java.util.List<Take> takes) {
+    public static ItemCollectionEvidence collect(Player player, UUID collectionId, List<Take> takes) {
         requireMain();
-        java.util.Objects.requireNonNull(collectionId);
+        Objects.requireNonNull(collectionId);
         if (takes.isEmpty() || takes.size() > ItemCollectionEvidence.MAX_LINES
                 || takes.stream().map(Take::material).distinct().count() != takes.size())
             throw new IllegalArgumentException("Invalid collection lines");
         var prototypes = takes.stream().map(t -> prototype(t.material())).toList();
-        var before = new java.util.ArrayList<Integer>();
+        var before = new ArrayList<Integer>();
         for (ItemStack prototype : prototypes) before.add(count(player, prototype));
         String beforeHash = inventoryHash(player);
         for (Take take : takes) {
@@ -84,7 +92,7 @@ public final class ItemInventoryCustody {
             player.saveData();
             normal = true;
         } catch (RuntimeException | LinkageError uncertain) { /* Keep the adjacent evidence; never retry. */ }
-        var after = new java.util.ArrayList<Integer>();
+        var after = new ArrayList<Integer>();
         for (ItemStack prototype : prototypes) after.add(count(player, prototype));
         return new ItemCollectionEvidence(player.getUniqueId(), collectionId, beforeHash, inventoryHash(player),
                 before, after, normal, true);
@@ -95,7 +103,7 @@ public final class ItemInventoryCustody {
      * save and saves. Returns the full state of the inventory (armor and offhand included) and ender chest, which the
      * take must still find. Not proof by itself: ItemSaveProof.baseline reads the file back and checks the marker.
      */
-    public static String saveBeforeTake(Player player, java.util.UUID collectionId) {
+    public static String saveBeforeTake(Player player, UUID collectionId) {
         requireMain();
         mark(player, ItemSaveProof.marker(collectionId, false));
         player.saveData();
@@ -109,23 +117,24 @@ public final class ItemInventoryCustody {
     }
 
     /**
-     * Main only, under the player's inventory gate and before a REPAIR_RETURN delivery: marks the saved data as this
-     * return's before-delivery save and saves. Not proof by itself: ItemSaveProof.returnBaseline reads the file back
-     * and checks the marker.
+     * Main only, under the player's inventory gate and before a marked delivery (every REPAIR_RETURN, and commerce with
+     * town.commerce.delivery-save-marker on): marks the saved data as this delivery's before-delivery save, under the key
+     * for its source, and saves. Taking the custody means the nonce can never be paired with another source's key. Not
+     * proof by itself: ItemSaveProof.deliveryBaseline reads the file back and checks the marker.
      */
-    static void saveBeforeReturn(Player player, java.util.UUID requestNonce) {
+    static void saveBeforeDelivery(Player player, ItemCustody custody) {
         requireMain();
-        mark(player, ItemSaveProof.RETURN_MARKER_KEY, ItemSaveProof.marker(requestNonce, false));
+        mark(player, ItemSaveProof.markerKeyFor(custody.source()), ItemSaveProof.marker(custody.requestNonce(), false));
         player.saveData();
     }
 
     /**
-     * Main only, in the delivery's own tick and right before {@link #deliver}: the return's after marker, so the save
+     * Main only, in the delivery's own tick and right before {@link #deliver}: the delivery's after marker, so the save
      * deliver makes carries it and the proof can tell that save from any older file.
      */
-    static void markReturnDelivered(Player player, java.util.UUID requestNonce) {
+    static void markDelivered(Player player, ItemCustody custody) {
         requireMain();
-        mark(player, ItemSaveProof.RETURN_MARKER_KEY, ItemSaveProof.marker(requestNonce, true));
+        mark(player, ItemSaveProof.markerKeyFor(custody.source()), ItemSaveProof.marker(custody.requestNonce(), true));
     }
 
     private static void mark(Player player, String marker) {
@@ -133,8 +142,8 @@ public final class ItemInventoryCustody {
     }
 
     private static void mark(Player player, String keyName, String marker) {
-        org.bukkit.NamespacedKey key = Objects.requireNonNull(org.bukkit.NamespacedKey.fromString(keyName));
-        player.getPersistentDataContainer().set(key, org.bukkit.persistence.PersistentDataType.STRING, marker);
+        NamespacedKey key = Objects.requireNonNull(NamespacedKey.fromString(keyName));
+        player.getPersistentDataContainer().set(key, PersistentDataType.STRING, marker);
     }
 
     static ItemStack decode(ItemCustody custody) {
@@ -200,13 +209,54 @@ public final class ItemInventoryCustody {
     private static String inventoryHash(Player player) {
         try {
             MessageDigest hash = MessageDigest.getInstance("SHA-256");
-            for (Inventory inventory : new Inventory[] {player.getInventory(), player.getEnderChest()}) {
-                byte[] bytes = ItemStack.serializeItemsAsBytes(inventory.getContents());
-                hash.update(java.nio.ByteBuffer.allocate(4).putInt(bytes.length).array());
-                hash.update(bytes);
+            for (Inventory inventory : new Inventory[] {player.getInventory(), player.getEnderChest()}) update(hash, inventory);
+            // The saved file also holds what the player rides, and the whole-file count includes the items a chested
+            // mount or boat carries. So mounting, dismounting or a change to those items counts as a change too.
+            org.bukkit.entity.Entity root = player.getVehicle();
+            while (root != null && root.getVehicle() != null) root = root.getVehicle();
+            if (root == null) hash.update((byte) 0);
+            else {
+                var next = new ArrayDeque<org.bukkit.entity.Entity>(List.of(root));
+                while (!next.isEmpty()) {
+                    var entity = next.poll();
+                    // Other players are saved in their own files, not in this one.
+                    if (entity instanceof Player) continue;
+                    hash.update((byte) 1);
+                    hash.update(entity.getUniqueId().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    if (entity instanceof org.bukkit.inventory.InventoryHolder holder) update(hash, holder.getInventory());
+                    // Mobs keep what they wear and hold in the saved file too, and most are not inventory holders.
+                    if (entity instanceof org.bukkit.entity.LivingEntity living && living.getEquipment() != null)
+                        update(hash, equipment(living.getEquipment()));
+                    next.addAll(entity.getPassengers());
+                }
             }
             return HexFormat.of().formatHex(hash.digest());
         } catch (NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+    }
+
+    private static void update(MessageDigest hash, Inventory inventory) {
+        update(hash, inventory.getContents());
+    }
+
+    /** Every equipment slot, in a fixed order. A slot this mob has not got, or an empty one, counts as nothing. */
+    private static ItemStack[] equipment(org.bukkit.inventory.EntityEquipment equipment) {
+        var slots = org.bukkit.inventory.EquipmentSlot.values();
+        var items = new ItemStack[slots.length];
+        for (int i = 0; i < slots.length; i++) {
+            try {
+                ItemStack item = equipment.getItem(slots[i]);
+                items[i] = item == null || item.getType().isAir() ? null : item;
+            } catch (IllegalArgumentException unsupported) {
+                items[i] = null;
+            }
+        }
+        return items;
+    }
+
+    private static void update(MessageDigest hash, ItemStack[] items) {
+        byte[] bytes = ItemStack.serializeItemsAsBytes(items);
+        hash.update(ByteBuffer.allocate(4).putInt(bytes.length).array());
+        hash.update(bytes);
     }
 
     private static void requireMain() {

@@ -1,7 +1,9 @@
 package com.prosperitysmp.npc.resident;
 
+import com.prosperitysmp.npc.property.TenantMood;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 
 /** Authored dialogue over facts. Financial terms and arbitrary player text are deliberately absent. */
 public final class ResidentDialogue {
@@ -127,19 +129,22 @@ public final class ResidentDialogue {
                     : choose(variant, "I prefer to know people before discussing business. There are no offers available.",
                             "I'm still getting to know you. There are no business offers available.");
             case HISTORY -> {
-                var memory=latestMeaningful(relationship);
-                if(memory.isPresent()) {
-                    var event=memory.get();
-                    line=memoryGreeting(person.temperament(),event.kind(),variant)+" Service day: "+event.economyDay()+".";
-                    evidence=event.sourceRef();
-                } else if(relationship.stage()==RelationshipMemory.Stage.STRANGER) {
-                    line=choose(variant,"Let's start with hello. I'm glad you stopped by.","It's good to see you. Shall we introduce ourselves?");
+                var memory = latestMeaningful(relationship);
+                if (memory.isPresent()) {
+                    var event = memory.get();
+                    line = memoryGreeting(person.temperament(), event.kind(), variant) + " Service day: " + event.economyDay() + ".";
+                    evidence = event.sourceRef();
+                } else if (relationship.stage() == RelationshipMemory.Stage.STRANGER) {
+                    line = choose(variant, "Let's start with hello. I'm glad you stopped by.",
+                            "It's good to see you. Shall we introduce ourselves?");
                 } else {
-                    line=choose(variant,"I don't have a recent service memory to recall.","There's no recent service event in my records to look back on.");
+                    line = choose(variant, "I don't have a recent service memory to recall.",
+                            "There's no recent service event in my records to look back on.");
                 }
             }
             case TIPS -> line = choose(variant, "Let me think of something useful.", "Here is something worth knowing.");
-            case CONTRACTS -> line = choose(variant, "Let's look at contracts and partners.", "Here is what I have for contracts and partners.");
+            case CONTRACTS -> line = choose(variant, "Let's look at contracts and partners.",
+                    "Here is what I have for contracts and partners.");
             default -> throw new IllegalArgumentException("Unknown topic");
         }
         return new Reply(line, evidence, List.of(Topic.ROUTINE, Topic.HOME, Topic.HISTORY, Topic.BUSINESS, Topic.COMMERCE, Topic.ABOUT));
@@ -153,7 +158,7 @@ public final class ResidentDialogue {
     }
 
     /** One short authored line per mood band. States how the resident feels now, never a past event. */
-    public static String moodLine(com.prosperitysmp.npc.property.TenantMood.Band band) {
+    public static String moodLine(TenantMood.Band band) {
         return switch (band) {
             case UNHAPPY -> "I'm not happy with my home right now.";
             case NEUTRAL -> "My home is fine. Nothing special either way.";
@@ -182,8 +187,8 @@ public final class ResidentDialogue {
         return work + " I'm part of the " + person.household() + " household.";
     }
 
-    private static java.util.Optional<RelationshipMemory.Event> latestMeaningful(RelationshipMemory.State state) {
-        return state.recent().stream().filter(e->e.kind()!=RelationshipMemory.Kind.INTRODUCTION)
+    private static Optional<RelationshipMemory.Event> latestMeaningful(RelationshipMemory.State state) {
+        return state.recent().stream().filter(e -> e.kind() != RelationshipMemory.Kind.INTRODUCTION)
                 .max(Comparator.comparing(RelationshipMemory.Event::occurredAt).thenComparing(RelationshipMemory.Event::sourceRef));
     }
 

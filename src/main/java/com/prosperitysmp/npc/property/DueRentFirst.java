@@ -6,14 +6,13 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
- * Staff entry points that read asking rent (/npcadmin rent and /npcadmin match) apply today's due asking-rent
- * changes first, the same step the daily cycle runs before its phases, so neither ever pays or matches on a rent
- * the owner already changed for today. Daily rent reservations are unique per property and day, so a batch on
- * the old rate could not be corrected later the same day.
+ * Staff commands that read asking rent (/npcadmin rent and /npcadmin match) apply today's due asking-rent
+ * changes first, the same step the daily cycle runs before its phases. Daily rent reservations are unique per
+ * property and day, so a batch on the old rate could not be corrected later the same day.
  *
- * housing.rent-change-delay-days 0 with nothing pending (rentChangesDue false): the batch starts directly,
- * exactly as before. Otherwise the step runs first; if it is busy, fails, or leaves the cache needing
- * reconciliation, no batch starts. Every gate is read again on main after the step's async hop.
+ * With housing.rent-change-delay-days 0 and nothing pending (rentChangesDue false), the batch starts directly.
+ * Otherwise the step runs first, and if it is busy, fails, or leaves the cache needing reconciliation, no batch
+ * starts. Every gate is read again on main after the step's async hop.
  */
 public final class DueRentFirst {
     private DueRentFirst() { }
@@ -48,9 +47,14 @@ public final class DueRentFirst {
      * notStarted is replied when the batch itself refuses after the rent-change step succeeded.
      */
     public static boolean request(Steps steps, Consumer<String> reply, String notStarted) {
-        Objects.requireNonNull(steps); Objects.requireNonNull(reply); Objects.requireNonNull(notStarted);
+        Objects.requireNonNull(steps);
+        Objects.requireNonNull(reply);
+        Objects.requireNonNull(notStarted);
         if (!steps.rentChangesDue()) return steps.start(reply);
-        if (steps.stepOwnedElsewhere()) { say(reply, OWNED_ELSEWHERE); return false; }
+        if (steps.stepOwnedElsewhere()) {
+            say(reply, OWNED_ELSEWHERE);
+            return false;
+        }
         final LocalDate day = Objects.requireNonNull(steps.today());
         steps.stepRunning(true);
         final boolean started;
@@ -58,14 +62,30 @@ public final class DueRentFirst {
             started = steps.applyDueRentChanges(day, (ok, message) -> {
                 steps.stepRunning(false);
                 say(reply, message);
-                if (!Boolean.TRUE.equals(ok)) { say(reply, STEP_FAILED); return; }
+                if (!Boolean.TRUE.equals(ok)) {
+                    say(reply, STEP_FAILED);
+                    return;
+                }
                 // Re-read after the hop: the day, the plugin, the switches and the caller's authority.
-                if (!day.equals(steps.today())) { say(reply, DAY_CHANGED); return; }
-                if (!steps.stillAllowed()) { say(reply, STOPPED); return; }
+                if (!day.equals(steps.today())) {
+                    say(reply, DAY_CHANGED);
+                    return;
+                }
+                if (!steps.stillAllowed()) {
+                    say(reply, STOPPED);
+                    return;
+                }
                 if (!steps.start(reply)) say(reply, notStarted);
             });
-        } catch (RuntimeException failure) { steps.stepRunning(false); throw failure; }
-        if (!started) { steps.stepRunning(false); say(reply, STEP_BUSY); return false; }
+        } catch (RuntimeException failure) {
+            steps.stepRunning(false);
+            throw failure;
+        }
+        if (!started) {
+            steps.stepRunning(false);
+            say(reply, STEP_BUSY);
+            return false;
+        }
         return true;
     }
 

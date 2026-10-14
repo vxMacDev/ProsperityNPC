@@ -1,7 +1,7 @@
 package com.prosperitysmp.npc.formulas;
 
 /**
- * The property-lifetime funding invariant (§3.2). A property may pay out at most
+ * The property-lifetime funding invariant. A property may pay out at most
  * its one-time seed plus a fixed fraction of the cash it has itself sunk, minus
  * what it has already paid out. This makes every property structurally a mild
  * net sink beyond its seed, and it never resets on sale.

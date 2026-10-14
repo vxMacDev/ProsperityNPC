@@ -32,8 +32,7 @@ import static com.prosperitysmp.npc.economy.TransferProof.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Codex P1 (round 3): the ownership reconcile pump must never replace the cached record of a home whose ownership
- * lease is held. Real MariaDB behind the pump's writer (PropertyRepository.reconcileOwner, with the findById fallback
+ * The ownership reconcile pump must never replace the cached record of a home whose ownership lease is held. Real MariaDB behind the pump's writer (PropertyRepository.reconcileOwner, with the findById fallback
  * PropertyService uses), a real OwnershipFence, the real OwnershipReconcilePump with PropertyService's cache rebase,
  * the real JournaledTransfer with a fake journal, and a CREDIT authorization doing what UtilityPaymentRuntime.validate
  * does: the cached Property must still equal the one the payment was admitted against. The SQL row differs from the
@@ -196,7 +195,7 @@ class ReconcilePumpLeaseIT {
 
     private static final int RETRY = (int) OwnershipReconcilePump.DEFERRED_RETRY_TICKS + 2;
 
-    // ---- the finding
+    // ---- the pump against a held lease
 
     /** The pump dispatched before the payment; its SQL hop and completion land between DEBIT and CREDIT. */
     @Test void pumpCompletingBetweenDebitAndCreditLeavesTheRecordAndTheCreditCompletes() throws Exception {
@@ -253,7 +252,7 @@ class ReconcilePumpLeaseIT {
         assertEquals(repo.findById(p.propertyId()).orElseThrow(), cache.get(p.propertyId()));
     }
 
-    /** Negative control: with no payment in flight the same pass installs the SQL row at once. */
+    /** With no payment in flight, the same pass installs the SQL row at once. */
     @Test void withoutAPaymentThePassRebasesImmediately() throws Exception {
         Property p = property();
         Map<UUID, Property> cache = new ConcurrentHashMap<>(Map.of(p.propertyId(), p));
@@ -266,7 +265,7 @@ class ReconcilePumpLeaseIT {
         assertEquals(-1, pump.ticksUntilHop(3 * RETRY), "nothing to retry");
     }
 
-    /** Positive control: the unfenced pump (the old behavior) swaps the record and strands the debit. */
+    /** A pump with no fence swaps the record and strands the debit, which is what the fence prevents. */
     @Test void unfencedPumpStrandsTheDebitAtCreditIntent() throws Exception {
         Property p = property();
         Map<UUID, Property> cache = new ConcurrentHashMap<>(Map.of(p.propertyId(), p));
@@ -295,7 +294,7 @@ class ReconcilePumpLeaseIT {
                 "PropertyService's pump host hands the pump the live ownership fence");
         String step = java.nio.file.Files.readString(java.nio.file.Path.of(
                 "src/main/java/com/prosperitysmp/npc/property/GuardedRentStep.java"));
-        assertFalse(step.contains("PropertyService.rebaseDueRent("), "the guarded step no longer releases over drifted held entries");
+        assertFalse(step.contains("PropertyService.rebaseDueRent("), "the guarded step does not release over drifted held entries");
         assertEquals(2, step.split("installHeld\\(host\\.cache\\(\\)", -1).length - 1, "apply and settle both install");
     }
 

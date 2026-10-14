@@ -8,13 +8,16 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The economy-event ledger (§4). Enforces idempotency (unique key), the
+ * The economy-event ledger. Enforces idempotency (unique key), the
  * PENDING→CLAIMED→PAID/FAILED lifecycle with an atomic claim, and startup
  * crash-recovery of orphaned CLAIMED rows to AMBIGUOUS (never auto-retried).
  */
@@ -58,7 +61,7 @@ public final class EconomyEventRepository {
             setNullableUuid(ps, 5, e.propertyId());
             setNullableUuid(ps, 6, e.counterpartyUuid());
             if (e.ownershipEpoch() == null) {
-                ps.setNull(7, java.sql.Types.INTEGER);
+                ps.setNull(7, Types.INTEGER);
             } else {
                 ps.setInt(7, e.ownershipEpoch());
             }
@@ -208,7 +211,7 @@ public final class EconomyEventRepository {
 
     /** Returns up to {@code max} PENDING event ids, oldest first, hard-capped at 100. */
     public List<Long> selectPendingIds(int max) throws SQLException {
-        List<Long> ids = new java.util.ArrayList<>();
+        List<Long> ids = new ArrayList<>();
         try (Connection c = database.getConnection();
              PreparedStatement ps = c.prepareStatement(
                      "SELECT event_id FROM npc_economy_events WHERE state='PENDING' ORDER BY event_id LIMIT ?")) {
@@ -223,7 +226,7 @@ public final class EconomyEventRepository {
     }
 
     /** Loads the fields the bridge needs for a (already CLAIMED) event. */
-    public java.util.Optional<ClaimedDetail> loadDetail(long eventId) throws SQLException {
+    public Optional<ClaimedDetail> loadDetail(long eventId) throws SQLException {
         try (Connection c = database.getConnection();
              PreparedStatement ps = c.prepareStatement(
                      "SELECT source, direction, counterparty_uuid, requested_amount_cents FROM npc_economy_events "
@@ -231,7 +234,7 @@ public final class EconomyEventRepository {
             ps.setLong(1, eventId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
-                    return java.util.Optional.empty();
+                    return Optional.empty();
                 }
                 EventSource source = validatedSource(rs.getString("source"), rs.getString("direction"));
                 long requestedCents = rs.getLong("requested_amount_cents");
@@ -240,7 +243,7 @@ public final class EconomyEventRepository {
                 }
                 byte[] cp = rs.getBytes("counterparty_uuid");
                 UUID counterparty = cp == null ? null : Uuids.fromBytes(cp);
-                return java.util.Optional.of(new ClaimedDetail(eventId, source, counterparty,
+                return Optional.of(new ClaimedDetail(eventId, source, counterparty,
                         requestedCents));
             }
         }
@@ -323,7 +326,7 @@ public final class EconomyEventRepository {
 
     private static void setNullableUuid(PreparedStatement ps, int idx, UUID uuid) throws SQLException {
         if (uuid == null) {
-            ps.setNull(idx, java.sql.Types.BINARY);
+            ps.setNull(idx, Types.BINARY);
         } else {
             ps.setBytes(idx, Uuids.toBytes(uuid));
         }

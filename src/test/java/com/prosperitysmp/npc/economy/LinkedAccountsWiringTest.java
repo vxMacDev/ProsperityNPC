@@ -69,7 +69,7 @@ class LinkedAccountsWiringTest {
         assertNull(ProsperityNpcPlugin.optionalFloodgate(true, true, () -> { throw new IllegalStateException("not ready"); },
                 warnings::add, "Linked account lookup"));
         assertEquals(List.of("Linked account discovery unavailable: NoClassDefFoundError", "Linked account lookup unavailable: IllegalStateException"), warnings);
-        assertEquals(Integer.valueOf(1), ProsperityNpcPlugin.optionalFloodgate(true, true, () -> 1, warnings::add, "x"), "positive control");
+        assertEquals(Integer.valueOf(1), ProsperityNpcPlugin.optionalFloodgate(true, true, () -> 1, warnings::add, "x"), "a working supplier is built");
     }
 
     @Test void thePluginWiresSavedLinksWithoutFloodgateAndNeverNamesAFloodgateType() throws Exception {
@@ -95,7 +95,7 @@ class LinkedAccountsWiringTest {
         assertTrue(split > 0 && admin.indexOf("if (!plugin.linkedAccountsEnabled())", split) > split
                 && admin.indexOf("if (!plugin.linkedAccountsEnabled())", split) < admin.indexOf("links.staffSplit(", split),
                 "split checks the flag before any SQL");
-        assertFalse(admin.contains("staffAdd"), "no staff add in this release");
+        assertFalse(admin.contains("staffAdd"), "there is no staff add");
         // The split's day is read inside the save itself (AccountLinkRepositoryIT), so the command passes the clock, never a day.
         String splitBlock = admin.substring(split, admin.indexOf("send(sender, NamedTextColor.GRAY, \"Usage: /npcadmin links", split));
         assertFalse(splitBlock.contains("economyToday()"), "no day captured on the main thread for the split");
@@ -103,7 +103,7 @@ class LinkedAccountsWiringTest {
         int worker = splitBlock.indexOf("plugin.submitLinkWork(");
         assertTrue(worker > 0 && worker < splitBlock.indexOf("links.staffSplit(a, b, actor, reason, economyClock);"),
                 "the split runs inside the worker task with the clock");
-        // Health shows the linked-accounts line only while it is on, so flag-off health output is unchanged.
+        // Health shows the linked-accounts line only while it is on, so flag-off health output has no extra line.
         assertEquals(1, count(admin, "\"Linked accounts: \" + plugin.linkedAccountsStatus()"));
         assertTrue(admin.contains("if (plugin.linkedAccountsEnabled()) send(sender, NamedTextColor.GRAY, \"Linked accounts: \" + plugin.linkedAccountsStatus());"));
     }
@@ -111,7 +111,7 @@ class LinkedAccountsWiringTest {
     @Test void theCapIsOnlyComputedThroughTheGroupedAllocator() throws Exception {
         List<Path> sources;
         try (Stream<Path> walk = Files.walk(MAIN)) { sources = walk.filter(p -> p.toString().endsWith(".java")).toList(); }
-        assertTrue(sources.size() > 100, "positive control: the walk found the sources");
+        assertTrue(sources.size() > 100, "the walk found the sources");
         int helperUses = 0, gateUses = 0;
         for (Path source : sources) {
             String code = Files.readString(source);

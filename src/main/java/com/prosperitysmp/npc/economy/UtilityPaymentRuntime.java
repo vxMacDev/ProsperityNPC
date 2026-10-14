@@ -1,19 +1,27 @@
 package com.prosperitysmp.npc.economy;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import com.prosperitysmp.npc.alert.StaffAlerts;
 import com.prosperitysmp.npc.arm.OwnershipFence;
 import com.prosperitysmp.npc.clock.EconomyClock;
 import com.prosperitysmp.npc.config.EconomyLimits;
+import com.prosperitysmp.npc.formulas.UpgradeType;
+import com.prosperitysmp.npc.property.AutoCareRepository;
+import com.prosperitysmp.npc.property.OwnerAway;
 import com.prosperitysmp.npc.property.Property;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.Collection;
 import java.util.HexFormat;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.List;
 import java.util.ArrayList;
@@ -23,8 +31,10 @@ import java.util.Comparator;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -44,21 +54,21 @@ import net.milkbowl.vault.economy.Economy;
 public final class UtilityPaymentRuntime implements AutoCloseable {
     public static final String SMOKE_OPT_IN = "economy.beta-utility-smoke-enabled";
     public static final String PAYMENTS_OPT_IN = "economy.payments-enabled";
-    /** Off: one unavailable owner refuses the whole rent batch (original behavior). */
+    /** Off: one unavailable owner refuses the whole rent batch. */
     public static final String RENT_ISOLATION = "economy.rent-isolation-enabled";
-    /** Off: no appreciation is reserved or paid and rent batches behave exactly as before. */
+    /** Off: no appreciation is reserved or paid; rent batches pay rent only. */
     public static final String APPRECIATION = "economy.appreciation-enabled";
-    /** Off: no payout reservation is ever retired and rent batches behave exactly as before. */
+    /** Off: no payout reservation is ever retired. */
     public static final String PAYOUT_RETIREMENT = "economy.payout-retirement-enabled";
     /**
-     * Off: appreciation is held only by this batch's own floor deferrals, exactly as before. On: it is also held
-     * whenever the ledger has any of today's rent not yet final on any property, including rent this batch never
-     * listed (isolation-held, paused or owner-away after reserving), or while any home's rent is held for a due rent
-     * change not yet applied, so it cannot spend reserve headroom that rent needs.
+     * Off: appreciation is held only by this batch's own rent (a floor deferral, or a home it skipped for a due rent
+     * change). On: it is also held whenever the ledger has any of today's rent not yet final on any property,
+     * including rent this batch never listed (isolation-held, paused or owner-away after reserving), or while any
+     * home's rent is held for a due rent change not yet applied, so it cannot spend reserve headroom that rent needs.
      */
     public static final String APPRECIATION_LEDGER_RENT_HOLD = "economy.appreciation-ledger-rent-hold-enabled";
     /**
-     * Off: owner-away (housing.vacation-days) is checked only at admission, exactly as before. On: it is reread on
+     * Off: owner-away (housing.vacation-days) is checked only at admission. On: it is reread on
      * main before every DEBIT leg (and immediately before the provider withdraw), so a home that became held during
      * an async hop (for example /npcadmin reload turning vacation-days on) is not charged or paid. Never before CREDIT.
      */
@@ -69,7 +79,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     private final UUID reserve, runId = UUID.randomUUID();
     private final UtilityRepository utilities;
     private final PurchaseRepository purchases;
-    private final com.prosperitysmp.npc.property.AutoCareRepository autoCare;
+    private final AutoCareRepository autoCare;
     private final RentReservationRepository rents;
     private final TransferJournal journal;
     private final EconomyClock days;
@@ -79,10 +89,11 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     private final BukkitTask ticker;
     private volatile boolean closed;
     private boolean busy, recovery, startupReady;
-    private enum Result { PAID, REPAIRED, EVICTED, INSURED, PURCHASED, PURCHASE_ALREADY_APPLIED, DECLINED, ALREADY_PAID, OVER_CAP, REPAIR_UNAVAILABLE, REPAIR_ITEMS_PENDING, EVICTION_UNAVAILABLE, TARGET_UNAVAILABLE, INSUFFICIENT_FUNDS }
+    private enum Result { PAID, REPAIRED, EVICTED, INSURED, PURCHASED, PURCHASE_ALREADY_APPLIED, DECLINED, ALREADY_PAID, OVER_CAP,
+            REPAIR_UNAVAILABLE, REPAIR_ITEMS_PENDING, EVICTION_UNAVAILABLE, TARGET_UNAVAILABLE, INSUFFICIENT_FUNDS }
     /** The reply when a cash repair waits on an item hand-in (item-repairs.block-cash-while-items-held). */
     public static final String ITEMS_PENDING_REPLY = "This repair has an item hand-in waiting for staff. No money was taken.";
-    private record PurchaseTarget(PurchaseRequest.Kind kind, com.prosperitysmp.npc.formulas.UpgradeType upgrade, Integer level, UUID tenantId) { }
+    private record PurchaseTarget(PurchaseRequest.Kind kind, UpgradeType upgrade, Integer level, UUID tenantId) { }
     private record Prepared(long eventId, long cents, UtilityBill bill, PurchaseRequest repair, Result terminal) {
         static Prepared stopped(Result result) { return new Prepared(0, 0, null, null, result); }
     }
@@ -92,7 +103,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     // Main thread only. Held = skipped by the latest isolated batch; logged = once per property per economy day.
     private final LinkedHashMap<UUID, LocalDate> rentHeldLogged = new LinkedHashMap<>();
     /** Worker-written: the economy day a failed server-cap read was last logged, so it logs once per day. */
-    private final java.util.concurrent.atomic.AtomicReference<LocalDate> serverCapReadWarned = new java.util.concurrent.atomic.AtomicReference<>();
+    private final AtomicReference<LocalDate> serverCapReadWarned = new AtomicReference<>();
     private List<Property> rentHeld = List.of();
     private LocalDate rentHeldDay;
 
@@ -100,13 +111,16 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     public record RentPlan<T>(List<Property> eligible, List<T> owners, List<Property> held) { }
 
     /**
-     * Isolation off: any missing, reserve-owned or unreadable owner refuses the whole batch, as before.
+     * Isolation off: any missing, reserve-owned or unreadable owner refuses the whole batch.
      * Isolation on: that property is held (no reservation, no payment) and every other property continues.
      */
     public static <T> RentPlan<T> planRent(List<Property> properties, UUID reserve, boolean isolate,
-                                           java.util.function.Function<Property, java.util.Optional<T>> read) {
-        Objects.requireNonNull(reserve); Objects.requireNonNull(read);
-        var eligible = new ArrayList<Property>(); var owners = new ArrayList<T>(); var held = new ArrayList<Property>();
+                                           Function<Property, Optional<T>> read) {
+        Objects.requireNonNull(reserve);
+        Objects.requireNonNull(read);
+        var eligible = new ArrayList<Property>();
+        var owners = new ArrayList<T>();
+        var held = new ArrayList<Property>();
         for (Property property : properties) {
             T owner = null;
             if (property.ownerUuid() != null && !reserve.equals(property.ownerUuid())) {
@@ -115,9 +129,11 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
             }
             if (owner == null) {
                 if (!isolate) throw new IllegalStateException("Rent owner unavailable");
-                held.add(property); continue;
+                held.add(property);
+                continue;
             }
-            eligible.add(property); owners.add(owner);
+            eligible.add(property);
+            owners.add(owner);
         }
         return new RentPlan<>(List.copyOf(eligible), List.copyOf(owners), List.copyOf(held));
     }
@@ -134,13 +150,16 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         // item-repairs.block-cash-while-items-held, read per request; it acts only on item-repair rows.
         purchases = new PurchaseRepository(plugin.database(), reserve, clock, zone, reset,
                 () -> plugin.itemRepairSettings().blockCashWhileItemsHeld());
-        autoCare = new com.prosperitysmp.npc.property.AutoCareRepository(plugin.database(), reserve, clock, zone, reset);
+        autoCare = new AutoCareRepository(plugin.database(), reserve, clock, zone, reset);
         // linked-accounts: the saved day pin and links group owners for the benefit-unit cap. The flag is read per batch.
-        rents = new RentReservationRepository(plugin.database(), reserve, clock, zone, reset, Boolean.TRUE.equals(plugin.getConfig().get("housing.premium-enabled")),
+        rents = new RentReservationRepository(plugin.database(), reserve, clock, zone, reset,
+                Boolean.TRUE.equals(plugin.getConfig().get("housing.premium-enabled")),
                 plugin.accountLinks(), plugin::linkedAccountsEnabled);
         journal = new TransferJournal(plugin.database(), reserve);
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(2), r -> {
-            Thread t = new Thread(r, "npc-utility-payment"); t.setDaemon(true); return t;
+            Thread t = new Thread(r, "npc-utility-payment");
+            t.setDaemon(true);
+            return t;
         }, new ThreadPoolExecutor.AbortPolicy());
         try {
             plugin.trackDatabaseWorker(worker);
@@ -148,7 +167,10 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 Runnable next = deliveries.poll();
                 if (next != null) next.run();
             }, 1, 1);
-        } catch (RuntimeException | Error failure) { worker.shutdown(); throw failure; }
+        } catch (RuntimeException | Error failure) {
+            worker.shutdown();
+            throw failure;
+        }
         var database = plugin.database();
         // One bounded pass, not an automatic recovery loop. Existing ambiguity also holds a new host.
         CompletableFuture.supplyAsync(() -> {
@@ -176,10 +198,11 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 recovery = !startupReady;
                 if (recovery) {
                     plugin.getLogger().warning("Utility startup recovery requires review; payments held.");
-                    plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "startup",
+                    plugin.alerts().raise(StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "startup",
                             "Payments are held: an earlier transfer needs staff review.");
                 }
-            }); } catch (RuntimeException stopped) { /* Closed hosts never become ready. */ }
+            });
+            } catch (RuntimeException stopped) { /* Closed hosts never become ready. */ }
         });
     }
 
@@ -197,19 +220,20 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     }
 
     public boolean requestPurchase(UUID propertyId, UUID actor, PurchaseRequest.Kind kind,
-                                   com.prosperitysmp.npc.formulas.UpgradeType upgrade, Integer level,
+                                   UpgradeType upgrade, Integer level,
                                    long maximumCents, BooleanSupplier authorized, Consumer<String> reply) {
         main();
         if (kind != PurchaseRequest.Kind.UPGRADE && kind != PurchaseRequest.Kind.MAINTAIN) return false;
         if (kind == PurchaseRequest.Kind.UPGRADE
-                ? upgrade == null || level == null || level < 1 || level > com.prosperitysmp.npc.formulas.UpgradeType.MAX_LEVEL
+                ? upgrade == null || level == null || level < 1 || level > UpgradeType.MAX_LEVEL
                 : upgrade != null || level != null) return false;
         return requestCore(propertyId, actor, 0, new PurchaseTarget(kind, upgrade, level, null), maximumCents, authorized, reply);
     }
 
     public boolean requestEviction(UUID propertyId, UUID actor, UUID tenantId, long maximumCents,
                                    BooleanSupplier authorized, Consumer<String> reply) {
-        main(); Objects.requireNonNull(tenantId);
+        main();
+        Objects.requireNonNull(tenantId);
         return requestCore(propertyId, actor, 0, new PurchaseTarget(PurchaseRequest.Kind.EVICT, null, null, tenantId),
                 maximumCents, authorized, reply);
     }
@@ -228,12 +252,14 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     }
 
     /** Only a newly reserved recurring-consent claim may enter the normal payment coordinator. */
-    public boolean requestAutoCare(com.prosperitysmp.npc.property.AutoCareRepository.Claim claim,
+    public boolean requestAutoCare(AutoCareRepository.Claim claim,
                                    BooleanSupplier authorized, Consumer<Boolean> finished) {
-        main(); Objects.requireNonNull(claim); Objects.requireNonNull(finished);
-        if (claim.state() != com.prosperitysmp.npc.property.AutoCareRepository.State.RESERVED || claim.eventId() != null
+        main();
+        Objects.requireNonNull(claim);
+        Objects.requireNonNull(finished);
+        if (claim.state() != AutoCareRepository.State.RESERVED || claim.eventId() != null
                 || !claim.day().equals(days.today())) return false;
-        var target = claim.action() == com.prosperitysmp.npc.property.AutoCareRepository.Action.MAINTAIN
+        var target = claim.action() == AutoCareRepository.Action.MAINTAIN
                 ? new PurchaseTarget(PurchaseRequest.Kind.MAINTAIN, null, null, null) : null;
         return requestCore(claim.propertyId(), claim.ownerUuid(), claim.incidentId() == null ? 0 : claim.incidentId(),
                 target, claim.quotedCents(), authorized,
@@ -243,8 +269,11 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     private boolean requestCore(UUID propertyId, UUID actor, long incidentId, PurchaseTarget target, long maximumCents,
                                 BooleanSupplier authorized, Consumer<String> reply,
                                 com.prosperitysmp.npc.property.AutoCareRepository.Claim recurring, Consumer<Boolean> finished) {
-        main(); Objects.requireNonNull(propertyId); Objects.requireNonNull(actor);
-        Objects.requireNonNull(authorized); Objects.requireNonNull(reply);
+        main();
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(actor);
+        Objects.requireNonNull(authorized);
+        Objects.requireNonNull(reply);
         if (maximumCents <= 0 || busy || recovery || !ready(authorized) || !accountingReady() || reserve.equals(actor)) return false;
         Property property = plugin.propertyService().getEnrolled().stream()
                 .filter(p -> p.propertyId().equals(propertyId)).findFirst().orElse(null);
@@ -274,19 +303,25 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
             var owner = plugin.armAdapter().ownerReadRegion(property.worldUuid(), property.regionId(), actor).orElseThrow();
             lease = plugin.ownershipFence().acquire(owner);
             retainedLease = lease;
-        } catch (RuntimeException failure) { releaseFinancial(); return false; }
+        } catch (RuntimeException failure) {
+            releaseFinancial();
+            return false;
+        }
         busy = true;
         UUID requestId = recurring == null ? UUID.randomUUID() : recurring.claimId();
         LocalDate day = days.today();
         // A paid repair or purchase may change the home's SQL row (condition): re-read on the worker, installed on
         // main before the lease is released. Empty: no re-read needed. null: the re-read failed.
-        final java.util.concurrent.atomic.AtomicReference<List<Property>> reread =
-                new java.util.concurrent.atomic.AtomicReference<>(List.of());
+        final AtomicReference<List<Property>> reread =
+                new AtomicReference<>(List.of());
         // Every continuation destined for Bukkit is pumped on main; worker closures perform only file/SQL work.
         final CompletableFuture<String> fingerprint;
         try { fingerprint = CompletableFuture.supplyAsync(() -> hash(providerJar), worker); }
         catch (RuntimeException rejected) {
-            lease.releaseReconciled(); retainedLease = null; busy = false; releaseFinancial();
+            lease.releaseReconciled();
+            retainedLease = null;
+            busy = false;
+            releaseFinancial();
             return false; // No file task or SQL was accepted.
         }
         fingerprint
@@ -303,7 +338,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                                     var binding = autoCare.bind(requestId, prepared.eventId());
                                     if (!binding.newlyBound()) throw new IllegalStateException("Auto-care replay cannot dispatch money");
                                 }
-                            } catch (java.sql.SQLException failure) { throw new IllegalStateException("Auto-care binding unconfirmed", failure); }
+                            } catch (SQLException failure) { throw new IllegalStateException("Auto-care binding unconfirmed", failure); }
                         }
                         return prepared;
                     },
@@ -346,7 +381,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                                 throw new IllegalStateException("Utility transfer requires recovery");
                             var result = complete(prepared, requestId, receipt);
                             if (prepared.repair() != null && receipt.state() == TransferJournal.State.PAID) {
-                                // Money and effect are committed; a failed re-read (or a missing row) only leaves the row to the ownership check.
+                                // Money and effect are committed; a failed re-read (or a missing row) only leaves the row to
+                                // the ownership check.
                                 try { reread.set(plugin.propertyService().readRow(property.propertyId()).map(List::of).orElse(null)); }
                                 catch (Exception unreadable) { reread.set(null); }
                             }
@@ -354,10 +390,12 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                                 try {
                                     var settled = autoCare.reconcile(requestId);
                                     var expected = receipt.state() == TransferJournal.State.PAID
-                                            ? com.prosperitysmp.npc.property.AutoCareRepository.State.SPENT
-                                            : com.prosperitysmp.npc.property.AutoCareRepository.State.DECLINED;
+                                            ? AutoCareRepository.State.SPENT
+                                            : AutoCareRepository.State.DECLINED;
                                     if (settled.state() != expected) throw new IllegalStateException("Auto-care settlement unconfirmed");
-                                } catch (java.sql.SQLException failure) { throw new IllegalStateException("Auto-care reconciliation unconfirmed", failure); }
+                                } catch (SQLException failure) {
+                                    throw new IllegalStateException("Auto-care reconciliation unconfirmed", failure);
+                                }
                             }
                             return result;
                         }, worker).toCompletableFuture();
@@ -368,7 +406,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                         recovery = true;
                         if (failure != null) {
                             plugin.getLogger().warning("Payment recovery required; request " + requestId + "; lease retained.");
-                            plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "request-" + requestId,
+                            plugin.alerts().raise(StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "request-" + requestId,
                                     "Payment held for review. Reference " + requestId + ".");
                             respond(authorized, reply, "Payment outcome requires staff recovery. Do not retry. Reference: " + requestId);
                             finished.accept(false);
@@ -385,43 +423,55 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                         try { lease.releaseReconciled(); }
                         catch (RuntimeException failureToRelease) {
                             plugin.getLogger().warning("Utility lease release requires review; request " + requestId);
-                            plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "request-" + requestId,
+                            plugin.alerts().raise(StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "request-" + requestId,
                                     "Payments held: a lease release needs staff review. Reference " + requestId + ".");
                             finished.accept(false);
                             return;
                         }
-                        retainedLease = null; busy = false; recovery = false; releaseFinancial();
+                        retainedLease = null;
+                        busy = false;
+                        recovery = false;
+                        releaseFinancial();
                         finished.accept(true);
                         respond(authorized, reply, switch (state) {
                             case ALREADY_PAID -> "Utility bill already paid; no additional charge.";
                             case PAID -> "Utility payment verified. Accounting refresh queued.";
                             case REPAIRED -> "Paid repair applied and service history recorded. Accounting refresh queued.";
                             case EVICTED -> "Payment verified and tenant eviction completed. Accounting refresh queued.";
-                            case INSURED -> "Premium verified. Seven-day insurance starts next economy day; one prevention, no payout or refund. Accounting refresh queued.";
+                            case INSURED -> "Premium verified. Seven-day insurance starts next economy day; one prevention, no payout or "
+                                    + "refund. Accounting refresh queued.";
                             case PURCHASED -> "Payment verified and property benefit applied. Accounting refresh queued.";
                             case PURCHASE_ALREADY_APPLIED -> "This property benefit is already applied; no additional charge.";
                             case REPAIR_UNAVAILABLE -> "Repair target already resolved or has an applied receipt; no additional charge.";
                             case REPAIR_ITEMS_PENDING -> ITEMS_PENDING_REPLY;
-                            case EVICTION_UNAVAILABLE -> "Tenant is no longer at this property; no additional charge and no new payment started.";
-                            case TARGET_UNAVAILABLE -> "No payment started: this benefit is unnecessary, changed, or already covered. Refresh your owner desk.";
+                            case EVICTION_UNAVAILABLE -> "Tenant is no longer at this property; no additional charge and no new payment "
+                                    + "started.";
+                            case TARGET_UNAVAILABLE -> "No payment started: this benefit is unnecessary, changed, or already covered. "
+                                    + "Refresh your owner desk.";
                             case INSUFFICIENT_FUNDS -> "Insufficient available funds. No payment was started; NPC purchases cannot borrow.";
                             case DECLINED -> "Payment declined with no movement. No automatic retry.";
                             case OVER_CAP -> "Cost exceeds your maximum; no money moved and no new payment was queued.";
                         });
-                    }); } catch (RuntimeException stopped) { /* Shutdown retains the lease; no further money call. */ }
+                    });
+                    } catch (RuntimeException stopped) { /* Shutdown retains the lease; no further money call. */ }
                 });
         return true;
     }
 
     /** Explicit current-day batch; utility, repairs and rent share the same admission gate. */
     public boolean requestRentBatch(BooleanSupplier authorized, Consumer<String> reply) {
-        main(); Objects.requireNonNull(authorized); Objects.requireNonNull(reply);
+        main();
+        Objects.requireNonNull(authorized);
+        Objects.requireNonNull(reply);
         if (busy || recovery || !ready(authorized) || !accountingReady()) return false;
         var cached = plugin.propertyService().getEnrolled();
         if (cached.size() > 512) return false;
         // Owner-away homes get no rent and (through the same list) no appreciation today. Decided on main.
         var awayHeld = plugin.ownerAway().held(cached);
-        if (awayHeld.isEmpty()) { respond(authorized, reply, "Owner-away decisions for today are not saved yet; rent waits."); return false; }
+        if (awayHeld.isEmpty()) {
+            respond(authorized, reply, "Owner-away decisions for today are not saved yet; rent waits.");
+            return false;
+        }
         var away = awayHeld.get();
         List<Property> enrolled = rentCandidates(cached, away);
         if (enrolled.isEmpty() && !away.isEmpty()) {
@@ -429,7 +479,10 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
             catch (RuntimeException failure) { plugin.getLogger().warning("Utility reply unavailable; receipt state unchanged."); }
             return true;
         }
-        if (enrolled.isEmpty()) { respond(authorized, reply, "No enrolled properties for rent."); return false; }
+        if (enrolled.isEmpty()) {
+            respond(authorized, reply, "No enrolled properties for rent.");
+            return false;
+        }
         boolean isolate = Boolean.TRUE.equals(plugin.getConfig().get(RENT_ISOLATION));
         boolean appreciate = appreciationEnabled(plugin.getConfig().get(APPRECIATION));
         // Flag and parent together (payoutRetirementActive): the same gate every retirement entry uses.
@@ -468,19 +521,29 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 if (!ready(authorized)) throw new IllegalStateException("Rent owner unavailable");
                 var lease = plugin.ownershipFence().acquire(owner);
                 if (rentLeases.putIfAbsent(property.propertyId(), lease) != null) {
-                    lease.releaseReconciled(); throw new IllegalStateException("Duplicate rent property");
+                    lease.releaseReconciled();
+                    throw new IllegalStateException("Duplicate rent property");
                 }
                 lease.validate(owner);
             }
-            properties = plan.eligible(); held = plan.held();
+            properties = plan.eligible();
+            held = plan.held();
         } catch (RuntimeException refused) {
-            releaseUnusedRent(); busy = false; releaseFinancial(); return false;
+            releaseUnusedRent();
+            busy = false;
+            releaseFinancial();
+            return false;
         }
         if (isolate) noteRentHeld(day, held);
         UUID batchId = UUID.randomUUID();
         final CompletableFuture<String> fingerprint;
         try { fingerprint = CompletableFuture.supplyAsync(() -> hash(providerJar), worker); }
-        catch (RuntimeException refused) { releaseUnusedRent(); busy = false; releaseFinancial(); return false; }
+        catch (RuntimeException refused) {
+            releaseUnusedRent();
+            busy = false;
+            releaseFinancial();
+            return false;
+        }
         fingerprint.thenComposeAsync(sha -> {
             requireLimits(limits);
             for (Property property : properties)
@@ -512,7 +575,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 }
                 // SQL acknowledged the reservation/read; properties without pending work can now reopen.
                 for (Property property : properties) if (!seen.contains(property.propertyId())) {
-                    rentLeases.get(property.propertyId()).releaseReconciled(); rentLeases.remove(property.propertyId());
+                    rentLeases.get(property.propertyId()).releaseReconciled();
+                    rentLeases.remove(property.propertyId());
                 }
                 CompletableFuture<Integer> sequence = CompletableFuture.completedFuture(0);
                 for (var row : pending.stream().sorted(Comparator.comparing(r -> r.property().propertyId().toString())).toList()) {
@@ -530,30 +594,33 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 if (failure != null) {
                     recovery = true;
                     plugin.getLogger().warning("Rent recovery required; batch " + batchId + "; unreleased leases retained.");
-                    plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "batch-" + batchId,
+                    plugin.alerts().raise(StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "batch-" + batchId,
                             "Rent batch held for review. Reference " + batchId + ".");
                     respond(authorized, reply, "Rent batch stopped; do not retry without staff review. Reference: " + batchId);
                 } else {
-                    busy = false; releaseFinancial();
+                    busy = false;
+                    releaseFinancial();
                     respond(authorized, reply, rentBatchReply(paid, held.size(), appreciate, appreciated[0]));
                     checkServerCap(limits, day);
                 }
-            }); } catch (RuntimeException stopped) { /* Closed: no release of outstanding ownership. */ }
+            });
+            } catch (RuntimeException stopped) { /* Closed: no release of outstanding ownership. */ }
         });
         return true;
     }
 
     /**
-     * Standalone bounded payout retirement, independent of payout eligibility: it runs with zero enabled homes,
-     * every owner away, or any other state in which requestRentBatch returns before its SQL step, so an expired
-     * reservation can never pin a paused home forever. Flag or parent off (payoutRetirementActive()): returns false
-     * and touches nothing. It moves no money and needs no provider, ARM, limits or accounting; it holds the
-     * shared financial fence and this runtime's busy flag, so it never runs while a rent, appreciation, utility
-     * or purchase batch has pending rows bound. Same "provably never attempted" rule as the in-batch pass.
-     * Accepted: done is always called once on main (the daily cycle continues from it). Refused: done is not called.
+     * Standalone bounded payout retirement. It runs even when requestRentBatch would stop before its SQL step (no
+     * enabled homes, every owner away), so an expired reservation can never pin a paused home forever. Returns false
+     * and touches nothing when payoutRetirementActive() is false. It moves no money, but holds the shared financial
+     * fence and this runtime's busy flag, so it never runs while a rent, appreciation, utility or purchase batch has
+     * pending rows bound. It uses the same never-attempted rule as the in-batch pass. Accepted: done is always called
+     * exactly once on main (the daily cycle continues from it). Refused: done is not called.
      */
     public boolean requestPayoutRetirement(BooleanSupplier authorized, Consumer<String> done) {
-        main(); Objects.requireNonNull(authorized); Objects.requireNonNull(done);
+        main();
+        Objects.requireNonNull(authorized);
+        Objects.requireNonNull(done);
         if (!payoutRetirementActive() || busy || recovery || !ready(authorized)) return false;
         try { financialLease = plugin.financialFence().acquire("payout-retirement"); }
         catch (RuntimeException occupied) { return false; }
@@ -567,19 +634,18 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 busy = false; releaseFinancial();
                 try { done.accept(failure == null ? message : RETIREMENT_UNCONFIRMED); }
                 catch (RuntimeException ignored) { plugin.getLogger().warning("Payout retirement reply unavailable."); }
-            }); } catch (RuntimeException stopped) { /* Closed: nothing further runs. */ }
+            });
+            } catch (RuntimeException stopped) { /* Closed: nothing further runs. */ }
         });
         return true;
     }
 
     /**
-     * The single gate for every payout-retirement entry point (the daily-cycle standalone pass, the in-batch pass
-     * and resume-time retirement): economy.payout-retirement-enabled AND its parent, payments in use. The parent is
-     * the system and economy kill switches on and payments opted in (economy.payments-enabled, or the legacy smoke
-     * flag while that is unset) - the same config and switch gates ready() checks - and this runtime not closed or
-     * in startup recovery. With the parent off the default-on flag is inert: nothing retires anywhere and resume
-     * behaves exactly as before. Pure config and switch reads (no startup, accounting or ARM state), so a resume
-     * does not depend on the payment runtime's batch readiness. Main thread for config reads.
+     * The single gate for every payout-retirement entry point (the daily standalone pass, the in-batch pass and
+     * resume): economy.payout-retirement-enabled AND payments in use. Payments in use means the system and economy
+     * kill switches on, payments opted in (economy.payments-enabled, or the smoke flag while that is unset), and
+     * this runtime neither closed nor in startup recovery. With payments off the default-on flag retires nothing
+     * anywhere. Only config and switch reads, so resume does not depend on batch readiness. Main thread.
      */
     public boolean payoutRetirementActive() {
         main();
@@ -605,24 +671,26 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
 
     /**
      * Worker half of requestPayoutRetirement: bounded retireStale rounds for every property, enabled or not.
-     * Never throws; a failure is logged by retireStale and reported as zero retired.
+     * Never throws; a failure is logged by retireStale, and only rows retired before it are counted.
      */
     static String retirementPass(RentReservationRepository rents, LocalDate day, Consumer<String> warn) {
-        Objects.requireNonNull(rents); Objects.requireNonNull(day); Objects.requireNonNull(warn);
+        Objects.requireNonNull(rents);
+        Objects.requireNonNull(day);
+        Objects.requireNonNull(warn);
         int retired = retireStale(rents, day, warn);
         return retired == 0 ? "Payout retirement: nothing to retire. No money moved."
                 : "Payout retirement: " + retired + " never-attempted payout reservations retired. No money moved.";
     }
 
     /**
-     * Worker half of a rent batch's SQL step. Retirement off: reserve then the queued read, exactly as before.
+     * Worker half of a rent batch's SQL step. Retirement off: reserve then the queued read.
      * On: first retire never-attempted payout reservations that can no longer be paid (an earlier day, or an
      * owner or epoch that changed, for example a sale after a floor deferral), so a stale binding neither
      * holds lifetime funding nor makes the queued read refuse the batch. Appreciation's own queued read later
      * in the same batch relies on this pass too.
      */
     static List<RentReservationRepository.Reserved> reserveRentBatch(RentReservationRepository rents, boolean retire,
-            LocalDate day, List<Property> properties, EconomyLimits limits, Consumer<String> warn) throws java.sql.SQLException {
+            LocalDate day, List<Property> properties, EconomyLimits limits, Consumer<String> warn) throws SQLException {
         return reserveRentBatch(rents, retire, false, day, properties, limits, warn);
     }
 
@@ -632,7 +700,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
      */
     static List<RentReservationRepository.Reserved> reserveRentBatch(RentReservationRepository rents, boolean retire,
             boolean holdDueRent, LocalDate day, List<Property> properties, EconomyLimits limits, Consumer<String> warn)
-            throws java.sql.SQLException {
+            throws SQLException {
         return reserveRentBatchCounted(rents, retire, holdDueRent, day, properties, limits, warn).pending();
     }
 
@@ -650,8 +718,9 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
      */
     static RentBatchStep reserveRentBatchCounted(RentReservationRepository rents, boolean retire,
             boolean holdDueRent, LocalDate day, List<Property> properties, EconomyLimits limits, Consumer<String> warn)
-            throws java.sql.SQLException {
-        Objects.requireNonNull(rents); Objects.requireNonNull(warn);
+            throws SQLException {
+        Objects.requireNonNull(rents);
+        Objects.requireNonNull(warn);
         if (retire) retireStale(rents, day, warn);
         int heldForDueChange = rents.reserveCounting(day, properties, limits, holdDueRent).heldForDueChange();
         return new RentBatchStep(rents.pending(day, properties), heldForDueChange);
@@ -674,7 +743,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
 
     /**
      * Bounded rounds of RentReservationRepository.retireStale. It moves no money, so a failure only logs and the
-     * batch continues as it would with the flag off (a stale binding then still refuses the batch, as before).
+     * batch continues as it would with the flag off, where a stale binding still refuses the batch.
      * Returns the number retired by this call.
      */
     static int retireStale(RentReservationRepository rents, LocalDate day, Consumer<String> warn) {
@@ -685,7 +754,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 total += retired;
                 if (retired < RETIREMENT_LIMIT) break;
             }
-        } catch (java.sql.SQLException | RuntimeException failure) {
+        } catch (SQLException | RuntimeException failure) {
             warn.accept("Payout retirement unconfirmed; this batch retired " + total + " and continues without more.");
         }
         if (total > 0)
@@ -696,8 +765,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     static final String ALL_AWAY_REPLY = "Rent batch skipped: every owner is away today. No money moved.";
 
     /** Rent (and so appreciation) candidates: enabled homes in id order, minus owner-away homes. */
-    public static List<Property> rentCandidates(java.util.Collection<Property> cached, java.util.Set<UUID> away) {
-        return com.prosperitysmp.npc.property.OwnerAway.present(cached.stream().filter(Property::enabled)
+    public static List<Property> rentCandidates(Collection<Property> cached, Set<UUID> away) {
+        return OwnerAway.present(cached.stream().filter(Property::enabled)
                 .sorted(Comparator.comparing(p -> p.propertyId().toString())).toList(), away);
     }
 
@@ -709,7 +778,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         return away && (recurring || (incidentId == 0 && !purchase));
     }
 
-    /** Off: identical to the plain-boolean read of every other release gate; only a real Boolean true opens it. */
+    /** Like every other release gate, only a real Boolean true opens it. */
     static boolean appreciationEnabled(Object configured) {
         return Boolean.TRUE.equals(configured);
     }
@@ -717,7 +786,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     /**
      * Appreciation is paid for the economy day that has closed, never the open one. No rent batch can
      * reserve rent for a closed day, so that day's rent is final and holds its cap share before any
-     * appreciation is allocated against it. It shares lifetime funding with future rent, and the batch holds it if the floor deferred any rent.
+     * appreciation is allocated against it. It shares lifetime funding with future rent, and the batch holds it if
+     * the floor deferred any rent.
      */
     static LocalDate appreciationDay(LocalDate batchDay) {
         return batchDay.minusDays(1);
@@ -740,35 +810,43 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     static <T> CompletableFuture<T> thenAppreciation(CompletableFuture<T> rent, boolean appreciate,
             BooleanSupplier rentDeferred, Supplier<CompletableFuture<Integer>> appreciation, IntConsumer counted,
             Executor executor) {
-        Objects.requireNonNull(rent); Objects.requireNonNull(rentDeferred);
-        Objects.requireNonNull(appreciation); Objects.requireNonNull(counted);
+        Objects.requireNonNull(rent);
+        Objects.requireNonNull(rentDeferred);
+        Objects.requireNonNull(appreciation);
+        Objects.requireNonNull(counted);
         if (!appreciate) return rent;
         return rent.thenComposeAsync(paid -> {
-            if (rentDeferred.getAsBoolean()) { counted.accept(-1); return CompletableFuture.completedFuture(paid); }
-            return appreciation.get().thenApply(count -> { counted.accept(count); return paid; });
+            if (rentDeferred.getAsBoolean()) {
+                counted.accept(-1);
+                return CompletableFuture.completedFuture(paid);
+            }
+            return appreciation.get().thenApply(count -> {
+                counted.accept(count);
+                return paid;
+            });
         }, executor);
     }
 
-    /** Off: identical to every other release gate; only a real Boolean true turns the ledger rent hold on. */
+    /** Like every other release gate, only a real Boolean true turns the ledger rent hold on. */
     static boolean appreciationLedgerRentHold(Object configured) {
         return Boolean.TRUE.equals(configured);
     }
 
     /**
-     * Worker half of the appreciation phase's SQL step for the batch day. Hold off: reserve then the queued read,
-     * exactly as before (never empty). Hold on: one transaction under the rent mutex checks the whole ledger for
-     * today's rent that is not final, and every home for a due rent change that left today's rent unreserved, and
-     * if either exists, reserves nothing and returns empty (held), so even
-     * appreciation queued by an earlier batch is not returned for dispatch.
+     * Worker half of the appreciation phase's SQL step for the batch day. Hold off: reserve then the queued read
+     * (never empty). Hold on: one transaction under the rent mutex checks the whole ledger for today's rent that is
+     * not final, and every home for a due rent change that left today's rent unreserved. If either exists it reserves
+     * nothing and returns empty (held), so even appreciation queued by an earlier batch is not dispatched.
      */
-    static java.util.Optional<List<RentReservationRepository.Reserved>> appreciationStep(RentReservationRepository rents,
+    static Optional<List<RentReservationRepository.Reserved>> appreciationStep(RentReservationRepository rents,
             boolean ledgerHold, LocalDate day, List<Property> eligible, EconomyLimits limits,
-            RentReservationRepository.AppreciationScore scorer) throws java.sql.SQLException {
-        Objects.requireNonNull(rents); Objects.requireNonNull(day);
+            RentReservationRepository.AppreciationScore scorer) throws SQLException {
+        Objects.requireNonNull(rents);
+        Objects.requireNonNull(day);
         LocalDate closed = appreciationDay(day);
         if (!ledgerHold) {
             rents.reserveAppreciation(closed, eligible, limits, scorer);
-            return java.util.Optional.of(rents.pendingAppreciation(closed, eligible));
+            return Optional.of(rents.pendingAppreciation(closed, eligible));
         }
         return rents.reserveAppreciationUnlessRentOutstanding(day, closed, eligible, limits, scorer);
     }
@@ -778,7 +856,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
      * or when the hold was switched on during the hop, so the ledger was never asked: fail closed. A hold switched
      * off during the hop keeps the decision already taken under the mutex.
      */
-    static boolean appreciationLedgerHeld(boolean holdBeforeHop, boolean holdNow, java.util.Optional<?> step) {
+    static boolean appreciationLedgerHeld(boolean holdBeforeHop, boolean holdNow, Optional<?> step) {
         Objects.requireNonNull(step);
         return step.isEmpty() || (!holdBeforeHop && holdNow);
     }
@@ -792,8 +870,11 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
      */
     static <R> CompletableFuture<Integer> gatedSequence(List<R> rows, BooleanSupplier stillAllowed,
             Function<R, CompletableFuture<Boolean>> pay, Consumer<R> skip, Executor executor) {
-        Objects.requireNonNull(rows); Objects.requireNonNull(stillAllowed); Objects.requireNonNull(pay);
-        Objects.requireNonNull(skip); Objects.requireNonNull(executor);
+        Objects.requireNonNull(rows);
+        Objects.requireNonNull(stillAllowed);
+        Objects.requireNonNull(pay);
+        Objects.requireNonNull(skip);
+        Objects.requireNonNull(executor);
         if (rows.isEmpty()) return CompletableFuture.completedFuture(0);
         if (!stillAllowed.getAsBoolean()) {
             for (R row : rows) skip.accept(row);
@@ -805,7 +886,9 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         for (R row : rows) {
             sequence = sequence.thenComposeAsync(paid -> {
                 if (stopped[0] || !stillAllowed.getAsBoolean()) {
-                    stopped[0] = true; skip.accept(row); return CompletableFuture.completedFuture(paid);
+                    stopped[0] = true;
+                    skip.accept(row);
+                    return CompletableFuture.completedFuture(paid);
                 }
                 dispatched[0]++;
                 return pay.apply(row).thenApply(settled -> paid + (settled ? 1 : 0));
@@ -826,7 +909,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         if (!debitGateAllows(leg, stillAllowed)) throw new IllegalStateException("Payout turned off before debit");
     }
 
-    /** Off (anything but a real Boolean true): exactly the admission-only behavior from before. */
+    /** Off (anything but a real Boolean true): owner-away is checked only at admission. */
     static boolean awayDebitRecheckEnabled(Object configured) {
         return Boolean.TRUE.equals(configured);
     }
@@ -874,7 +957,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         return awayHeldNow(plugin.getConfig().get(AWAY_DEBIT_RECHECK), () -> plugin.ownerAway().holds(property));
     }
 
-    /** Staff reply. With appreciation off it is byte-for-byte the reply from before appreciation existed. */
+    /** Staff reply. With appreciation off it has no appreciation part. */
     static String rentBatchReply(int paid, int held, boolean appreciate, int appreciated) {
         return "Rent batch complete: " + paid + " verified payouts. Reserve-floor deferrals remain pending; accounting refresh queued."
                 + (held == 0 ? "" : " Rent held: owner unavailable for " + held + " propert" + (held == 1 ? "y." : "ies."))
@@ -882,7 +965,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                         : " Yesterday's appreciation: " + appreciated + " verified payouts.");
     }
 
-    /** Rent has no payout flag of its own beyond ready(): its DEBIT gate never refuses, so rent is unchanged. */
+    /** Rent has no payout flag of its own beyond ready(), so its DEBIT gate never refuses. */
     static final BooleanSupplier RENT_DEBIT_GATE = () -> true;
 
     /**
@@ -908,11 +991,12 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                     + " (decided after the batch started). Reservation left pending; no money moved.");
             return CompletableFuture.completedFuture(false);
         }
-        long available=TransferProof.toCents(pinned.getProvider().getBalance(Bukkit.getOfflinePlayer(reserve))).orElseThrow();
+        long available = TransferProof.toCents(pinned.getProvider().getBalance(Bukkit.getOfflinePlayer(reserve))).orElseThrow();
         if(!floorAllows(available,row.cents(),limits.centralBankFloorCents())) {
             // No debit intent has been dispatched. Retain the SQL reservation, not a live lease.
-            lease.releaseReconciled();rentLeases.remove(property.propertyId());
-            plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.RESERVE_BELOW_FLOOR, "property-" + property.propertyId(),
+            lease.releaseReconciled();
+            rentLeases.remove(property.propertyId());
+            plugin.alerts().raise(StaffAlerts.Kind.RESERVE_BELOW_FLOOR, "property-" + property.propertyId(),
                     "Payout deferred: the reserve would fall below its floor. Property " + property.regionId() + ".");
             floorDeferred.run();
             return CompletableFuture.completedFuture(false);
@@ -954,12 +1038,13 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 }, debitGate, awayHeld);
             }
             public void releaseVerified(TransferJournal.Receipt receipt) {
-                lease.releaseReconciled(); rentLeases.remove(property.propertyId());
+                lease.releaseReconciled();
+                rentLeases.remove(property.propertyId());
             }
         }).thenApply(receipt -> {
             if (receipt.state() != TransferJournal.State.PAID && receipt.state() != TransferJournal.State.DECLINED)
                 throw new IllegalStateException("Rent transfer requires recovery");
-            return receipt.state()==TransferJournal.State.PAID;
+            return receipt.state() == TransferJournal.State.PAID;
         }).toCompletableFuture();
     }
 
@@ -1000,22 +1085,29 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 var owner = plan.owners().get(i);
                 var lease = plugin.ownershipFence().acquire(owner);
                 if (rentLeases.putIfAbsent(property.propertyId(), lease) != null) {
-                    lease.releaseReconciled(); throw new IllegalStateException("Duplicate appreciation property");
+                    lease.releaseReconciled();
+                    throw new IllegalStateException("Duplicate appreciation property");
                 }
                 lease.validate(owner);
             }
             eligible = plan.eligible();
-        } catch (RuntimeException refused) { releaseUnusedRent(); return CompletableFuture.completedFuture(-1); }
+        } catch (RuntimeException refused) {
+            releaseUnusedRent();
+            return CompletableFuture.completedFuture(-1);
+        }
         if (eligible.isEmpty()) return CompletableFuture.completedFuture(0);
         var scorer = rents.ratedScore();
-        final CompletableFuture<java.util.Optional<List<RentReservationRepository.Reserved>>> reserved;
+        final CompletableFuture<Optional<List<RentReservationRepository.Reserved>>> reserved;
         try {
             reserved = CompletableFuture.supplyAsync(() -> {
                 try {
                     return appreciationStep(rents, ledgerHold, day, eligible, limits, scorer);
                 } catch (Exception failure) { throw new IllegalStateException("Appreciation reservation unconfirmed"); }
             }, worker);
-        } catch (RuntimeException rejected) { releaseUnusedRent(); return CompletableFuture.completedFuture(-1); }
+        } catch (RuntimeException rejected) {
+            releaseUnusedRent();
+            return CompletableFuture.completedFuture(-1);
+        }
         return reserved.thenComposeAsync(step -> {
             if (appreciationLedgerHeld(ledgerHold,
                     appreciationLedgerRentHold(plugin.getConfig().get(APPRECIATION_LEDGER_RENT_HOLD)), step)) {
@@ -1042,7 +1134,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                     throw new IllegalStateException("Appreciation pending binding failed");
             }
             for (Property property : eligible) if (!seen.contains(property.propertyId())) {
-                rentLeases.get(property.propertyId()).releaseReconciled(); rentLeases.remove(property.propertyId());
+                rentLeases.get(property.propertyId()).releaseReconciled();
+                rentLeases.remove(property.propertyId());
             }
             int[] held = {0}; // Main thread only.
             var rows = pending.stream().sorted(Comparator.comparing(r -> r.property().propertyId().toString())).toList();
@@ -1086,13 +1179,16 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 l.propertySeedCents(), l.rolloutSeedPoolCents(), l.lifetimeSinkFundingRatio());
     }
 
-    /** Main thread. Alerts-flag gated: reads the day's paid and pending total on the worker, then alerts at 90 percent of the server cap. */
+    /**
+     * Main thread. Alerts-flag gated: reads the day's paid and pending total on the worker, then alerts at 90 percent of the
+     * server cap.
+     */
     private void checkServerCap(EconomyLimits limits, LocalDate day) {
         if (!plugin.getConfig().getBoolean("alerts.enabled", false) || limits.serverDailyCapCents() <= 0) return;
         long cap = limits.serverDailyCapCents();
         try {
             CompletableFuture.runAsync(() -> serverCapCheck(() -> rents.serverSpentCents(day), cap, day,
-                    message -> plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.SERVER_CAP_NEAR, "server-cap", message),
+                    message -> plugin.alerts().raise(StaffAlerts.Kind.SERVER_CAP_NEAR, "server-cap", message),
                     plugin.getLogger()::warning, serverCapReadWarned), worker);
         } catch (RuntimeException busyOrClosed) { /* Skipped; the next batch checks again. */ }
     }
@@ -1106,7 +1202,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
      * Returns true when SERVER_CAP_NEAR was raised.
      */
     static boolean serverCapCheck(SpentRead read, long cap, LocalDate day, Consumer<String> alert,
-                                  Consumer<String> warn, java.util.concurrent.atomic.AtomicReference<LocalDate> warnedDay) {
+                                  Consumer<String> warn, AtomicReference<LocalDate> warnedDay) {
         final long spent;
         try { spent = read.read(); }
         catch (Exception unreadable) {
@@ -1115,7 +1211,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                         + "). SERVER_CAP_NEAR is unavailable until this is fixed; payments are unaffected.");
             return false;
         }
-        if (!com.prosperitysmp.npc.alert.StaffAlerts.capNear(spent, cap)) return false;
+        if (!StaffAlerts.capNear(spent, cap)) return false;
         alert.accept("Server daily payout cap is " + (spent * 100 / cap) + " percent used.");
         return true;
     }
@@ -1124,10 +1220,11 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     private void noteRentHeld(LocalDate day, List<Property> held) {
         main();
         rentHeldLogged.values().removeIf(logged -> !logged.equals(day));
-        rentHeld = List.copyOf(held); rentHeldDay = day;
+        rentHeld = List.copyOf(held);
+        rentHeldDay = day;
         for (Property property : held) {
             if (day.equals(rentHeldLogged.put(property.propertyId(), day))) continue;
-            plugin.alerts().raise(com.prosperitysmp.npc.alert.StaffAlerts.Kind.RENT_PROPERTY_HELD, "property-" + property.propertyId(),
+            plugin.alerts().raise(StaffAlerts.Kind.RENT_PROPERTY_HELD, "property-" + property.propertyId(),
                     "Rent held: owner unavailable for property " + property.regionId() + ".");
             plugin.getLogger().warning("Rent held: owner unavailable for property " + property.propertyId()
                     + " (region " + property.regionId() + ", day " + day + "). Other properties continue; no payment for this one.");
@@ -1156,7 +1253,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         try {
             if (target != null) {
                 var quote = switch (target.kind()) {
-                    case EVICT -> purchases.quoteEviction(requestId, property.propertyId(), actor, property.ownershipEpoch(), target.tenantId(), day);
+                    case EVICT -> purchases.quoteEviction(requestId, property.propertyId(), actor, property.ownershipEpoch(),
+                            target.tenantId(), day);
                     case INSURANCE -> purchases.quoteInsurance(requestId, property.propertyId(), actor, property.ownershipEpoch(), day);
                     default -> new PurchaseRequest(requestId, property.propertyId(), actor, property.ownershipEpoch(),
                             target.kind(), target.upgrade(), target.level(), null, day);
@@ -1284,7 +1382,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         return Boolean.TRUE.equals(current == null ? legacy : current);
     }
     private boolean accountingReady() {
-        return plugin.accountingProjection()!=null && plugin.accountingProjection().ready();
+        return plugin.accountingProjection() != null && plugin.accountingProjection().ready();
     }
 
     static boolean actorAuthorization(TransferProof.Leg leg, BooleanSupplier authorized) {
@@ -1324,9 +1422,12 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
             if (size < 1 || size > 128L * 1024 * 1024) throw new IllegalStateException("Provider jar bounds");
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             try (var input = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
-                byte[] buffer = new byte[8192]; long total = 0; int n;
+                byte[] buffer = new byte[8192];
+                long total = 0;
+                int n;
                 while ((n = input.read(buffer)) != -1) {
-                    total += n; if (total > size) throw new IllegalStateException("Provider jar changed");
+                    total += n;
+                    if (total > size) throw new IllegalStateException("Provider jar changed");
                     digest.update(buffer, 0, n);
                 }
                 if (total != size) throw new IllegalStateException("Provider jar changed");
@@ -1336,11 +1437,14 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     }
 
     private void releaseFinancial() {
-        if (financialLease != null) { financialLease.releaseVerified(); financialLease = null; }
+        if (financialLease != null) {
+            financialLease.releaseVerified();
+            financialLease = null;
+        }
     }
 
     private synchronized void post(Runnable task) {
-        if (closed || !deliveries.offer(task)) throw new java.util.concurrent.RejectedExecutionException("Utility delivery unavailable");
+        if (closed || !deliveries.offer(task)) throw new RejectedExecutionException("Utility delivery unavailable");
     }
 
     public String status() {
@@ -1350,8 +1454,12 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     }
 
     @Override public synchronized void close() {
-        main(); if (closed) return;
-        closed = true; ticker.cancel(); deliveries.clear(); worker.shutdown();
+        main();
+        if (closed) return;
+        closed = true;
+        ticker.cancel();
+        deliveries.clear();
+        worker.shutdown();
         // Never release retainedLease here: an accepted SQL commit may still finish.
     }
 

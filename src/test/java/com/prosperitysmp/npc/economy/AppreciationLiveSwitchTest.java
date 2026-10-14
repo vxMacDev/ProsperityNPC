@@ -103,7 +103,7 @@ class AppreciationLiveSwitchTest {
             }).toCompletableFuture();
         }
 
-        /** Fixed wiring: the sequence and every DEBIT leg both reread the live flag. */
+        /** The wiring under test: the sequence and every DEBIT leg both reread the live flag. */
         CompletableFuture<Integer> appreciation(List<Long> rows) {
             return UtilityPaymentRuntime.gatedSequence(rows, live, id -> pay(id, live), this::skip, main);
         }
@@ -114,7 +114,7 @@ class AppreciationLiveSwitchTest {
             leases.remove(id); skipped.add(id);
         }
 
-        /** The pre-fix loop shape: no recheck between rows. */
+        /** A loop with no recheck between rows, used to show the recheck is needed. */
         CompletableFuture<Integer> ungated(List<Long> rows, Function<Long, CompletableFuture<Boolean>> pay) {
             CompletableFuture<Integer> sequence = CompletableFuture.completedFuture(0);
             for (long row : rows)
@@ -217,7 +217,7 @@ class AppreciationLiveSwitchTest {
         assertFalse(rig.journal.containsKey(2L));
     }
 
-    // (d) Positive control: rent is not gated by the appreciation switch.
+    // (d) Rent is not gated by the appreciation switch.
 
     @Test void rentGateNeverRefusesWhateverTheAppreciationSwitchSays() {
         Rig rig = new Rig(1, 2, 3);
@@ -245,7 +245,7 @@ class AppreciationLiveSwitchTest {
                 Runnable::run).join(), "nothing pending is 0 payouts, not held");
     }
 
-    // (e) Negative controls: the (b) assertions catch the bug when the recheck is dropped.
+    // (e) Without the recheck the (b) cases fail, so they do catch a missing recheck.
 
     @Test void withoutAnyRecheckTheSecondRowIsPaidAfterTheSwitchWentOff() {
         Rig rig = new Rig(1, 2);
@@ -254,7 +254,7 @@ class AppreciationLiveSwitchTest {
         rig.drain();
         assertEquals(2, result.join());
         assertFalse(rig.flag, "the switch really was off before row 2");
-        assertEquals(State.PAID, rig.journal.get(2L), "the defect: reserve paid out with appreciation off");
+        assertEquals(State.PAID, rig.journal.get(2L), "the reserve was paid out with appreciation off");
     }
 
     @Test void withoutTheSequenceRecheckTheDebitGateAloneLeavesAJournaledIntent() {
@@ -277,7 +277,7 @@ class AppreciationLiveSwitchTest {
         assertTrue(code.contains("() -> rentDeferred[0] = true, RENT_DEBIT_GATE)"), "rent: never refused");
         assertTrue(code.contains("row -> payRent(row, sha, limits, day, pinned, authorized, () -> { }, stillOn)"));
         assertTrue(code.contains("return gatedSequence(rows, stillOn,"));
-        assertEquals(1, count(code, "gatedSequence(rows,"), "rent keeps its original loop");
+        assertEquals(1, count(code, "gatedSequence(rows,"), "only appreciation uses gatedSequence; rent keeps its plain loop");
         // Lease authorize and Vault observer: both through finalDebitChecks, which reads the gate before the
         // DEBIT-only checks (fail fast) and again after them, as the last read before the withdraw.
         int authorize = code.indexOf("public void authorize(TransferJournal.Receipt receipt, TransferProof.Leg leg) {",

@@ -768,7 +768,7 @@ class HousingMarketRepositoryIT {
         return new Assignment(resident, property, slot, p.member().revision(), p.tenancyRevision());
     }
 
-    // Explicit pre-V10/legacy custody fixtures: no receipt is invented for unrecorded history.
+    // Pre-V10 custody fixtures: no receipt is invented where none was recorded.
     private static void vacant(UUID resident, long revision, LocalDate cooldown) throws SQLException {
         execute("""
                 INSERT INTO npc_tenants(tenant_id,display_name,property_id,slot,tier,archetype,mood,satisfaction,

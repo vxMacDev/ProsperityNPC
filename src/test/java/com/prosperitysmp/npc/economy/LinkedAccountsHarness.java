@@ -118,11 +118,11 @@ final class LinkedAccountsHarness implements AutoCloseable {
     /** The economy clock the runtime builds, over this harness's clock. */
     com.prosperitysmp.npc.clock.EconomyClock days() { return new com.prosperitysmp.npc.clock.EconomyClock(clock, ZONE, RESET); }
 
-    /** With links: the new constructor. linked is linked-accounts.enabled for every batch. */
+    /** Rent repository with the link table. The linked supplier is linked-accounts.enabled for every batch. */
     RentReservationRepository rents(BooleanSupplier linked) {
         return new RentReservationRepository(database, RESERVE, clock, ZONE, RESET, false, links(), linked);
     }
-    /** The constructor every pre-linked-accounts caller uses: no link table is read. */
+    /** Rent repository built without link support: no link table is read. */
     RentReservationRepository legacyRents() { return new RentReservationRepository(database, RESERVE, clock, ZONE, RESET, false); }
     UtilityRepository utilities() { return new UtilityRepository(database, RESERVE, clock, ZONE, RESET); }
     TransferJournal journal() { return new TransferJournal(database, RESERVE); }

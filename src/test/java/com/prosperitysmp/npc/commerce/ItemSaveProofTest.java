@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /** Uses the existing installed jar at runtime, never an NMS compile dependency. */
 class ItemSaveProofTest {
     private static final UUID BOT = UUID.fromString("226dba37-26b2-3478-8aad-ada66a4e36a7");
-    // DEV NpcTown0929, inventory-only read-only extraction, 2026-09-29. No human data.
+    // Fixture: an inventory-only player file captured on a test server. It holds no real player data.
     private static final String FIXTURE = "H4sIAAAAAAAC/32Su07DMBSGT2h6S1UhlVvHioGRCYHUEcrQBSGhlrFynVNi4tiV7bSBR+BBYOrCwMDT4SaUpjeyZPm+38f/sQdQgFqHGNJHpZkUAI2vGri9XrcDAO5p9H119nmRvM1m7893lx9VqHbFBIWR6sWzQMUB94FLAxXYYz40IyaQKjIy7amUPorBmNGQJFiAIpWxMFZx4NdxMudww9nB72X8/pIfKiR+Dm0u0MIGSgPUJp/qgUdlNJbCXkYX8pNHJBloQ2g40OwVM/YolxRrI6OBIBE6UGKGcEbtuV4sfFTcYv58iqHkPlShiIlRZN6UswLL4SjWlJgUXlXr2igWogmUjJ+Cv6wKuMaGQf0RuR0cWzfK6htZa/bCAth2B9/u3YPGfTy0Y13HYchMn/AYdQWamFDk3JZD5+fodvo7t6WWp9kAkO4mrdvN6j5ZHmDjBf63/GKmHKwrO/BShh+v4zqQE+TbjPLGE7BvlgY5tGX3493Oq+8ajDSk3w9/BrW1EQMAAA==";
     private static final String PROTOTYPE = "H4sIAAAAAAAC/+NiYOBgYMpMYeDPzcxLTS5KTCuxSipKTUxhZmBNzi/NK2EAKmBm4HZJLEkMSy0qzszPY2AQ2sYAAG0Bwwk4AAAA";
     private static URLClassLoader loader;
@@ -198,7 +198,7 @@ class ItemSaveProofTest {
         Path world = world(saved);
         var one = new CustodyBytes(onePrototype());
         var exact = proof.captureCollection(world, BOT, List.of(expect(one, 24))).orElseThrow();
-        assertTrue(collectionMatches(saved, exact), "positive control: the saved bread count");
+        assertTrue(collectionMatches(saved, exact), "the saved bread count");
         assertFalse(collectionMatches(saved, proof.captureCollection(world, BOT, List.of(expect(one, 23))).orElseThrow()));
         assertFalse(collectionMatches(saved, proof.captureCollection(world, BOT, List.of(expect(one, 25))).orElseThrow()));
         Object root = fixture();
@@ -256,7 +256,7 @@ class ItemSaveProofTest {
         }
     }
 
-    /** The counts alone, as the earlier readUnits returned them. */
+    /** The counts alone. */
     private static java.util.Optional<List<Integer>> readUnits(byte[] saved, UUID player, List<CustodyBytes> prototypes) {
         return proof.readSaved(saved, player, prototypes).map(ItemSaveProof.SavedUnits::units);
     }
@@ -266,10 +266,10 @@ class ItemSaveProofTest {
         int fileVersion = (int) ((java.util.Optional<?>) compound.getMethod("getInt", String.class).invoke(fixture(), "DataVersion")).orElseThrow();
         var same = new CustodyBytes(itemPrototype("minecraft:bread", fileVersion));
         var read = proof.readSaved(saved, BOT, List.of(same)).orElseThrow();
-        assertEquals(List.of(24), read.units(), "positive control");
+        assertEquals(List.of(24), read.units(), "storage and ender chest units");
         assertEquals(fileVersion, read.fileDataVersion());
         assertEquals(List.of(fileVersion), read.recordedDataVersions());
-        assertNull(ItemSaveProof.dataVersionProblem(read.fileDataVersion(), read.recordedDataVersions()), "positive control: same version");
+        assertNull(ItemSaveProof.dataVersionProblem(read.fileDataVersion(), read.recordedDataVersions()), "same version");
         // An item recorded before a server upgrade: the counts still read, but the versions disagree and say so.
         var older = proof.readSaved(saved, BOT, List.of(new CustodyBytes(itemPrototype("minecraft:bread", fileVersion - 1)))).orElseThrow();
         assertEquals(List.of(fileVersion - 1), older.recordedDataVersions());
@@ -278,7 +278,7 @@ class ItemSaveProofTest {
         assertEquals(List.of(fileVersion, fileVersion + 1), mixed.recordedDataVersions());
         var twice = proof.readSaved(saved, BOT, List.of(same, new CustodyBytes(itemPrototype("minecraft:torch", fileVersion)))).orElseThrow();
         assertEquals(List.of(fileVersion), twice.recordedDataVersions(), "one version, listed once");
-        // None recorded: listed as none, and the file is read as before.
+        // None recorded: listed as none, and the file's own version still reads.
         var none = proof.readSaved(saved, BOT, List.of(new CustodyBytes(itemPrototype("minecraft:bread", -1)))).orElseThrow();
         assertEquals(List.of(), none.recordedDataVersions());
         assertEquals(fileVersion, none.fileDataVersion());
@@ -294,7 +294,7 @@ class ItemSaveProofTest {
         byte[] saved = Base64.getDecoder().decode(FIXTURE);
         var bread = new CustodyBytes(onePrototype());
         var torch = new CustodyBytes(itemPrototype("minecraft:torch", 4790));
-        assertEquals(java.util.Optional.of(List.of(24, 32)), readUnits(saved, BOT, List.of(bread, torch)), "positive control");
+        assertEquals(java.util.Optional.of(List.of(24, 32)), readUnits(saved, BOT, List.of(bread, torch)), "both lines read in order");
         assertEquals(java.util.Optional.of(List.of(24)), readUnits(enderAndOffhand(), BOT, List.of(bread)),
                 "20 in storage plus 4 in the ender chest; the offhand is equipment and does not count");
         Object crate = copy.invoke(list(fixture(), "Inventory").get(3));
@@ -310,7 +310,7 @@ class ItemSaveProofTest {
     @Test void readUnitsRefusesAnotherPlayerBadPrototypesAndBadBounds() throws Exception {
         byte[] saved = Base64.getDecoder().decode(FIXTURE);
         var bread = new CustodyBytes(onePrototype());
-        assertTrue(readUnits(saved, BOT, List.of(bread)).isPresent(), "positive control");
+        assertTrue(readUnits(saved, BOT, List.of(bread)).isPresent(), "the file reads");
         assertTrue(readUnits(saved, UUID.randomUUID(), List.of(bread)).isEmpty(), "another player's file");
         assertTrue(readUnits(saved, BOT, List.of(new CustodyBytes(Base64.getDecoder().decode(PROTOTYPE)))).isEmpty(), "count 8 is not one item");
         Object noId = read.invoke(null, new ByteArrayInputStream(onePrototype()), accounter.getConstructor(long.class, int.class).newInstance(8 * 1024 * 1024L, 64));
@@ -335,7 +335,7 @@ class ItemSaveProofTest {
         assertTrue(collectionMatches(enderAndOffhand(), exact), "20 in storage plus 4 in the ender chest; the offhand does not count");
         var other = new ItemSaveProof(loader);
         var foreign = other.captureCollection(world, BOT, List.of(expect(bread, 24))).orElseThrow();
-        assertTrue(collectionMatches(other, saved, foreign), "positive control: its own proof accepts it");
+        assertTrue(collectionMatches(other, saved, foreign), "its own proof accepts it");
         assertFalse(collectionMatches(proof, saved, foreign), "a snapshot from another proof instance is refused");
         assertTrue(collectionMatches(padded(64 * 1024), exact), "padding alone still matches");
         assertFalse(collectionMatches(padded(ItemSaveProof.MAX_FILE_BYTES + 64 * 1024), exact), "a file over the size bound is refused");
@@ -355,7 +355,7 @@ class ItemSaveProofTest {
         Path world = world(Base64.getDecoder().decode(FIXTURE));
         var bread = expect(new CustodyBytes(onePrototype()), 24);
         var torch = expect(new CustodyBytes(itemPrototype("minecraft:torch", 4790)), 32);
-        assertTrue(proof.captureCollection(world, BOT, List.of(bread, torch)).isPresent(), "positive control");
+        assertTrue(proof.captureCollection(world, BOT, List.of(bread, torch)).isPresent(), "a valid capture is accepted");
         var older = expect(new CustodyBytes(itemPrototype("minecraft:torch", 4789)), 32);
         assertTrue(proof.captureCollection(world, BOT, List.of(bread, older)).isEmpty(), "every prototype from one data version");
         var unversioned = expect(new CustodyBytes(itemPrototype("minecraft:bread", -1)), 24);
@@ -372,7 +372,7 @@ class ItemSaveProofTest {
         assertTrue(proof.captureCollection(world, null, List.of(bread)).isEmpty());
     }
 
-    // ---- P1-A repro: a stale file whose recipe sits where the old proof never looked
+    // ---- A stale file whose recipe sits where the storage count never looks
 
     private static Object tag() throws Exception { return compound.getConstructor().newInstance(); }
     @SuppressWarnings("unchecked") private static List<Object> listTag() throws Exception {
@@ -472,7 +472,7 @@ class ItemSaveProofTest {
         // disk is the old one again, or any file with the bread still somewhere the storage count does not look.
         byte[] beforeTake = before(looseBread(16));
         var snapshot = took(beforeTake, 0, 16);
-        assertTrue(accepted(after(looseBread(0)), snapshot), "positive control: the take's own save with the bread gone");
+        assertTrue(accepted(after(looseBread(0)), snapshot), "the take's own save with the bread gone");
         for (byte[] stale : List.of(breadInShulker(16), breadInOffhand(16))) {
             assertTrue(collectionMatches(stale, snapshot), "no loose bread: the storage count alone would pass this file");
             assertFalse(accepted(stale, snapshot), "the old file, unmarked, still holds the 16 bread");
@@ -481,7 +481,7 @@ class ItemSaveProofTest {
         // The old file can never stand in for the before-take save either: it lacks this hand-in's before marker.
         var bread = List.of(new CustodyBytes(onePrototype()));
         Path world = world(breadInShulker(16));
-        assertTrue(proof.baselineOf(file(world), before(breadInShulker(16)), BOT, HAND_IN, bread).isPresent(), "positive control");
+        assertTrue(proof.baselineOf(file(world), before(breadInShulker(16)), BOT, HAND_IN, bread).isPresent(), "the before-take save gives a baseline");
         assertTrue(proof.baselineOf(file(world), breadInShulker(16), BOT, HAND_IN, bread).isEmpty(), "unmarked");
         assertTrue(proof.baselineOf(file(world), after(breadInShulker(16)), BOT, HAND_IN, bread).isEmpty(), "the after marker");
     }
@@ -497,7 +497,7 @@ class ItemSaveProofTest {
         assertEquals(List.of(32), proof.baselineOf(file(world(beforeTake)), beforeTake, BOT, HAND_IN, List.of(bread)).orElseThrow().units(),
                 "the before-take count includes the shulker's contents");
         var snapshot = took(beforeTake, 0, 16);
-        assertTrue(accepted(after(breadInShulker(16)), snapshot), "positive control: the box keeps its own 16, the loose 16 are gone");
+        assertTrue(accepted(after(breadInShulker(16)), snapshot), "the box keeps its own 16, the loose 16 are gone");
         assertFalse(accepted(after(breadInShulker(32)), snapshot), "the loose 16 moved into the box");
         assertFalse(accepted(beforeTake, snapshot), "the before-take save itself: the take's save never happened");
         assertFalse(accepted(breadInShulker(16), snapshot), "no marker: not the take's save");
@@ -545,7 +545,7 @@ class ItemSaveProofTest {
         Path world = world(beforeTake);
         var bread = new CustodyBytes(onePrototype());
         var baseline = proof.baselineOf(file(world), beforeTake, BOT, HAND_IN, List.of(bread)).orElseThrow();
-        assertTrue(proof.captureCollection(world, BOT, List.of(new ItemSaveProof.Expectation(bread, 0, 16)), baseline).isPresent(), "positive control");
+        assertTrue(proof.captureCollection(world, BOT, List.of(new ItemSaveProof.Expectation(bread, 0, 16)), baseline).isPresent(), "a capture with its baseline is accepted");
         assertTrue(proof.captureCollection(world, BOT, List.of(new ItemSaveProof.Expectation(bread, 0, 17)), baseline).isEmpty(), "more than the save held");
         assertTrue(proof.captureCollection(world, UUID.randomUUID(), List.of(new ItemSaveProof.Expectation(bread, 0, 16)), baseline).isEmpty());
         var torch = new CustodyBytes(itemPrototype("minecraft:torch", 4790));
@@ -567,7 +567,7 @@ class ItemSaveProofTest {
         assertTrue(proof.baselineOf(file(world), beforeTake, BOT, HAND_IN, java.util.Collections.nCopies(ItemCollectionEvidence.MAX_LINES + 1, bread))
                 .isEmpty(), "too many lines");
         assertEquals(List.of(16, 16, 16, 16), proof.baselineOf(file(world), beforeTake, BOT, HAND_IN,
-                java.util.Collections.nCopies(ItemCollectionEvidence.MAX_LINES, bread)).orElseThrow().units(), "positive control: the most lines");
+                java.util.Collections.nCopies(ItemCollectionEvidence.MAX_LINES, bread)).orElseThrow().units(), "the most lines");
         // With file identities the read goes through the stable, forced path; without them (Windows) it refuses.
         if (Files.readAttributes(file(world), java.nio.file.attribute.BasicFileAttributes.class).fileKey() == null)
             assertTrue(proof.baseline(world, BOT, HAND_IN, List.of(bread)).isEmpty());
@@ -596,8 +596,27 @@ class ItemSaveProofTest {
         assertTrue(proof.capture(world, batch, evidence(batch, 16, 24)).isEmpty(),
                 "a return must use the proof bound to its own before-delivery save");
         ItemCustody commerce = batch(batch.payload().bytes(), 8);
-        assertTrue(nbtMatches(looseBread(24), proof.capture(world, commerce, evidence(commerce, 16, 24)).orElseThrow()),
-                "positive control: commerce deliveries keep the dev.58 proof");
+        var unmarked = proof.capture(world, commerce, evidence(commerce, 16, 24)).orElseThrow();
+        assertTrue(nbtMatches(looseBread(24), unmarked), "unmarked commerce deliveries are checked by the count alone");
+        // No public path builds a return snapshot without a baseline, so the proof's own refusal is reached by building
+        // one directly: the same snapshot with the return as its batch. Defence in depth behind capture's refusal.
+        assertFalse(nbtMatches(looseBread(24), rebuilt(unmarked, batch)), "an unmarked return is refused by the proof too");
+        assertTrue(nbtMatches(looseBread(24), rebuilt(unmarked, commerce)), "the rebuild itself matches");
+    }
+
+    /** The same unmarked snapshot (no baseline) bound to another batch, through the private constructor. */
+    private static ItemSaveProof.Snapshot rebuilt(ItemSaveProof.Snapshot snapshot, ItemCustody batch) throws Exception {
+        var type = ItemSaveProof.Snapshot.class;
+        var constructor = type.getDeclaredConstructor(ItemSaveProof.class, Path.class, ItemCustody.class,
+                ItemDeliveryEvidence.class, int.class, Object.class, ItemSaveProof.Baseline.class);
+        constructor.setAccessible(true);
+        java.util.function.Function<String, Object> field = name -> {
+            try { var f = type.getDeclaredField(name); f.setAccessible(true); return f.get(snapshot); }
+            catch (ReflectiveOperationException missing) { throw new AssertionError(name, missing); }
+        };
+        assertNull(field.apply("baseline"));
+        return constructor.newInstance(field.apply("owner"), field.apply("file"), batch, evidence(batch, 16, 24),
+                field.apply("version"), field.apply("prototype"), null);
     }
 
     /** The file with a marker under this key (the hand-in and return keys are separate). */
@@ -627,8 +646,8 @@ class ItemSaveProofTest {
     /** The return's whole proof (what verify accepts once the file read is stable), against a before-delivery save. */
     private ItemSaveProof.Snapshot delivered(byte[] beforeDelivery, ItemCustody batch, int before, int after) throws Exception {
         Path world = world(beforeDelivery);
-        var baseline = proof.returnBaselineOf(file(world), beforeDelivery, batch).orElseThrow();
-        return proof.captureReturn(world, batch, evidence(batch, before, after), baseline).orElseThrow();
+        var baseline = proof.deliveryBaselineOf(file(world), beforeDelivery, batch).orElseThrow();
+        return proof.captureDelivery(world, batch, evidence(batch, before, after), baseline).orElseThrow();
     }
 
     /**
@@ -639,7 +658,7 @@ class ItemSaveProofTest {
     @Test void aReturnIsProvenOnlyByItsOwnSaveWithTheWholeFileUpByTheBatch() throws Exception {
         ItemCustody batch = returnBatch(8);
         var snapshot = delivered(returnBefore(looseAndBoxed(16, 8)), batch, 16, 24);
-        assertTrue(nbtMatches(returnAfter(looseAndBoxed(24, 8)), snapshot), "positive control: the delivery's own save");
+        assertTrue(nbtMatches(returnAfter(looseAndBoxed(24, 8)), snapshot), "the delivery's own save");
         assertFalse(nbtMatches(looseBread(24), snapshot), "the old file with 24 loose bread: storage matches, no marker");
         assertFalse(nbtMatches(returnAfter(looseBread(24)), snapshot), "even marked, the box's 8 are gone: 24 in the file, not 32");
         assertFalse(nbtMatches(returnBefore(looseAndBoxed(24, 8)), snapshot), "the before marker: the delivery's save never happened");
@@ -662,43 +681,44 @@ class ItemSaveProofTest {
         ItemCustody batch = returnBatch(8);
         byte[] beforeDelivery = returnBefore(looseAndBoxed(16, 8));
         Path world = world(beforeDelivery);
-        var baseline = proof.returnBaselineOf(file(world), beforeDelivery, batch);
-        assertEquals(List.of(24), baseline.orElseThrow().units(), "positive control: the whole file, the box included");
-        assertTrue(proof.returnBaselineOf(file(world), looseAndBoxed(16, 8), batch).isEmpty(), "unmarked: that save never happened");
-        assertTrue(proof.returnBaselineOf(file(world), returnAfter(looseAndBoxed(16, 8)), batch).isEmpty(), "the after marker");
-        assertTrue(proof.returnBaselineOf(file(world), markedAs(looseAndBoxed(16, 8), ItemSaveProof.MARKER_KEY,
+        var baseline = proof.deliveryBaselineOf(file(world), beforeDelivery, batch);
+        assertEquals(List.of(24), baseline.orElseThrow().units(), "the whole file, the box included");
+        assertTrue(proof.deliveryBaselineOf(file(world), looseAndBoxed(16, 8), batch).isEmpty(), "unmarked: that save never happened");
+        assertTrue(proof.deliveryBaselineOf(file(world), returnAfter(looseAndBoxed(16, 8)), batch).isEmpty(), "the after marker");
+        assertTrue(proof.deliveryBaselineOf(file(world), markedAs(looseAndBoxed(16, 8), ItemSaveProof.MARKER_KEY,
                 ItemSaveProof.marker(RETURN, false)), batch).isEmpty(), "the hand-in key");
-        assertTrue(proof.returnBaselineOf(file(world), markedAs(looseAndBoxed(16, 8), ItemSaveProof.RETURN_MARKER_KEY,
+        assertTrue(proof.deliveryBaselineOf(file(world), markedAs(looseAndBoxed(16, 8), ItemSaveProof.RETURN_MARKER_KEY,
                 ItemSaveProof.marker(UUID.randomUUID(), false)), batch).isEmpty(), "another return's save");
         Object other = parse(beforeDelivery);
         compound.getMethod("putIntArray", String.class, int[].class).invoke(other, "UUID", new int[4]);
-        assertTrue(proof.returnBaselineOf(file(world), encode(other), batch).isEmpty(), "another player's file");
+        assertTrue(proof.deliveryBaselineOf(file(world), encode(other), batch).isEmpty(), "another player's file");
         Object older = parse(beforeDelivery);
         compound.getMethod("putInt", String.class, int.class).invoke(older, "DataVersion", 4789);
-        assertTrue(proof.returnBaselineOf(file(world), encode(older), batch).isEmpty(), "a file at another DataVersion");
+        assertTrue(proof.deliveryBaselineOf(file(world), encode(older), batch).isEmpty(), "a file at another DataVersion");
         ItemCustody commerce = batch(batch.payload().bytes(), 8);
-        assertTrue(proof.returnBaselineOf(file(world), beforeDelivery, commerce).isEmpty(), "a commerce delivery has no baseline");
-        // captureReturn binds the baseline to this proof, return, player and item, and refuses anything else.
+        assertTrue(proof.deliveryBaselineOf(file(world), beforeDelivery, commerce).isEmpty(), 
+                "a return's before-save is not a commerce delivery's: it has another key and nonce");
+        // captureDelivery binds the baseline to this proof, return, player and item, and refuses anything else.
         var evidence = evidence(batch, 16, 24);
-        assertTrue(proof.captureReturn(world, batch, evidence, baseline.get()).isPresent(), "positive control");
-        assertTrue(proof.captureReturn(world, batch, evidence, null).isEmpty(), "no before-delivery save");
-        assertTrue(proof.captureReturn(world, commerce, evidence(commerce, 16, 24), baseline.get()).isEmpty(), "a commerce batch");
+        assertTrue(proof.captureDelivery(world, batch, evidence, baseline.get()).isPresent(), "a capture with its baseline is accepted");
+        assertTrue(proof.captureDelivery(world, batch, evidence, null).isEmpty(), "no before-delivery save");
+        assertTrue(proof.captureDelivery(world, commerce, evidence(commerce, 16, 24), baseline.get()).isEmpty(), "a commerce batch");
         Instant at = Instant.parse("2026-09-29T12:00:00Z");
         ItemCustody otherReturn = new ItemCustody(UUID.randomUUID(), BOT, UUID.randomUUID(), ItemCustody.Source.REPAIR_RETURN,
                 8, batch.payload(), at, at.plusSeconds(60));
-        assertTrue(proof.captureReturn(world, otherReturn, evidence(otherReturn, 16, 24), baseline.get()).isEmpty(), "another return");
-        var foreign = new ItemSaveProof(loader).returnBaselineOf(file(world), beforeDelivery, batch).orElseThrow();
-        assertTrue(proof.captureReturn(world, batch, evidence, foreign).isEmpty(), "another proof's read");
-        assertTrue(proof.captureReturn(temporary.resolve("other-world"), batch, evidence, baseline.get()).isEmpty(), "another world's file");
+        assertTrue(proof.captureDelivery(world, otherReturn, evidence(otherReturn, 16, 24), baseline.get()).isEmpty(), "another return");
+        var foreign = new ItemSaveProof(loader).deliveryBaselineOf(file(world), beforeDelivery, batch).orElseThrow();
+        assertTrue(proof.captureDelivery(world, batch, evidence, foreign).isEmpty(), "another proof's read");
+        assertTrue(proof.captureDelivery(temporary.resolve("other-world"), batch, evidence, baseline.get()).isEmpty(), "another world's file");
         byte[] beforeTake = marked(looseBread(16), ItemSaveProof.marker(RETURN, false));
         var handIn = proof.baselineOf(file(world), beforeTake, BOT, RETURN, List.of(new CustodyBytes(onePrototype()))).orElseThrow();
-        assertTrue(proof.captureReturn(world, batch, evidence, handIn).isEmpty(), "a hand-in's before-take save is not a return's");
+        assertTrue(proof.captureDelivery(world, batch, evidence, handIn).isEmpty(), "a hand-in's before-take save is not a return's");
         assertTrue(proof.captureCollection(world, BOT, List.of(new ItemSaveProof.Expectation(new CustodyBytes(onePrototype()), 0, 8)),
                 baseline.get()).isEmpty(), "and a return's save is not a hand-in's");
         // With file identities the read goes through the stable, forced path; without them (Windows) it refuses.
         if (Files.readAttributes(file(world), java.nio.file.attribute.BasicFileAttributes.class).fileKey() == null)
-            assertTrue(proof.returnBaseline(world, batch).isEmpty());
-        else assertEquals(List.of(24), proof.returnBaseline(world, batch).orElseThrow().units());
+            assertTrue(proof.deliveryBaseline(world, batch).isEmpty());
+        else assertEquals(List.of(24), proof.deliveryBaseline(world, batch).orElseThrow().units());
     }
 
     /**
@@ -729,6 +749,171 @@ class ItemSaveProofTest {
         assertEquals(ItemSaveProof.marker(RETURN, false), marked.returnMarker());
         assertEquals(List.of(32), proof.readSaved(after(breadInOffhand(32)), BOT, List.of(bread)).orElseThrow().wholeFile(), "the offhand counts");
     }
+
+    // ---- marked commerce deliveries (town.commerce.delivery-save-marker): the return's method, applied to paid orders
+
+    private static final UUID ORDER = UUID.fromString("00000000-0000-4000-8000-0000000de11e");
+    private static ItemCustody orderBatch(ItemCustody.Source source, UUID nonce, int quantity) throws Exception {
+        Object stack = parse(onePrototype());
+        compound.getMethod("putInt", String.class, int.class).invoke(stack, "count", quantity);
+        Instant at = Instant.parse("2026-09-29T12:00:00Z");
+        return new ItemCustody(nonce, BOT, UUID.randomUUID(), source, quantity, new CustodyBytes(encode(stack)), at, at.plusSeconds(60));
+    }
+    private static byte[] orderBefore(byte[] saved) throws Exception {
+        return markedAs(saved, ItemSaveProof.DELIVERY_MARKER_KEY, ItemSaveProof.marker(ORDER, false));
+    }
+    private static byte[] orderAfter(byte[] saved) throws Exception {
+        return markedAs(saved, ItemSaveProof.DELIVERY_MARKER_KEY, ItemSaveProof.marker(ORDER, true));
+    }
+    /** This much loose bread in storage slot 2 and this much in the offhand. */
+    private static byte[] looseAndOffhand(int loose, int offhand) throws Exception {
+        Object root = parse(looseBread(loose));
+        Object equipment = tag();
+        put(equipment, "offhand", item("minecraft:bread", offhand));
+        put(root, "equipment", equipment);
+        return encode(root);
+    }
+
+    /**
+     * An order of 8 bread. Before it: 16 loose and 8 in a shulker box, saved with this order's before marker. The order is
+     * proven only by its own save: this order's after marker under the delivery key, 24 in storage and 32 in the whole
+     * file. Same rule as a return, for both commerce sources.
+     */
+    @Test void aCommerceDeliveryIsProvenOnlyByItsOwnSaveWithTheWholeFileUpByTheBatch() throws Exception {
+        for (var source : new ItemCustody.Source[] {ItemCustody.Source.MERCHANT_GOODS, ItemCustody.Source.WORKER_OUTPUT}) {
+            ItemCustody batch = orderBatch(source, ORDER, 8);
+            var snapshot = delivered(orderBefore(looseAndBoxed(16, 8)), batch, 16, 24);
+            assertTrue(nbtMatches(orderAfter(looseAndBoxed(24, 8)), snapshot), "the delivery's own save, " + source);
+            assertFalse(nbtMatches(looseAndBoxed(24, 8), snapshot), "an unmarked old file with the same counts");
+            assertFalse(nbtMatches(looseBread(24), snapshot), "an unmarked old file: storage matches, no marker");
+            assertFalse(nbtMatches(orderBefore(looseAndBoxed(24, 8)), snapshot), "this delivery's before marker");
+            assertFalse(nbtMatches(markedAs(looseAndBoxed(24, 8), ItemSaveProof.DELIVERY_MARKER_KEY,
+                    ItemSaveProof.marker(UUID.randomUUID(), true)), snapshot), "another delivery's after marker");
+            assertFalse(nbtMatches(markedAs(looseAndBoxed(24, 8), ItemSaveProof.RETURN_MARKER_KEY, ItemSaveProof.marker(ORDER, true)),
+                    snapshot), "this nonce's after marker under the return key");
+            assertFalse(nbtMatches(markedAs(looseAndBoxed(24, 8), ItemSaveProof.MARKER_KEY, ItemSaveProof.marker(ORDER, true)),
+                    snapshot), "this nonce's after marker under the hand-in key");
+            assertFalse(nbtMatches(orderAfter(looseAndBoxed(24, 16)), snapshot), "the whole file 8 over: storage alone would pass it");
+            assertFalse(nbtMatches(orderAfter(looseAndBoxed(24, 7)), snapshot), "the whole file 1 short");
+            assertFalse(nbtMatches(orderAfter(looseAndBoxed(23, 9)), snapshot), "the whole file is right but storage is not the after count");
+            assertTrue(nbtMatches(orderAfter(looseAndOffhand(24, 8)), snapshot), "the box's 8 moved to the offhand: still 32 in the file");
+        }
+    }
+
+    /**
+     * A stale, unmarked file F0 happens to hold the 24 bread the delivery recorded. With the marker off, capture()
+     * accepts it, because only the count is checked. With the marker on, the same file is refused, and it could never
+     * have served as this delivery's before-save either.
+     */
+    @Test void theStaleFileCoincidenceIsAcceptedByTheDev58ProofAndRefusedWithTheMarker() throws Exception {
+        ItemCustody batch = orderBatch(ItemCustody.Source.MERCHANT_GOODS, ORDER, 8);
+        byte[] stale = looseBread(24);
+        Path world = world(stale);
+        var dev58 = proof.capture(world, batch, evidence(batch, 16, 24)).orElseThrow();
+        assertTrue(nbtMatches(stale, dev58), "the unmarked proof accepts the stale file");
+        byte[] beforeDelivery = orderBefore(looseBread(16));
+        var baseline = proof.deliveryBaselineOf(file(world), beforeDelivery, batch).orElseThrow();
+        var marked = proof.captureDelivery(world, batch, evidence(batch, 16, 24), baseline).orElseThrow();
+        assertFalse(nbtMatches(stale, marked), "the marked proof refuses the stale file");
+        assertTrue(nbtMatches(orderAfter(looseBread(24)), marked), "its own save passes");
+        assertTrue(proof.deliveryBaselineOf(file(world), stale, batch).isEmpty(), "a swallowed before-save is refused before any give");
+        // The stable read: with file identities verify sees F0 on disk; without them (Windows) it refuses everything.
+        if (Files.readAttributes(file(world), java.nio.file.attribute.BasicFileAttributes.class).fileKey() == null) {
+            assertFalse(proof.verify(dev58));
+            assertFalse(proof.verify(marked));
+        } else {
+            assertTrue(proof.verify(dev58));
+            assertFalse(proof.verify(marked));
+        }
+    }
+
+    @Test void aDeliveryBaselineIsThisDeliverysBeforeSaveForThisPlayerAndKey() throws Exception {
+        ItemCustody batch = orderBatch(ItemCustody.Source.MERCHANT_GOODS, ORDER, 8);
+        byte[] beforeDelivery = orderBefore(looseAndBoxed(16, 8));
+        Path world = world(beforeDelivery);
+        var baseline = proof.deliveryBaselineOf(file(world), beforeDelivery, batch);
+        assertEquals(List.of(24), baseline.orElseThrow().units(), "the whole file, the box included");
+        assertTrue(proof.deliveryBaselineOf(file(world), looseAndBoxed(16, 8), batch).isEmpty(), "no marker");
+        assertTrue(proof.deliveryBaselineOf(file(world), orderAfter(looseAndBoxed(16, 8)), batch).isEmpty(), "the after marker");
+        assertTrue(proof.deliveryBaselineOf(file(world), markedAs(looseAndBoxed(16, 8), ItemSaveProof.RETURN_MARKER_KEY,
+                ItemSaveProof.marker(ORDER, false)), batch).isEmpty(), "the before marker under the return key");
+        assertTrue(proof.deliveryBaselineOf(file(world), markedAs(looseAndBoxed(16, 8), ItemSaveProof.MARKER_KEY,
+                ItemSaveProof.marker(ORDER, false)), batch).isEmpty(), "the before marker under the hand-in key");
+        assertTrue(proof.deliveryBaselineOf(file(world), markedAs(looseAndBoxed(16, 8), ItemSaveProof.DELIVERY_MARKER_KEY,
+                ItemSaveProof.marker(UUID.randomUUID(), false)), batch).isEmpty(), "another delivery's save");
+        Object other = parse(beforeDelivery);
+        compound.getMethod("putIntArray", String.class, int[].class).invoke(other, "UUID", new int[4]);
+        assertTrue(proof.deliveryBaselineOf(file(world), encode(other), batch).isEmpty(), "another player's file");
+        Object older = parse(beforeDelivery);
+        compound.getMethod("putInt", String.class, int.class).invoke(older, "DataVersion", 4789);
+        assertTrue(proof.deliveryBaselineOf(file(world), encode(older), batch).isEmpty(), "a file at another DataVersion");
+        // captureDelivery binds the baseline to this proof, delivery, player, item and key.
+        var evidence = evidence(batch, 16, 24);
+        assertTrue(proof.captureDelivery(world, batch, evidence, baseline.get()).isPresent(), "a capture with its baseline is accepted");
+        assertTrue(proof.captureDelivery(world, batch, evidence, null).isEmpty(), "no before-delivery save");
+        var foreign = new ItemSaveProof(loader).deliveryBaselineOf(file(world), beforeDelivery, batch).orElseThrow();
+        assertTrue(proof.captureDelivery(world, batch, evidence, foreign).isEmpty(), "another proof's read");
+        ItemCustody otherOrder = orderBatch(ItemCustody.Source.MERCHANT_GOODS, UUID.randomUUID(), 8);
+        assertTrue(proof.captureDelivery(world, otherOrder, evidence(otherOrder, 16, 24), baseline.get()).isEmpty(), "another delivery");
+        // Same nonce, other source: only the key tells them apart.
+        ItemCustody returnSameNonce = new ItemCustody(ORDER, BOT, UUID.randomUUID(), ItemCustody.Source.REPAIR_RETURN, 8,
+                batch.payload(), batch.reservedAt(), batch.expiresAt());
+        assertTrue(proof.captureDelivery(world, returnSameNonce, evidence(returnSameNonce, 16, 24), baseline.get()).isEmpty(),
+                "a commerce baseline for a return");
+        ItemCustody returned = returnBatch(8);
+        var returnBaseline = proof.deliveryBaselineOf(file(world), returnBefore(looseAndBoxed(16, 8)), returned).orElseThrow();
+        assertTrue(proof.captureDelivery(world, returned, evidence(returned, 16, 24), returnBaseline).isPresent(), "a return is accepted");
+        ItemCustody orderSameNonce = orderBatch(ItemCustody.Source.WORKER_OUTPUT, RETURN, 8);
+        assertTrue(proof.captureDelivery(world, orderSameNonce, evidence(orderSameNonce, 16, 24), returnBaseline).isEmpty(),
+                "a return baseline for a commerce batch");
+    }
+
+    @Test void readSavedReportsTheDeliveryMarker() throws Exception {
+        var bread = new CustodyBytes(onePrototype());
+        var plain = proof.readSaved(looseBread(16), BOT, List.of(bread)).orElseThrow();
+        assertNull(plain.deliveryMarker());
+        var order = proof.readSaved(orderAfter(looseBread(16)), BOT, List.of(bread)).orElseThrow();
+        assertEquals(ItemSaveProof.marker(ORDER, true), order.deliveryMarker(), "the order's after marker is found");
+        assertNull(order.returnMarker());
+        assertNull(order.handInMarker());
+        // All three keys at once: each is read on its own.
+        Object all = parse(orderBefore(looseBread(16)));
+        Object values = get.invoke(all, "BukkitValues");
+        compound.getMethod("putString", String.class, String.class).invoke(values, ItemSaveProof.RETURN_MARKER_KEY, ItemSaveProof.marker(RETURN, true));
+        compound.getMethod("putString", String.class, String.class).invoke(values, ItemSaveProof.MARKER_KEY, ItemSaveProof.marker(HAND_IN, false));
+        var three = proof.readSaved(encode(all), BOT, List.of(bread)).orElseThrow();
+        assertEquals(ItemSaveProof.marker(ORDER, false), three.deliveryMarker());
+        assertEquals(ItemSaveProof.marker(RETURN, true), three.returnMarker());
+        assertEquals(ItemSaveProof.marker(HAND_IN, false), three.handInMarker());
+        var onlyReturn = proof.readSaved(returnAfter(looseBread(16)), BOT, List.of(bread)).orElseThrow();
+        assertNull(onlyReturn.deliveryMarker(), "the return key is not the delivery key");
+        assertEquals(ItemSaveProof.marker(RETURN, true), onlyReturn.returnMarker());
+    }
+
+    @Test void readSavedDeliveryCountsTheBatchShape() throws Exception {
+        ItemCustody batch = orderBatch(ItemCustody.Source.MERCHANT_GOODS, ORDER, 8);
+        int fileVersion = (int) ((java.util.Optional<?>) compound.getMethod("getInt", String.class).invoke(fixture(), "DataVersion")).orElseThrow();
+        var read = proof.readSavedDelivery(orderAfter(looseAndBoxed(24, 8)), batch).orElseThrow();
+        assertEquals(List.of(24), read.units(), "storage and ender chest");
+        assertEquals(List.of(32), read.wholeFile(), "the box's 8 count in the whole file");
+        assertEquals(ItemSaveProof.marker(ORDER, true), read.deliveryMarker());
+        assertEquals(fileVersion, read.fileDataVersion());
+        assertEquals(1, read.recordedDataVersions().size(), "the payload's DataVersion");
+        assertNull(ItemSaveProof.dataVersionProblem(read.fileDataVersion(), read.recordedDataVersions()));
+        assertEquals(List.of(32), proof.readSavedDelivery(looseAndOffhand(24, 8), batch).orElseThrow().wholeFile(), "the offhand counts");
+        assertEquals(List.of(0), proof.readSavedDelivery(markedAs(fixtureWithout(), ItemSaveProof.DELIVERY_MARKER_KEY, "x"), batch)
+                .orElseThrow().units(), "no bread at all");
+        // The payload must be the batch: its count is the quantity, not one item.
+        ItemCustody wrong = new ItemCustody(ORDER, BOT, UUID.randomUUID(), ItemCustody.Source.MERCHANT_GOODS, 7, batch.payload(),
+                batch.reservedAt(), batch.expiresAt());
+        assertTrue(proof.readSavedDelivery(looseBread(24), wrong).isEmpty(), "a payload of 8 is not a batch of 7");
+        Object other = parse(looseBread(24));
+        compound.getMethod("putIntArray", String.class, int[].class).invoke(other, "UUID", new int[4]);
+        assertTrue(proof.readSavedDelivery(encode(other), batch).isEmpty(), "another player's file");
+        assertTrue(proof.readSavedDelivery(new byte[0], batch).isEmpty());
+    }
+    /** The fixture with every bread removed (loose bread only exists in slot 2). */
+    private static byte[] fixtureWithout() throws Exception { return encode(withoutLooseBread()); }
 
     @Test void collectionProofRefusesALinkedPlayerFile() throws Exception {
         byte[] saved = Base64.getDecoder().decode(FIXTURE);

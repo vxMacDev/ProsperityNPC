@@ -1,7 +1,7 @@
 package com.prosperitysmp.npc.formulas;
 
 /**
- * The incident table (§7.4). Weights sum to 100. Each incident deals fixed
+ * The incident table. Weights sum to 100. Each incident deals fixed
  * condition damage and offers a fixed cash OR fixed item repair. Repairs never
  * grant region access.
  */

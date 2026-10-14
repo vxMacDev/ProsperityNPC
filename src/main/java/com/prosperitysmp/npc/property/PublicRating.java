@@ -2,6 +2,7 @@ package com.prosperitysmp.npc.property;
 
 import com.prosperitysmp.npc.market.HousingDecisionPlan;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
@@ -57,7 +58,8 @@ public record PublicRating(OptionalInt halfStars, int occupied, int capacity, in
                 occupied + " of " + capacity + " " + (capacity == 1 ? "room" : "rooms") + " let",
                 "Condition: " + conditionBand(condition));
         if (!ownerAway) return base;
-        var all = new java.util.ArrayList<>(base); all.add(OwnerAway.LABEL);
+        var all = new ArrayList<>(base);
+        all.add(OwnerAway.LABEL);
         return List.copyOf(all);
     }
 }

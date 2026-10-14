@@ -27,7 +27,10 @@ public final class TrainingRepository {
         UNAUTHORIZED, BUSY, UNCERTAIN
     }
     public record Result(Code code, Optional<TrainingGrant> grant) {
-        public Result { Objects.requireNonNull(code); Objects.requireNonNull(grant); }
+        public Result {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(grant);
+        }
         public static Result denied(Code code) { return new Result(code, Optional.empty()); }
     }
 
@@ -42,8 +45,10 @@ public final class TrainingRepository {
     /** Internal trusted adapter only: current employment is captured before dispatch and rechecked on delivery. */
     public Result request(UUID player, UUID trainer, String jobName, UUID session, Instant at, LocalDate day)
             throws SQLException {
-        Objects.requireNonNull(player); Objects.requireNonNull(trainer);
-        Objects.requireNonNull(session); Objects.requireNonNull(day);
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(trainer);
+        Objects.requireNonNull(session);
+        Objects.requireNonNull(day);
         String job = TrainingGrant.canonicalJob(jobName);
         Instant now = TrainingGrant.normalize(at);
         ensurePlayer(player);
@@ -90,15 +95,21 @@ public final class TrainingRepository {
                             UPDATE npc_training_players SET last_accepted_day=?, last_accepted_at_millis=?
                             WHERE player_id=?
                             """)) {
-                        ps.setString(1, day.toString()); ps.setLong(2, now.toEpochMilli());
-                        ps.setBytes(3, Uuids.toBytes(player)); requireOne(ps.executeUpdate());
+                        ps.setString(1, day.toString());
+                        ps.setLong(2, now.toEpochMilli());
+                        ps.setBytes(3, Uuids.toBytes(player));
+                        requireOne(ps.executeUpdate());
                     }
                     result = new Result(Code.GRANTED, Optional.of(grant));
                 }
                 c.commit();
                 return result;
             } catch (SQLException | RuntimeException failure) {
-                try { c.rollback(); } catch (SQLException cleanup) { failure.addSuppressed(cleanup); }
+                try {
+                    c.rollback();
+                } catch (SQLException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
                 if (failure instanceof SQLException sql) throw sql;
                 throw new SQLException("invalid training evidence", failure);
             }
@@ -145,7 +156,8 @@ public final class TrainingRepository {
                 SELECT source_ref, kind, occurred_at_millis, economy_day FROM npc_resident_memory
                 WHERE resident_id=? AND player_id=? ORDER BY occurred_at_millis, source_ref LIMIT ? FOR UPDATE
                 """)) {
-            ps.setBytes(1, Uuids.toBytes(trainer)); ps.setBytes(2, Uuids.toBytes(player));
+            ps.setBytes(1, Uuids.toBytes(trainer));
+            ps.setBytes(2, Uuids.toBytes(player));
             ps.setInt(3, RelationshipMemory.MAX_EVENTS + 1);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -174,11 +186,16 @@ public final class TrainingRepository {
     private static void insert(Connection c, TrainingGrant grant) throws SQLException {
         try (PreparedStatement ps = prepare(c, "INSERT INTO npc_training_grants (" + COLUMNS
                 + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-            ps.setBytes(1, Uuids.toBytes(grant.grantId())); ps.setBytes(2, Uuids.toBytes(grant.playerId()));
-            ps.setBytes(3, Uuids.toBytes(grant.trainerId())); ps.setString(4, grant.jobName());
-            ps.setBytes(5, Uuids.toBytes(grant.sessionId())); ps.setLong(6, grant.acceptedAt().toEpochMilli());
-            ps.setString(7, grant.economyDay().toString()); ps.setLong(8, grant.expiresAt().toEpochMilli());
-            ps.setInt(9, grant.moneyBasisPoints()); ps.setInt(10, grant.xpBasisPoints());
+            ps.setBytes(1, Uuids.toBytes(grant.grantId()));
+            ps.setBytes(2, Uuids.toBytes(grant.playerId()));
+            ps.setBytes(3, Uuids.toBytes(grant.trainerId()));
+            ps.setString(4, grant.jobName());
+            ps.setBytes(5, Uuids.toBytes(grant.sessionId()));
+            ps.setLong(6, grant.acceptedAt().toEpochMilli());
+            ps.setString(7, grant.economyDay().toString());
+            ps.setLong(8, grant.expiresAt().toEpochMilli());
+            ps.setInt(9, grant.moneyBasisPoints());
+            ps.setInt(10, grant.xpBasisPoints());
             requireOne(ps.executeUpdate());
         }
     }
@@ -189,9 +206,16 @@ public final class TrainingRepository {
 
     private static PreparedStatement prepare(Connection c, String sql) throws SQLException {
         PreparedStatement ps = c.prepareStatement(sql);
-        try { ps.setQueryTimeout(5); return ps; }
+        try {
+            ps.setQueryTimeout(5);
+            return ps;
+        }
         catch (SQLException failure) {
-            try { ps.close(); } catch (SQLException cleanup) { failure.addSuppressed(cleanup); }
+            try {
+                ps.close();
+            } catch (SQLException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
             throw failure;
         }
     }

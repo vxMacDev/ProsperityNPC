@@ -16,8 +16,12 @@ public record CommerceOrder(UUID orderId, UUID issuanceNonce, UUID playerId, UUI
     public static final int MAX_OUTPUT_DELAY_SECONDS = 86_400;
 
     public CommerceOrder {
-        Objects.requireNonNull(orderId); Objects.requireNonNull(issuanceNonce); Objects.requireNonNull(playerId);
-        Objects.requireNonNull(residentId); Objects.requireNonNull(source); Objects.requireNonNull(economyDay);
+        Objects.requireNonNull(orderId);
+        Objects.requireNonNull(issuanceNonce);
+        Objects.requireNonNull(playerId);
+        Objects.requireNonNull(residentId);
+        Objects.requireNonNull(source);
+        Objects.requireNonNull(economyDay);
         issuedAt = ItemCustody.normalize(issuedAt);
         if (catalogueId == null || !catalogueId.matches("[a-z][a-z0-9_.:-]{0,63}")
                 || material == null || !material.matches("[A-Z][A-Z0-9_]{0,63}")
@@ -33,7 +37,10 @@ public record CommerceOrder(UUID orderId, UUID issuanceNonce, UUID playerId, UUI
 
     /** Stable server-issued nonce; never generate a replacement on replay or timeout. */
     public static UUID idFor(UUID issuanceNonce, UUID playerId, Source source, LocalDate day) {
-        Objects.requireNonNull(issuanceNonce); Objects.requireNonNull(playerId); Objects.requireNonNull(source); Objects.requireNonNull(day);
+        Objects.requireNonNull(issuanceNonce);
+        Objects.requireNonNull(playerId);
+        Objects.requireNonNull(source);
+        Objects.requireNonNull(day);
         return UUID.nameUUIDFromBytes(("commerce-order-v1|" + issuanceNonce + "|" + playerId + "|" + source + "|" + day)
                 .getBytes(StandardCharsets.UTF_8));
     }

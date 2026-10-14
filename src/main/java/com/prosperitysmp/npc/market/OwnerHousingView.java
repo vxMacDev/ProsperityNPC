@@ -13,16 +13,20 @@ import java.util.UUID;
 public record OwnerHousingView(UUID propertyId, UUID ownerId, Instant capturedAt, Instant windowFrom,
                                HousingDecisionPlan.HomeRank rating, PremiumHousingEligibility.Result premium) {
     public OwnerHousingView {
-        Objects.requireNonNull(propertyId); Objects.requireNonNull(ownerId);
-        Objects.requireNonNull(capturedAt); Objects.requireNonNull(windowFrom);
-        Objects.requireNonNull(rating); Objects.requireNonNull(premium);
+        Objects.requireNonNull(propertyId);
+        Objects.requireNonNull(ownerId);
+        Objects.requireNonNull(capturedAt);
+        Objects.requireNonNull(windowFrom);
+        Objects.requireNonNull(rating);
+        Objects.requireNonNull(premium);
         if (!windowFrom.isBefore(capturedAt) || rating.status() == HousingDecisionPlan.RankStatus.PROVISIONAL)
             throw new IllegalArgumentException("Invalid recorded housing view");
     }
 
     public static OwnerHousingView from(Property property, long revision, List<OwnerDeskData.Upgrade> upgrades,
                                         ServiceAssessment services, ZoneId zone, int resetHour) {
-        Objects.requireNonNull(property); Objects.requireNonNull(services);
+        Objects.requireNonNull(property);
+        Objects.requireNonNull(services);
         if (!property.ownerUuid().equals(services.ownerId()))
             throw new IllegalArgumentException("Housing view owner differs from service record");
         int installed = upgrades.stream().filter(u -> u.type().equals("FACILITIES"))

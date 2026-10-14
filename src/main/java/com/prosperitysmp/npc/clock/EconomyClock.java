@@ -38,10 +38,14 @@ public final class EconomyClock {
     }
 
     /** The configured economy timezone (clock.timezone). */
-    public ZoneId zone() { return zone; }
+    public ZoneId zone() {
+        return zone;
+    }
 
     /** The configured local reset hour (clock.daily-reset-hour). */
-    public int resetHour() { return resetHour; }
+    public int resetHour() {
+        return resetHour;
+    }
 
     public LocalDate today() {
         return dayAt(clock.instant());

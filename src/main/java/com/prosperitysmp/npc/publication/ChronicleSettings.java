@@ -11,7 +11,8 @@ public final class ChronicleSettings {
 
     public static ChronicleRuntime.Settings read(ConfigurationSection section, ConfigurationSection publication) {
         if (section == null || Boolean.FALSE.equals(section.get("enabled"))) return ChronicleRuntime.Settings.disabled();
-        if (!Boolean.TRUE.equals(section.get("enabled")) || !Set.of("enabled", "authorization-generation", "refresh-seconds", "receipt-revision-evidence")
+        if (!Boolean.TRUE.equals(section.get("enabled"))
+                || !Set.of("enabled", "authorization-generation", "refresh-seconds", "receipt-revision-evidence")
                 .containsAll(section.getKeys(false)) || !section.getKeys(false).containsAll(
                 Set.of("enabled", "authorization-generation", "refresh-seconds")))
             throw new IllegalArgumentException("Invalid Chronicle settings");

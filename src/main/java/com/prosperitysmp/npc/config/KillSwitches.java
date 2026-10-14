@@ -9,8 +9,8 @@ import java.util.Locale;
  * {@code /npcadmin switch} persists the change to config.yml.
  *
  * <p>{@code SYSTEM} is the master gate for all simulation; {@code ECONOMY}
- * additionally gates every cash movement. Nothing in later batches may move
- * money unless both are true.
+ * additionally gates every cash movement. Anything that moves money must check
+ * that both are true.
  */
 public final class KillSwitches {
 

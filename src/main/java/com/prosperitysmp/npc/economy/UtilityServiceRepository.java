@@ -16,7 +16,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -47,11 +49,12 @@ public final class UtilityServiceRepository {
 
     /** Trusted admission revalidation; caller owns the transaction and its captured cutoff. */
     public UtilityServiceAssessment readInTransaction(Connection c, Instant at, UUID owner, Instant dueFrom) throws SQLException {
-        Objects.requireNonNull(owner); Objects.requireNonNull(dueFrom);
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(dueFrom);
         ReadSnapshot.requireTransaction(c);
         try {
             // Also checks the public model's UTC bounds before deriving SQL calendar bounds.
-            new UtilityServiceAssessment(owner, at, dueFrom, java.util.List.of());
+            new UtilityServiceAssessment(owner, at, dueFrom, List.of());
             // Local reset hour 0..23 and ZoneOffset's +/-18h bound place the
             // bill day on the UTC due date or at most two dates before it.
             LocalDate earliest = dueFrom.atOffset(ZoneOffset.UTC).toLocalDate().minusDays(2);
@@ -63,7 +66,8 @@ public final class UtilityServiceRepository {
             try (PreparedStatement ps = c.prepareStatement(QUERY)) {
                 ps.setQueryTimeout(5);
                 ps.setBytes(1, Uuids.toBytes(owner));
-                ps.setString(2, earliest.toString()); ps.setString(3, latest.toString());
+                ps.setString(2, earliest.toString());
+                ps.setString(3, latest.toString());
                 try (ResultSet rs = ps.executeQuery()) {
                     while (next(c, ps, rs)) {
                         require(++candidates <= MAX_CANDIDATES, "Utility service exceeds bounded cohort");
@@ -117,7 +121,7 @@ public final class UtilityServiceRepository {
                 && b.day().toString().equals(rs.getString("ledger_day"))
                 && b.cents() == number(rs, "ledger_requested", 1, Long.MAX_VALUE), "Utility service ledger binding mismatch");
         String ledger = rs.getString("ledger_state");
-        require(ledger != null && java.util.Set.of("PENDING", "CLAIMED", "PAID", "FAILED", "AMBIGUOUS").contains(ledger),
+        require(ledger != null && Set.of("PENDING", "CLAIMED", "PAID", "FAILED", "AMBIGUOUS").contains(ledger),
                 "Utility service ledger state invalid");
         Long paid = rs.getObject("ledger_paid") == null ? null : number(rs, "ledger_paid", 0, Long.MAX_VALUE);
         Instant created = time(rs, "ledger_created", false);
@@ -130,7 +134,8 @@ public final class UtilityServiceRepository {
         if (finalized != null) require(!finalized.isBefore(created), "Utility finalization precedes event creation");
         if ("CLAIMED".equals(ledger) || "PAID".equals(ledger) || "FAILED".equals(ledger))
             require(claimed != null, "Claimed or settled utility lacks claim time");
-        if ("PENDING".equals(ledger)) require(paid == null && finalized == null && claimed == null, "Pending utility has settlement fields");
+        if ("PENDING".equals(ledger))
+            require(paid == null && finalized == null && claimed == null, "Pending utility has settlement fields");
         if ("CLAIMED".equals(ledger)) require(paid == null && finalized == null, "Claimed utility has settlement fields");
         if ("PAID".equals(ledger)) require(Objects.equals(paid, b.cents()) && finalized != null, "Paid utility ledger amount/time invalid");
         if ("FAILED".equals(ledger)) require(Objects.equals(paid, 0L) && finalized != null, "Declined utility ledger amount/time invalid");
@@ -214,7 +219,10 @@ public final class UtilityServiceRepository {
     }
     private static void require(boolean valid, String message) throws SQLException { if (!valid) throw new SQLException(message); }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
-        warnings(c, ps, rs); boolean next = rs.next(); warnings(c, ps, rs); return next;
+        warnings(c, ps, rs);
+        boolean next = rs.next();
+        warnings(c, ps, rs);
+        return next;
     }
     private static void warnings(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
         if (c.getWarnings() != null || ps.getWarnings() != null || (rs != null && rs.getWarnings() != null))
