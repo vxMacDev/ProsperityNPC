@@ -1,0 +1,48 @@
+-- Quotas count durable successful admissions, not transient planner results.
+CREATE TABLE IF NOT EXISTS npc_housing_days (
+  economy_day CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  server_limit INT NOT NULL,
+  market_limit INT NOT NULL,
+  property_limit TINYINT NOT NULL,
+  cooldown_days TINYINT NOT NULL,
+  CONSTRAINT ck_hday_server CHECK (server_limit BETWEEN 0 AND 512),
+  CONSTRAINT ck_hday_market CHECK (market_limit BETWEEN 0 AND 512),
+  CONSTRAINT ck_hday_property CHECK (property_limit BETWEEN 0 AND 4),
+  CONSTRAINT ck_hday_cooldown CHECK (cooldown_days BETWEEN 1 AND 30)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS npc_housing_moves (
+  request_id BINARY(16) NOT NULL PRIMARY KEY,
+  payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  economy_day CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  resident_id BINARY(16) NOT NULL,
+  property_id BINARY(16) NOT NULL,
+  owner_uuid BINARY(16) NOT NULL,
+  ownership_epoch INT NOT NULL,
+  property_revision BIGINT NOT NULL,
+  membership_revision BIGINT NOT NULL,
+  tenancy_revision_before BIGINT NOT NULL,
+  tenancy_revision_after BIGINT NOT NULL,
+  slot TINYINT NOT NULL,
+  world_uuid BINARY(16) NOT NULL,
+  market_id VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  class_key VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  cooldown_until CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  applied_at_millis BIGINT NOT NULL,
+  UNIQUE KEY uq_hmove_resident_day (economy_day,resident_id),
+  KEY idx_hmove_market_day (economy_day,world_uuid,market_id),
+  KEY idx_hmove_property_day (economy_day,property_id),
+  KEY idx_hmove_resident_revision (resident_id,tenancy_revision_after),
+  CONSTRAINT fk_hmove_day FOREIGN KEY (economy_day) REFERENCES npc_housing_days(economy_day) ON DELETE RESTRICT,
+  CONSTRAINT fk_hmove_resident FOREIGN KEY (resident_id) REFERENCES npc_resident_profiles(resident_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_hmove_property FOREIGN KEY (property_id) REFERENCES npc_properties(property_id) ON DELETE RESTRICT,
+  CONSTRAINT ck_hmove_slot CHECK (slot BETWEEN 0 AND 3),
+  CONSTRAINT ck_hmove_epoch CHECK (ownership_epoch>=0),
+  CONSTRAINT ck_hmove_prop_rev CHECK (property_revision BETWEEN 0 AND 9223372036854775806),
+  CONSTRAINT ck_hmove_member_rev CHECK (membership_revision BETWEEN 0 AND 9223372036854775806),
+  CONSTRAINT ck_hmove_before CHECK (tenancy_revision_before BETWEEN -1 AND 9223372036854775806),
+  CONSTRAINT ck_hmove_after CHECK (tenancy_revision_after=tenancy_revision_before+1),
+  CONSTRAINT ck_hmove_hash CHECK (payload_hash REGEXP '^[0-9a-f]{64}$'),
+  CONSTRAINT ck_hmove_market CHECK (market_id REGEXP '^[a-z][a-z0-9_-]{0,31}$'),
+  CONSTRAINT ck_hmove_class CHECK (class_key REGEXP '^[a-z][a-z0-9_-]{0,31}$')
+) ENGINE=InnoDB;

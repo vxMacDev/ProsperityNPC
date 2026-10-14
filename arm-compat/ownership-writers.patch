@@ -1,0 +1,292 @@
+diff --git a/advancedregionmarket/src/main/java/net/alex9849/arm/commands/DeleteCommand.java b/advancedregionmarket/src/main/java/net/alex9849/arm/commands/DeleteCommand.java
+index a4b49a6..8a92714 100644
+--- a/advancedregionmarket/src/main/java/net/alex9849/arm/commands/DeleteCommand.java
++++ b/advancedregionmarket/src/main/java/net/alex9849/arm/commands/DeleteCommand.java
+@@ -34,6 +34,8 @@ public class DeleteCommand extends BasicArmCommand {
+             region = getPlugin().getRegionManager().getRegionAtPositionOrNameCommand(player, "");
+         }
+ 
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(region);
++        try {
+         region.unsell(Region.ActionReason.DELETE, false, true);
+         region.delete();
+         UtilMethods.deleteFilesRec(region.getRegionSchematicFolder());
+@@ -41,6 +43,7 @@ public class DeleteCommand extends BasicArmCommand {
+ 
+         player.sendMessage(Messages.PREFIX + region.getRegion().getId() + " deleted!");
+         return true;
++        } finally { release.run(); }
+     }
+ 
+     @Override
+diff --git a/advancedregionmarket/src/main/java/net/alex9849/arm/gui/Gui.java b/advancedregionmarket/src/main/java/net/alex9849/arm/gui/Gui.java
+index abf82fb..746243c 100644
+--- a/advancedregionmarket/src/main/java/net/alex9849/arm/gui/Gui.java
++++ b/advancedregionmarket/src/main/java/net/alex9849/arm/gui/Gui.java
+@@ -666,12 +666,15 @@ public class Gui implements Listener {
+                 throw new InputException(player, Messages.REGION_TRANSFER_MEMBER_NOT_ONLINE);
+             }
+             if (AdvancedRegionMarket.getInstance().getLimitGroupManager().isCanBuyAnother(onlinemember, region.getRegionKind())) {
++                Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(region);
++                try {
+                 WGRegion wgRegion = region.getRegion();
+                 for (UUID oldOwner : wgRegion.getOwners()) {
+                     wgRegion.addMember(oldOwner);
+                 }
+                 region.setOwner(onlinemember);
+                 player.sendMessage(Messages.PREFIX + Messages.REGION_TRANSFER_COMPLETE_MESSAGE);
++                } finally { release.run(); }
+             } else {
+                 throw new InputException(player, Messages.REGION_TRANSFER_LIMIT_ERROR);
+             }
+@@ -728,6 +731,8 @@ public class Gui implements Listener {
+                             Messages.GUI_TAKEOVER_ITEM_LORE, Messages.GUI_TAKEOVER_ITEM_LORE))
+                             .addClickAction(p -> {
+                                 UUID oldOwnerUUID = region.getOwner();
++                                Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(region);
++                                try {
+                                 if(oldOwnerUUID != null) {
+                                     region.getRegion().addMember(oldOwnerUUID);
+                                 }
+@@ -735,6 +740,7 @@ public class Gui implements Listener {
+                                 oldRegions.remove(region);
+                                 player.sendMessage(Messages.PREFIX + Messages.REGION_TRANSFER_COMPLETE_MESSAGE);
+                                 Gui.openOvertakeGUI(player, oldRegions, goBackAction);
++                                } finally { release.run(); }
+                             });
+                     return regItem;
+                 }).collect(Collectors.toList());
+diff --git a/advancedregionmarket/src/main/java/net/alex9849/arm/minifeatures/selloffer/Offer.java b/advancedregionmarket/src/main/java/net/alex9849/arm/minifeatures/selloffer/Offer.java
+index 09272c5..41b398b 100644
+--- a/advancedregionmarket/src/main/java/net/alex9849/arm/minifeatures/selloffer/Offer.java
++++ b/advancedregionmarket/src/main/java/net/alex9849/arm/minifeatures/selloffer/Offer.java
+@@ -89,6 +89,8 @@ public class Offer {
+     }
+ 
+     public void accept() throws RegionNotOwnException, NoPermissionException, OutOfLimitExeption, NotEnoughMoneyException {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(region);
++        try {
+         if (!region.isSold() || !region.getRegion().hasOwner(seller.getUniqueId())) {
+             this.reject();
+             throw new RegionNotOwnException(this.replaceVariables(Messages.SELLER_DOES_NOT_LONGER_OWN_REGION));
+@@ -111,7 +113,9 @@ public class Offer {
+         region.getRegion().setOwner(buyer);
+ 
+         this.unregister();
+-
++        } finally {
++            release.run();
++        }
+     }
+ 
+     public void reject() {
+diff --git a/advancedregionmarket/src/main/java/net/alex9849/arm/regions/CountdownRegion.java b/advancedregionmarket/src/main/java/net/alex9849/arm/regions/CountdownRegion.java
+index 3423005..fb77b3c 100644
+--- a/advancedregionmarket/src/main/java/net/alex9849/arm/regions/CountdownRegion.java
++++ b/advancedregionmarket/src/main/java/net/alex9849/arm/regions/CountdownRegion.java
+@@ -49,6 +49,8 @@ public abstract class CountdownRegion extends Region {
+      */
+     @Override
+     public void setSold(boolean sold) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         long actualTime = new GregorianCalendar().getTimeInMillis();
+         if (sold) {
+             if (this.getPayedTill() < actualTime) {
+@@ -59,16 +61,20 @@ public abstract class CountdownRegion extends Region {
+         }
+         super.setSold(sold);
+         this.queueSave();
++        } finally { release.run(); }
+     }
+ 
+     @Override
+     public void unsell(ActionReason actionReason, boolean logToConsole, boolean preventBackupCreation) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         super.unsell(actionReason, logToConsole, preventBackupCreation);
+         GregorianCalendar actualtime = new GregorianCalendar();
+         if (this.getPayedTill() > actualtime.getTimeInMillis()) {
+             this.setPayedTill(actualtime.getTimeInMillis());
+         }
+         this.queueSave();
++        } finally { release.run(); }
+     }
+ 
+     /**
+diff --git a/advancedregionmarket/src/main/java/net/alex9849/arm/regions/Region.java b/advancedregionmarket/src/main/java/net/alex9849/arm/regions/Region.java
+index de37321..a29370c 100644
+--- a/advancedregionmarket/src/main/java/net/alex9849/arm/regions/Region.java
++++ b/advancedregionmarket/src/main/java/net/alex9849/arm/regions/Region.java
+@@ -410,6 +410,8 @@ public abstract class Region implements Saveable {
+     }
+ 
+     public void setSold(boolean sold) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         boolean isSold = this.isSold();
+         this.sold = sold;
+         if (!isSold && sold || isSold && !sold) {
+@@ -423,6 +425,7 @@ public abstract class Region implements Saveable {
+             }
+         }
+         this.queueSave();
++        } finally { release.run(); }
+     }
+ 
+     public void setHotel(boolean bool) {
+@@ -495,15 +498,21 @@ public abstract class Region implements Saveable {
+      * @param player The player that should own the region
+      */
+     public void setSold(OfflinePlayer player) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         this.setOwner(player);
+         this.setSold(true);
+         this.queueSave();
+         this.updateSigns();
++        } finally { release.run(); }
+     }
+ 
+     public void setOwner(OfflinePlayer oPlayer) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         this.getRegion().setOwner(oPlayer);
+         this.setLastLogin();
++        } finally { release.run(); }
+     }
+ 
+     public void setEntityLimitGroup(EntityLimitGroup entityLimitGroup) {
+@@ -577,6 +586,8 @@ public abstract class Region implements Saveable {
+     ##################################*/
+ 
+     public void buy(Player player) throws NoPermissionException, OutOfLimitExeption, NotEnoughMoneyException, AlreadySoldException, ProtectionOfContinuanceException {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         if (!player.hasPermission(Permission.MEMBER_BUY)) {
+             throw new NoPermissionException(Messages.NO_PERMISSION);
+         }
+@@ -622,6 +633,7 @@ public abstract class Region implements Saveable {
+             AdvancedRegionMarket.getInstance().getEcon().withdrawPlayer(player, this.getPricePerPeriod());
+             this.giveLandlordMoney(this.getPricePerPeriod());
+         }
++        } finally { release.run(); }
+     }
+ 
+     protected HashMap<String, Supplier<String>> getVariableReplacements() {
+@@ -761,6 +773,8 @@ public abstract class Region implements Saveable {
+      * there in order to be deleted completely
+      */
+     public void delete() {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         this.deleteSigns();
+         if (FlagGroup.isFeatureEnabled()) {
+             this.getRegion().deleteAllFlags();
+@@ -774,6 +788,7 @@ public abstract class Region implements Saveable {
+                 subregion.delete();
+             }
+         }
++        } finally { release.run(); }
+     }
+ 
+     public void addBuiltBlock(Location loc) {
+@@ -1057,6 +1072,8 @@ public abstract class Region implements Saveable {
+     }
+ 
+     public void userSell(Player player, boolean noMoney) throws SchematicNotFoundException, NotEnoughMoneyException {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         List<UUID> owners = this.getRegion().getOwners();
+         double amount = this.getPaybackMoney();
+         UUID owner = getOwner();
+@@ -1073,9 +1090,12 @@ public abstract class Region implements Saveable {
+         }
+ 
+         this.automaticResetRegion(ActionReason.USER_SELL, true);
++        } finally { release.run(); }
+     }
+ 
+     public void resetRegion(ActionReason actionReason, boolean logToConsole) throws SchematicNotFoundException, ProtectionOfContinuanceException {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         if (this.isProtectionOfContinuance()) {
+             throw new ProtectionOfContinuanceException();
+         }
+@@ -1084,6 +1104,7 @@ public abstract class Region implements Saveable {
+         this.extraEntitys.clear();
+         this.extraTotalEntitys = 0;
+         this.queueSave();
++        } finally { release.run(); }
+     }
+ 
+     /**
+@@ -1093,6 +1114,8 @@ public abstract class Region implements Saveable {
+      *                                    if the execption gets thrown the region will be unsold
+      */
+     public void automaticResetRegion(ActionReason actionReason, boolean logToConsole) throws SchematicNotFoundException {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         this.unsell(actionReason, logToConsole, false);
+         if (this.isAutoRestore() && !this.isProtectionOfContinuance()) {
+             this.extraEntitys.clear();
+@@ -1107,6 +1130,7 @@ public abstract class Region implements Saveable {
+             }
+         }
+         this.queueSave();
++        } finally { release.run(); }
+     }
+ 
+     public boolean allowBlockBreak(Location breakloc) {
+@@ -1117,6 +1141,8 @@ public abstract class Region implements Saveable {
+     }
+ 
+     public void unsell(ActionReason actionReason, boolean logToConsole, boolean preventBackupCreation) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(this);
++        try {
+         UnsellRegionEvent unsellRegionEvent = new UnsellRegionEvent(this);
+         Bukkit.getServer().getPluginManager().callEvent(unsellRegionEvent);
+         if (unsellRegionEvent.isCancelled()) {
+@@ -1150,6 +1176,7 @@ public abstract class Region implements Saveable {
+ 
+         this.updateSigns();
+         this.queueSave();
++        } finally { release.run(); }
+     }
+ 
+     public List<String> replaceVariables(List<String> messages) {
+diff --git a/advancedregionmarket/src/main/java/net/alex9849/arm/regions/RegionManager.java b/advancedregionmarket/src/main/java/net/alex9849/arm/regions/RegionManager.java
+index 510592e..b8a0b86 100644
+--- a/advancedregionmarket/src/main/java/net/alex9849/arm/regions/RegionManager.java
++++ b/advancedregionmarket/src/main/java/net/alex9849/arm/regions/RegionManager.java
+@@ -65,6 +65,8 @@ public class RegionManager extends YamlFileManager<Region> {
+ 
+     @Override
+     public boolean add(Region region, boolean unsafe) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(region);
++        try {
+         if(region.isSubregion()) {
+             return false;
+         }
+@@ -79,10 +81,13 @@ public class RegionManager extends YamlFileManager<Region> {
+             return true;
+         }
+         return false;
++        } finally { release.run(); }
+     }
+ 
+     @Override
+     public boolean remove(Region region) {
++        Runnable release = net.alex9849.arm.NpcTransactionGuard.begin(region);
++        try {
+         RemoveRegionEvent removeRegionEvent = new RemoveRegionEvent(region);
+         Bukkit.getServer().getPluginManager().callEvent(removeRegionEvent);
+         if (removeRegionEvent.isCancelled()) {
+@@ -95,6 +100,7 @@ public class RegionManager extends YamlFileManager<Region> {
+             return true;
+         }
+         return false;
++        } finally { release.run(); }
+     }
+ 
+     @Override

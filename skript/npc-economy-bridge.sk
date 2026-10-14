@@ -1,0 +1,91 @@
+# ============================================================================
+#  ProsperityNPC accounting bridge (console-only, needs skript-reflect)
+#  Every 2 seconds it sends a heartbeat and copies the plugin's accounting
+#  totals into money-flow-daily::* Skript variables, then acknowledges them.
+#  NPC payments wait for that acknowledgement. The bridge never moves money:
+#  the plugin's journaled receipts do.
+#
+#  The variable layout matches ProsperitySMP's money tracking. Adapt it to
+#  your own accounting before using it on another server.
+# ============================================================================
+
+import:
+    org.bukkit.Bukkit
+
+every 2 seconds:
+    npc_bridge_v31_tick()
+    npc_accounting_v31_tick()
+
+function npc_bridge_v31_tick():
+    set {_plugin} to Bukkit.getPluginManager().getPlugin("ProsperityNPC")
+    if {_plugin} is set:
+        set {_api} to {_plugin}.bridgeApi()
+        if {_api} is set:
+            # Heartbeat so /npcadmin health knows the bridge is alive.
+            {_api}.heartbeat()
+
+# Parent-verified money-supply contract: these totals equal all by-source values.
+# Reserved NPC sources are replaced, not incremented. Preserve every other source.
+# No create/destroy/M_total/cumulative counters or volatile ms_audit callbacks.
+function npc_accounting_v31_tick():
+    set {_plugin} to Bukkit.getPluginManager().getPlugin("ProsperityNPC")
+    if {_plugin} is not set:
+        stop
+    set {_projection} to {_plugin}.accountingProjection()
+    if {_projection} is not set:
+        stop
+    set {_snapshot} to {_projection}.snapshot()
+    if {_snapshot} is not set:
+        stop
+    set {_generation} to {_snapshot}.getGeneration()
+    set {_groups} to {_snapshot}.getGroups()
+    set {_groupCount} to {_groups}.size()
+    if {_groupCount} is not 14:
+        stop
+    set {_i} to 0
+    while {_i} < 14:
+        set {_group} to {_groups}.get({_i})
+        set {_day} to {_group}.getDay()
+        set {_category} to {_group}.getCategory()
+        if {_day} is not set:
+            stop
+        if {_category} is not "xfer-to-public":
+            if {_category} is not "xfer-from-public":
+                stop
+        set {_sources} to {_group}.getSources()
+        set {_sourceCount} to {_sources}.size()
+        if {_sourceCount} is not a number:
+            stop
+        if {_sourceCount} < 1:
+            stop
+        if {_sourceCount} > 32:
+            stop
+        set {_j} to 0
+        while {_j} < {_sourceCount}:
+            set {_entry} to {_sources}.get({_j})
+            set {_source} to {_entry}.getSource()
+            set {_cents} to {_entry}.getCents()
+            if {_source} is not set:
+                stop
+            if {_cents} is not a number:
+                stop
+            if {_cents} < 0:
+                stop
+            set {money-flow-daily::%{_day}%::%{_category}%::by-source::%{_source}%} to {_cents} / 100
+            if {money-flow-daily::%{_day}%::%{_category}%::by-source::%{_source}%} is not {_cents} / 100:
+                stop
+            add 1 to {_j}
+        set {_total} to 0
+        loop {money-flow-daily::%{_day}%::%{_category}%::by-source::*}:
+            set {_value} to loop-value
+            if {_value} is not a number:
+                stop
+            if {_value} < 0:
+                stop
+            add {_value} to {_total}
+        set {money-flow-daily::%{_day}%::%{_category}%::total} to {_total}
+        if {money-flow-daily::%{_day}%::%{_category}%::total} is not {_total}:
+            stop
+        add 1 to {_i}
+    # In-memory application acknowledgement, not a claim of durable Skript variable flush.
+    {_projection}.acknowledge({_generation})

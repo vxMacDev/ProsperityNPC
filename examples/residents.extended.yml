@@ -1,0 +1,160 @@
+# Example cast for residents.yml. Copy it to plugins/ProsperityNPC/residents.yml,
+# turn on residents.cast-file-enabled in config.yml and fully restart.
+#
+# How it works:
+# - The key is the resident's permanent identity. Changing a key makes a new person.
+# - The first three entries are the built-in cast, unchanged, so their saved rows still match.
+# - Name is "First Household" with one plain space. Household must be the second word.
+#   Names can't use $, other money signs or braces.
+# - Occupation, means, life-stage, temperament and preference use the plugin's own values.
+# - Lines are optional. Each list has exactly two lines of up to 160 characters.
+#   {name} is replaced with the resident's name. Lines can't use $, other money signs
+#   or colour codes.
+# - Only greeting, about and home can be written here. Routine, history and business lines
+#   report facts, so the plugin writes those itself.
+# - A new resident stays hidden until its everyday skin is installed in resident-appearance.json.
+# - Turn the cast file on before installing skins for new residents. With it off, those skins
+#   make the whole skin file fail and no resident is shown.
+version: 1
+residents:
+  - key: mara-vale
+    name: Mara Vale
+    household: Vale
+    generation: 2
+    occupation: RESTORER
+    means: STEADY
+    life-stage: OLDER_ADULT
+    temperament: WARM
+    preference: WELL_KEPT_HOME
+  - key: ellis-ward
+    name: Ellis Ward
+    household: Ward
+    generation: 1
+    occupation: SHOPKEEPER
+    means: ESTABLISHED
+    life-stage: ADULT
+    temperament: DIRECT
+    preference: CLEAR_TERMS
+  - key: nico-reed
+    name: Nico Reed
+    household: Reed
+    generation: 1
+    occupation: COURIER
+    means: STARTING_OUT
+    life-stage: YOUNG_ADULT
+    temperament: INQUISITIVE
+    preference: NEIGHBORHOOD_LIFE
+  - key: petra-lind
+    name: Petra Lind
+    household: Lind
+    generation: 1
+    occupation: CARPENTER
+    means: ESTABLISHED
+    life-stage: OLDER_ADULT
+    temperament: RESERVED
+    preference: WELL_KEPT_HOME
+    lines:
+      greeting:
+        - "Hello. I'm {name}. I build things to last."
+        - "I'm {name}. I don't talk much, but I'm glad you stopped."
+      about:
+        - "I'm a carpenter. I check every joint twice."
+        - "Carpentry is my trade. A square frame makes the rest easier."
+      home:
+        - "Fix the small things early. A loose board becomes a broken floor."
+        - "I like a home where someone keeps up with repairs."
+  - key: tobin-lind
+    name: Tobin Lind
+    household: Lind
+    generation: 2
+    occupation: RESTORER
+    means: STARTING_OUT
+    life-stage: YOUNG_ADULT
+    temperament: INQUISITIVE
+    preference: NEIGHBORHOOD_LIFE
+    lines:
+      greeting:
+        - "I'm {name}. Have you seen the old builds at the edge of town?"
+        - "Hi, I'm {name}. What part of town do you like best?"
+      about:
+        - "I restore old builds. I'm still learning, so I ask a lot of questions."
+        - "Restoration is my trade. I like finding out who built a place and why."
+      home:
+        - "A good street has people you know by name."
+        - "I'd rather live near friends than in the biggest house."
+  - key: otto-marsh
+    name: Otto Marsh
+    household: Marsh
+    generation: 1
+    occupation: COOK
+    means: STEADY
+    life-stage: ADULT
+    temperament: DIRECT
+    preference: CLEAR_TERMS
+    lines:
+      greeting:
+        - "{name}. I cook. What do you need?"
+        - "I'm {name}. Hungry, or just saying hello?"
+      about:
+        - "I'm a cook. Good food takes good stock and no shortcuts."
+        - "Cooking is my trade. I keep a tidy kitchen and a short menu."
+      home:
+        - "Tell me what a place costs and what it covers. Then we can talk."
+        - "I want clear terms. No surprises after I move in."
+  - key: bea-marsh
+    name: Bea Marsh
+    household: Marsh
+    generation: 2
+    occupation: GARDENER
+    means: STARTING_OUT
+    life-stage: YOUNG_ADULT
+    temperament: INQUISITIVE
+    preference: NEIGHBORHOOD_LIFE
+    lines:
+      greeting:
+        - "I'm {name}. Do you grow anything?"
+        - "Hi, I'm {name}. Do you have a garden yet?"
+      about:
+        - "I'm a gardener. I'd like to see wheat on every empty lot."
+        - "Gardening is my trade. I like watching a bare plot fill in."
+      home:
+        - "I want neighbors who wave back."
+        - "A home is better with people around it."
+  - key: june-hollis
+    name: June Hollis
+    household: Hollis
+    generation: 1
+    occupation: GARDENER
+    means: STEADY
+    life-stage: OLDER_ADULT
+    temperament: RESERVED
+    preference: QUIET_ROUTINE
+    lines:
+      greeting:
+        - "Hello. I'm {name}."
+        - "I'm {name}. It's a quiet day. That suits me."
+      about:
+        - "I'm a gardener. I keep the same rows I've kept for years."
+        - "Gardening is my trade. Slow work, done every day."
+      home:
+        - "I like a quiet place and the same walk each morning."
+        - "Give me a calm street and a door that closes properly."
+  - key: ruth-calder
+    name: Ruth Calder
+    household: Calder
+    generation: 1
+    occupation: SHOPKEEPER
+    means: ESTABLISHED
+    life-stage: ADULT
+    temperament: WARM
+    preference: WELL_KEPT_HOME
+    lines:
+      greeting:
+        - "I'm {name}. It's nice to see a new face."
+        - "Hello, I'm {name}. How are you finding the town?"
+      about:
+        - "I keep a shop. I remember what my regulars like."
+        - "Shopkeeping is my trade. Fair counts and honest weights."
+      home:
+        - "A clean front step says a lot about a home."
+        - "I like a place where things get fixed when they break."

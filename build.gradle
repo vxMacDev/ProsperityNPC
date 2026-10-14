@@ -1,0 +1,201 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.prosperitysmp'
+version = '0.2.0-dev.59'
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    maven { url = 'https://jitpack.io' }
+}
+
+dependencies {
+    // Paper API (26.1.2). compileOnly: provided by the server.
+    compileOnly 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
+
+    // Provided at runtime by Paper's plugin-library loader (see plugin.yml `libraries`).
+    compileOnly 'org.mariadb.jdbc:mariadb-java-client:3.5.9'
+    compileOnly 'com.zaxxer:HikariCP:7.1.0'
+
+    // AdvancedRegionMarket 3.5.5: not on Maven, so a local jar in libs/. Provided by the server at runtime.
+    compileOnly files('libs/advancedregionmarket-3.5.5.jar')
+
+    // Citizens 2.0.43 build 4220: visible residents. Provided by Citizens at runtime;
+    // the plugin loads with rendering off if Citizens is absent.
+    compileOnly files('libs/Citizens-2.0.43-b4220.jar')
+
+    // Floodgate API for Bedrock forms. The server supplies it; never package it.
+    compileOnly files('libs/floodgate-2.2.5-b138-fc99cfc.jar')
+    // Citizens relocates these at runtime; only its linkage tests need these copies.
+    testRuntimeOnly files('libs/adventure-api-4.26.1-relocated.jar', 'libs/adventure-key-4.26.1-relocated.jar',
+            'libs/examination-api-1.3.0-relocated.jar', 'libs/examination-string-1.3.0-relocated.jar')
+
+    // Vault API provided by the server. Journaled main-thread settlement owns money calls;
+    // the Skript bridge publishes acknowledged accounting totals, not payments.
+    compileOnly 'com.github.MilkBowl:VaultAPI:1.7.1'
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // Integration tests run the repositories against a REAL MariaDB. MariaDB4j
+    // unpacks and runs a real server in a temp dir (no install needed). The driver
+    // and pool are compileOnly for the plugin (Paper's library loader provides them
+    // at runtime), so they must be added explicitly to the test classpath here.
+    testImplementation 'ch.vorburger.mariaDB4j:mariaDB4j:3.3.1'
+    testImplementation 'org.mariadb.jdbc:mariadb-java-client:3.5.9'
+    testImplementation 'com.zaxxer:HikariCP:7.1.0'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.13'
+}
+
+// Compile-time API pinned to the exact Floodgate build the plugin was tested against.
+def pinnedNpcApis = [
+    'floodgate-2.2.5-b138-fc99cfc.jar': '44bdb908e2fb4ff1b974d5313d048a625a21555a9844cfb86256a98e8e1c6bd1'
+]
+// Citizens' relocated runtime libraries, used only by the Citizens linkage test. Citizens writes
+// them under plugins/Citizens/lib with its own timestamps, so other builds may not match these hashes.
+def citizensLinkageJars = [
+    'adventure-api-4.26.1-relocated.jar': 'd2ea5192a738c63fbf8a585dc87b8d8cf6c3ae81beb20b893fb898d39d02fc57',
+    'adventure-key-4.26.1-relocated.jar': '934e4d31b86075adea38a0874ee4af39bc00a6024fc0cea97bc922909deca51a',
+    'examination-api-1.3.0-relocated.jar': '31ef5d0ec4ca8b75ead38f1fb67ddef2449a51d9f25f0098a6d87a85520249a6',
+    'examination-string-1.3.0-relocated.jar': '87b28748eace15ddf95f5327bf0192b2a0468a8745ef7c74220ca6c6f9c0dafa'
+]
+def citizensLinkageFound = citizensLinkageJars.keySet().count { file("libs/$it").isFile() }
+def citizensLinkagePresent = citizensLinkageFound == citizensLinkageJars.size()
+// All or none: a partial set is a broken libs/ folder, not a reason to skip tests quietly.
+// Release builds pass -PrequireCitizensLinkage so a missing set fails instead of skipping.
+if (citizensLinkageFound > 0 && !citizensLinkagePresent)
+    throw new GradleException("Only $citizensLinkageFound of ${citizensLinkageJars.size()} Citizens linkage jars are in libs/; add all four or none.")
+// A bare -PrequireCitizensLinkage arrives as "", which must still count as on.
+def requireLinkage = project.findProperty('requireCitizensLinkage')
+if (!citizensLinkagePresent && requireLinkage != null && requireLinkage.toString() != 'false')
+    throw new GradleException('-PrequireCitizensLinkage: the four Citizens linkage jars must be in libs/.')
+def verifyPins = { Map pins ->
+    pins.each { name, expected ->
+        def source = file("libs/$name")
+        if (!source.isFile()) throw new GradleException("Missing pinned jar: libs/$name (see libs/README.md)")
+        def actual = java.security.MessageDigest.getInstance('SHA-256').digest(source.bytes).encodeHex().toString()
+        if (actual != expected) throw new GradleException("Pinned jar checksum mismatch: libs/$name")
+    }
+}
+tasks.register('verifyPinnedNpcApis') {
+    inputs.files(pinnedNpcApis.keySet().collect { file("libs/$it") })
+    doLast { verifyPins(pinnedNpcApis) }
+}
+tasks.register('verifyCitizensLinkageJars') {
+    onlyIf { citizensLinkagePresent }
+    inputs.files(citizensLinkageJars.keySet().collect { file("libs/$it") })
+    doLast { verifyPins(citizensLinkageJars) }
+}
+tasks.withType(JavaCompile).configureEach { dependsOn tasks.named('verifyPinnedNpcApis') }
+tasks.named('test') {
+    dependsOn tasks.named('verifyPinnedNpcApis'), tasks.named('verifyCitizensLinkageJars')
+    // ResidentCastWiringTest reads these at run time: declare them so an edit reruns the tests.
+    inputs.files('.gitignore', 'tools/skins/README.md')
+    if (!citizensLinkagePresent) {
+        exclude '**/CitizensAuthoredSpawnTest*'
+        doFirst { logger.warn('Citizens linkage jars not in libs/; skipping CitizensAuthoredSpawnTest.') }
+    }
+}
+
+test {
+    useJUnitPlatform()
+    // Each MariaDB4j boot in the integration tests makes a data folder under java.io.tmpdir, and a killed run, or
+    // Windows still holding the files at exit, leaves it behind (24 GB filled the system drive on 2026-10-14).
+    // Several ITs also unpack MariaDB into their own temp folder. Keep all of it inside build/ and clear it before each run.
+    def itTmp = layout.buildDirectory.dir('tmp/it-tmp').get().asFile
+    systemProperty 'java.io.tmpdir', itTmp.absolutePath
+    doFirst { if (itTmp.exists()) itTmp.deleteDir(); itTmp.mkdirs() }
+    // Reuse the already-resolved server APIs for held-service linkage tests.
+    // This neither adds artifacts nor packages Paper/ARM/Citizens into the plugin.
+    classpath += configurations.compileClasspath
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}
+
+// Command wiring tests reference Bukkit interfaces, using the same resolved API as main compilation.
+tasks.named('compileTestJava') {
+    classpath += configurations.compileClasspath
+}
+
+// Paper 26.1.2 requires Java 25.
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:all,-classfile,-processing'
+}
+
+// Expand ${version} inside plugin.yml at build time.
+processResources {
+    def props = [version: project.version]
+    inputs.properties(props)
+    filesMatching('plugin.yml') {
+        expand(props)
+    }
+}
+
+tasks.named('jar') {
+    archiveBaseName = 'ProsperityNPC'
+    archiveClassifier = ''
+}
+
+// Offline operator tool for Chronicle receipts; not part of the installed plugin.
+sourceSets {
+    chronicleOps {
+        java.srcDir 'src/ops/java'
+        compileClasspath = sourceSets.main.output + configurations.compileClasspath
+    }
+}
+tasks.register('chronicleRecoveryJar', Jar) {
+    dependsOn tasks.named('chronicleOpsClasses')
+    from sourceSets.chronicleOps.output
+    archiveBaseName = 'ProsperityNPC-ChronicleRecovery'
+    archiveVersion = '56.1'
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+tasks.named('test') {
+    dependsOn tasks.named('chronicleOpsClasses')
+    inputs.files(sourceSets.chronicleOps.output)
+    doFirst { systemProperty 'npc.chronicle.ops.classpath',
+        (sourceSets.chronicleOps.output + sourceSets.main.output + classpath).asPath }
+}
+
+// Offline resident skin tool (author, recolor, prepare); see tools/skins/README.md. Not part of the installed plugin.
+sourceSets {
+    skinTools {
+        java.srcDir 'tools/skins/java'
+        compileClasspath = sourceSets.main.output + configurations.compileClasspath
+    }
+}
+sourceSets.test.compileClasspath += sourceSets.skinTools.output
+tasks.named('compileTestJava') { dependsOn tasks.named('skinToolsClasses') }
+tasks.named('test') {
+    dependsOn tasks.named('skinToolsClasses')
+    classpath += sourceSets.skinTools.output
+}
+
+// Compiles the AdvancedRegionMarket ownership hook (see arm-compat/README.md). Not part of the normal
+// build. Uses the same flags as the tested overlay so the classes come out byte-identical.
+tasks.register('armOverlayClasses') {
+    doLast {
+        def armSource = project.findProperty('armSource')
+        def worldGuardJar = project.findProperty('worldGuardJar')
+        if (!armSource || !worldGuardJar)
+            throw new GradleException('Pass -ParmSource=<ARM checkout>/advancedregionmarket/src/main/java -PworldGuardJar=<worldguard-bukkit-7.0.18.jar>')
+        def out = layout.buildDirectory.dir('arm-overlay-classes').get().asFile
+        project.delete(out); out.mkdirs()
+        def sources = ['NpcTransactionGuard', 'regions/Region', 'regions/CountdownRegion', 'regions/RegionManager',
+                       'gui/Gui', 'minifeatures/selloffer/Offer', 'commands/DeleteCommand']
+                .collect { new File(armSource.toString(), "net/alex9849/arm/${it}.java").path }
+        def classpath = (configurations.compileClasspath.files + file(worldGuardJar)).join(File.pathSeparator)
+        def javac = javax.tools.ToolProvider.systemJavaCompiler
+        int rc = javac.run(null, null, null, (['-g', '--release', '8', '-implicit:none', '-encoding', 'UTF-8', '-nowarn',
+                '-d', out.path, '-cp', classpath] + sources) as String[])
+        if (rc != 0) throw new GradleException("javac failed with exit code $rc")
+        logger.lifecycle("ARM overlay classes written to $out")
+    }
+}

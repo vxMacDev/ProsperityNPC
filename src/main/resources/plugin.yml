@@ -1,0 +1,54 @@
+name: ProsperityNPC
+version: '${version}'
+main: com.prosperitysmp.npc.ProsperityNpcPlugin
+api-version: "26.1"
+authors: [ProsperitySMP]
+description: Persistent town residents, relationships, opportunities and a living property economy.
+# Runtime libraries fetched into an isolated classloader by Paper's library loader.
+libraries:
+  - "org.mariadb.jdbc:mariadb-java-client:3.5.9"
+  - "com.zaxxer:HikariCP:7.1.0"
+# Vault is required (economy access). The rest are optional; their features stay off when absent.
+depend: [Vault]
+softdepend: [AdvancedRegionMarket, Citizens, floodgate, Jobs]
+# Every kill switch defaults false, so nothing runs until a server owner turns it on.
+commands:
+  resident:
+    description: Talk with nearby residents; previews are staff-only.
+    usage: /resident [talk|leave|stop]
+    permission: prosperitynpc.use
+  npctown:
+    description: Place registered civic residents on authored district routes.
+    usage: /npctown <seed|place <resident> <district>|disable <resident>|list>
+    permission: prosperitynpc.admin
+  residentlab:
+    description: Staff-only nonfinancial resident encounter development.
+    usage: /residentlab <seed|list|profile|talk>
+    permission: prosperitynpc.admin
+  npcadmin:
+    description: ProsperityNPC administration.
+    usage: /npcadmin <health|reload|switch|chronicle|reconcile-arm|roster|roster-one|match|incidents|rent|settle|rendertest>
+    permission: prosperitynpc.admin
+  npcproperty:
+    description: Enroll and inspect NPC-economy properties.
+    usage: /npcproperty <enroll|pause|resume|unenroll|list|info|reconcile|armdump>
+    permission: prosperitynpc.admin
+  property:
+    description: Manage the property you're standing in.
+    usage: /property <status [text]|close|autocare|pause|resume|utility|repair|insure|rent|upgrade|maintain|receipt|rating>
+    permission: prosperitynpc.use
+  tenants:
+    description: View and manage your property's tenants.
+    usage: /tenants <list [text]|evict <resident-uuid> <maximum-dollars>>
+    permission: prosperitynpc.use
+  npcnav:
+    description: Build, validate, and publish district navigation graphs.
+    usage: /npcnav <scanhere|scanbox|taghere|corridor|validate|publish|info|list>
+    permission: prosperitynpc.admin
+permissions:
+  prosperitynpc.admin:
+    description: Access ProsperityNPC admin commands.
+    default: op
+  prosperitynpc.use:
+    description: Talk with residents and use town/property/tenant commands.
+    default: true

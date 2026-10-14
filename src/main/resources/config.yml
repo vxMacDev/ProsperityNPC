@@ -1,0 +1,516 @@
+# ============================================================================
+#  ProsperityNPC configuration
+#  Scope: town residents, relationships, training, commerce and living property.
+#  All money values are INTEGER CENTS. Never use decimals for money here.
+# ============================================================================
+
+# --- Kill switches -----------------------------------------------------------
+# ALL default false. Nothing simulates, pays, or renders until enabled.
+# Enable modules deliberately after their operational and player acceptance gates.
+# The economy switch alone does not authorize training, commerce or public sending.
+switches:
+  system-enabled: false      # master gate: all simulation
+  economy-enabled: false     # financial effects; cash appreciation also needs economy.appreciation-enabled
+  incidents-enabled: false   # incident generation
+  moves-enabled: false       # finite STANDARD tenant matching and departures
+  rendering-enabled: false   # Citizens avatar rendering
+
+# --- Safe cash envelope (integer cents) --------------------------------------
+# Rent and cash appreciation use the shared confirmed-payment envelope. Appreciation is off by default.
+economy:
+  # Leave off until payments and the Skript accounting bridge are tested on your server.
+  payments-enabled: false
+  # On: a property whose ARM owner cannot be read (or is the reserve) is held and logged once a day,
+  # and every other property is still paid. Off: one such property stops the whole rent batch.
+  rent-isolation-enabled: false
+  # On: after rent, each rent batch also pays a capped appreciation dividend for the previous economy day
+  # to each property whose rent was paid that day and whose rating is fully rated:
+  # min(appreciation cap, (score - 70) x 10 cents). It counts against that day's property, benefit-unit
+  # and server caps after all of that day's rent, and the whole batch skips it if the floor deferred any
+  # rent. It shares a property's lifetime funding with future rent and respects the CentralBank floor.
+  # Because it is paid the next day, one day's reported outflow can exceed server-daily-cap-cents.
+  # Off: nothing is reserved or paid, exactly as before.
+  appreciation-enabled: false
+  # Safety check, on by default. It only acts while appreciation-enabled is on; with appreciation off it is never
+  # read and changes nothing. On: a batch also holds all appreciation while any home still has today's rent
+  # unpaid in the ledger (deferred by the floor, in flight or ambiguous), even a home this batch skipped because
+  # its owner could not be read or it was paused after its rent was reserved. Rent stays first across batches.
+  # A home whose rent is stuck all day (ambiguous, or paused after reserving) holds appreciation until the next day.
+  # Off: only this batch's own floor deferrals hold appreciation.
+  appreciation-ledger-rent-hold-enabled: true
+  # Safety check, on by default. It only acts on rent and appreciation payouts, so it does nothing until payments
+  # have reserved some. On: each rent batch first retires payouts that can never be paid and were never
+  # attempted (still pending, no transfer attempt, and their day has passed or the home's owner changed since),
+  # so they stop holding the home's lifetime funding and a sale cannot stop the batch. A payout with any transfer
+  # attempt is never touched, and no money moves: it only releases funding that could never be paid out.
+  # The daily cycle also runs this pass on its own before the rent phase, so it works with every home paused
+  # or every owner away, and resuming a paused home retires that home's own such payouts first. A payout from
+  # today still owed to the current owner is never retired, so it can hold a resume until the next day.
+  # It only acts while payments are in use (payments-enabled on and the system and economy switches on); with
+  # payments off it changes nothing anywhere, and resuming a paused home is refused or allowed exactly as before.
+  # Off: nothing is retired.
+  payout-retirement-enabled: true
+  # Safety check, on by default. It only acts while housing.vacation-days is above 0; at 0 no home is ever
+  # owner-away and it changes nothing. On: owner-away is checked again right before money leaves an account, not
+  # only when a charge or rent batch starts. A home that became owner-away meanwhile (for example a reload that turned
+  # vacation-days on) is not charged a utility bill or auto-care, and gets no rent or appreciation: an unstarted
+  # rent payout stays pending, and a charge already being prepared stops for staff review. A payout whose money
+  # already left the reserve always completes. Owner-chosen repairs and purchases are never held by this.
+  # Off: owner-away is checked only at the start.
+  away-debit-recheck-enabled: true
+  server-daily-cap-cents: 15000        # $150 / server / economy-day
+  # With linked-accounts on, linked Java and Bedrock accounts share this.
+  benefit-unit-daily-cap-cents: 4500   # $45  / benefit-unit / day
+  property-daily-cap-cents: 1500       # $15  / property / day
+  tenant-daily-cap-cents: 600          # $6   / tenant / day
+  appreciation-daily-cap-cents: 300    # $3   appreciation portion / property / day
+  centralbank-floor-cents: 3500000     # $35,000 min CentralBank balance AFTER a payout
+  property-seed-cents: 5000            # $50  one-time seed allowance per property (maximum 5000)
+  rollout-seed-pool-cents: 50000       # $500 total seed pool across initial rollout (maximum 50000)
+  # Values above these maximums make property enrollment refuse.
+  # Each $1.00 of successful cash sink funds at most this fraction of payout.
+  # Structurally makes every property a mild net sink beyond its one-time seed.
+  lifetime-sink-funding-ratio: 0.90
+
+# --- Linked accounts ---------------------------------------------------------
+# One person can play on Java and on Bedrock. When Floodgate links the two accounts, both count as one owner
+# for the daily rent and appreciation limit above (benefit-unit-daily-cap-cents). Each home still belongs to
+# the account that owns it in ARM, pays its rent to that account, and is managed only by that account.
+# Other limits stay as they are.
+linked-accounts:
+  # On: a linked Bedrock player's link is saved when they join (Floodgate needed), saved links share one limit,
+  # the owner desk shows a line, and staff can use /npcadmin links split. Without Floodgate, links already
+  # saved still count. A saved link stays saved when the player unlinks in Floodgate. Only a staff split ends
+  # it, and the split starts on the next economy day.
+  # A link is only seen when the linked player joins from a Bedrock client. A player who linked once and now
+  # plays only on Java keeps separate limits unless lookup-floodgate-owners is on.
+  # Turning it on takes effect from the next rent or appreciation batch. Appreciation for yesterday is paid
+  # today, so turning it on today also merges yesterday's appreciation. That is stricter, never looser.
+  # Turning it off takes effect on the next economy day. A day that already started merged stays merged.
+  # Off: nothing is saved, no line shows, and every account has its own limit, as before. Read on start and
+  # /npcadmin reload.
+  enabled: false
+  # Needs enabled. Once per economy day, asks Floodgate about home owners whose account is a Bedrock account.
+  # With Floodgate's global linking each ask is an HTTPS call to api.geysermc.org, so this ships off. With
+  # Floodgate's own local linking (its own database) no outside call is made. /npcadmin health shows which one
+  # Floodgate uses. A failed or slow answer saves nothing.
+  lookup-floodgate-owners: false
+  # Most owners asked about per economy day, 0 to 500. Each owner is asked at most once a day and gets 10
+  # seconds to answer.
+  lookup-daily-limit: 50
+
+# --- Staff alerts ------------------------------------------------------------
+# On: held payments, reserve-floor deferrals, a server cap at 90 percent, failed daily phases, a missing ARM hook
+# and held rent properties go into a bounded queue (64, oldest dropped and counted), once per kind and subject
+# per economy day, each also logged once at WARN. skript/npc-alerts-prosperitysmp.sk shows them in game.
+# Off (default): nothing is queued and existing logs are unchanged.
+alerts:
+  enabled: false
+
+# --- Economy clock -----------------------------------------------------------
+# Daily caps and settlement follow this day. Default: America/Chicago, 04:00 reset.
+clock:
+  timezone: "America/Chicago"
+  daily-reset-hour: 4
+  settlement-hour: 4
+  settlement-minute: 10
+
+# --- Database (a dedicated MariaDB schema; never share your economy plugin's) --
+# Leave password empty to read it from plugins/ProsperityNPC/db-password.txt
+# (kept out of the jar and the repo). If the password resolves to empty, the
+# plugin runs WITHOUT a database and the economy stays fail-closed.
+database:
+  host: "127.0.0.1"
+  port: 3306
+  name: "prosperity_npc"
+  user: "npcuser"
+  password: ""
+  pool-size: 6
+  connection-timeout-ms: 10000
+
+# --- Reserve account ------------------------------------------------------------
+# UUID of the Vault account that pays NPC payouts and receives NPC charges
+# (the server's reserve or central bank account). Use the account's UUID, not
+# its name: a name can resolve to a different account than the one you fund.
+# Write it in lowercase, e.g. "123e4567-e89b-42d3-a456-426614174000".
+# Left blank or malformed, NPC payments and the scheduled daily cycle stay held.
+centralbank:
+  uuid: ""
+
+# --- Enrollment allowlists ---------------------------------------------------
+# Only ARM SELL regions may be enrolled, and only with a market_id and class_key
+# from these allowlists. Reference rent is a small per-tenant DAILY figure (the
+# simulated tenant rent), NOT the ARM purchase/weekly rent.
+enrollment:
+  markets:
+    - "downtown"
+  classes:
+    - "room"
+    - "penthouse"
+  # 5-minute ARM ownership reconcile (read-only). Ticks = seconds * 20.
+  reconcile-interval-ticks: 6000
+# Traversal advances once per server tick; this interval controls selection and
+# snapshot preparation only (clamped to 1..20 ticks, no lag catch-up).
+# Failed navigation attempts wait 1000ms; successful edges and pause resumption do not.
+rendering:
+  tick-interval-ticks: 20
+  max-server: 20
+  max-per-viewer: 3
+  radius: 48.0
+  despawn-grace-ms: 15000
+  edge-timeout-ms: 10000
+  max-fails: 3
+
+# Your own named residents. Read once at startup: full restart after changing anything here.
+residents:
+  # Off: the built-in three (Mara Vale, Ellis Ward, Nico Reed), as before.
+  # On: residents come from plugins/ProsperityNPC/residents.yml (see examples/residents.extended.yml in the repo).
+  # If that file is missing or fails a check, the built-in three are used and /npcadmin health says so.
+  cast-file-enabled: false
+  # Safety check, on by default. Only read while cast-file-enabled is on. /npcadmin roster skips
+  # residents with no verified everyday skin, so nobody pays rent as an invisible tenant.
+  require-skin-for-roster: true
+
+# Outfits for avatars already on screen. Off: a resident's outfit is picked when its avatar appears, as before.
+appearance:
+  # On: an avatar changes to the outfit for its new routine (work, free time, home) while it is out.
+  # It only changes when no player is close and nobody is talking to that resident.
+  outfit-change-while-rendered: false
+  # Only read when outfit-change-while-rendered is on. Blocks. 8 to 48, and never above rendering.radius.
+  outfit-change-hidden-radius: 16
+  # Only read when outfit-change-while-rendered is on. Most avatars changed in one pass. 1 to 5.
+  outfit-changes-per-tick: 2
+
+# Property enrollment, rent and owner payments need this on, plus an AdvancedRegionMarket
+# build with the NpcTransactionGuard hook (see arm-compat/). Stock ARM 3.5.5 lacks it.
+# Full restart required. No hot reload.
+integration:
+  arm-coordination: false
+
+# Finite STANDARD admission policy. Receipts pin policy for the economy day.
+housing:
+  # Tenant move limits. Restart required.
+  premium-enabled: false
+  # When a premium resident moves to a better-run home, tell online players in one plain line (no owner, region or
+  # money). At most 1 line per 30 minutes server-wide; extra moves are only logged. Needs premium-enabled. Default off.
+  premium-broadcast-enabled: false
+  # When a premium resident moves and both homes are on the same published navigation graph, the shown avatar walks
+  # to the new property's own home anchor (a node tagged home:<propertyId>) along that graph (no teleport; viewer and render limits still apply). No route or a failed step
+  # falls back to the avatar reappearing at the new home. A new property with no such anchor also falls back. Needs premium-enabled. Default off.
+  premium-walk-enabled: false
+  server-daily-limit: 3
+  market-daily-limit: 1
+  property-daily-limit: 1
+  cooldown-days: 7
+  # Advertising upgrade levels add a match-rank bonus (+4 per level) when ordering vacancies for a resident.
+  # It never changes rent, scores, caps or premium eligibility. Read live: /npcadmin reload applies it to matching and the owner desk together. Default off.
+  advertising-rank-enabled: false
+  # Economy days (0-30) before a new asking rent from /property rent takes effect. 0 = immediate (default).
+  # Above 0: the change is stored as pending and applies at the start of the daily cycle on its day, so
+  # matching and rent use the old rent until then. One pending change per home; a newer one replaces it and
+  # setting the current rent again cancels it. Each current resident gets one recorded notice, and the owner
+  # desk shows "Rent changes to $X on <day>". The 50%-150% range still applies. Read live. Set back to 0:
+  # new changes are immediate again and replace a pending one; a change already pending still applies on its
+  # day, but the desk line is only shown while this is above 0.
+  rent-change-delay-days: 0
+  # Safety check, on by default. It only acts on a day when a delayed rent change (rent-change-delay-days) is
+  # actually due: otherwise the step only reads how many are due, holds no home and writes nothing. On: the
+  # daily step that applies due rent changes first holds each home the same way a payment does, so it
+  # never changes a home's asking rent while a payment for that home is between taking and paying money. A home
+  # busy with a payment keeps its pending change; the step tries again every second for up to 30 seconds. Still
+  # busy after that, the change applies at the next daily cycle, and today's rent for that home is held instead
+  # of paid at the old rent. If the step's result is unknown and the database cannot be read back, the homes stay
+  # held (no payments), staff are alerted, and the read is retried every 5 to 60 seconds until it works.
+  # Without ARM coordination no payment can be in progress, so the step runs without holding homes.
+  # Read live. Off: the old behavior and its old risk. The step runs without holding homes, so a rent change can
+  # land while a payment is between taking and paying money, and that payment is left for staff recovery.
+  rent-change-lease-guard-enabled: true
+  # Days (0-30) a room stays closed to matching after the owner evicts its resident. 0 = off.
+  # 2 = the owner design: evicted on day D, open again on day D+2. Restart required.
+  evicted-slot-lock-days: 0
+  # Residents get a daily mood (Unhappy / Neutral / Content / Happy) from property condition, open
+  # incidents, whether yesterday's utility bill was paid and asking rent against reference rent.
+  # It only changes what residents say and what the owner desk shows. It never changes rent, caps
+  # or payouts. Default off: mood columns are not written. Takes effect on the next restart/reload.
+  moods-enabled: false
+  # Residents of a neglected home may move out on their own (one roll per home per day). With moods on,
+  # a home is neglected when a resident's satisfaction is below satisfaction-below. With moods off, when
+  # condition is below condition-below or an incident is overdue. Well-kept homes never roll. At most 1
+  # departure per home and server-daily-limit (max 3) per server each day. No money moves; rent already
+  # reserved for the day is never touched. The resident keeps their history and waits cooldown-days
+  # before moving in elsewhere. Needs the system and moves switches and state.sim-seed. Default off.
+  voluntary-departures-enabled: false
+  voluntary-departure-server-daily-limit: 3
+  voluntary-departure-satisfaction-below: 40
+  voluntary-departure-condition-below: 50
+  # /property rating: anyone standing inside an enrolled property sees half-stars (or Unrated), rooms let
+  # and a condition band. No owner money, receipts, service detail or tenant names. Default off. Restart required.
+  public-rating-enabled: false
+  # Vacation protection. When an owner has not been seen for more than this many days (0-365), their homes are
+  # "owner away" for the day: no incident rolls, no recurring auto-care or utility bill, no rent or appreciation,
+  # no voluntary departures and no mood change. No money moves either way and nothing decays. Online owners are
+  # never away. Each home is checked once per economy day; a returning owner resumes on the next day's cycle.
+  # The first check of the day is saved (npc_owner_away_decisions) and holds until the next economy day, also
+  # across a restart or reload. Changing this value mid-day only affects homes not yet checked today.
+  # The owner desk and /property rating show "Owner away". Read live. 0 = off (default); off saves nothing.
+  vacation-days: 0
+
+# encounters-enabled turns on resident conversations for players (needs Citizens and the
+# system + rendering switches). resident-lab-enabled is a staff test tool.
+# Neither flag enables money or occupancy.
+# Encounters additionally allow bounded, temporary staff-hosted avatar previews,
+# independent of the normal population-rendering switch. Both flags are required.
+beta:
+  resident-lab-enabled: false
+  encounters-enabled: false
+
+# Nonfinancial civic residents and one durable courier obligation per player/day.
+# Staff author placements against published navigation graphs with /npctown.
+# Each financial/item feature needs its own opt-in plus the system/economy switches.
+town:
+  enabled: false
+  # Optional "Any tips?" topic. Each entry is one short tip; one is shown per player per service day.
+  # Empty list (default) hides the topic. Max 24 tips, 160 characters each.
+  tips: []
+  errands-enabled: false
+  # Training gives a temporary Jobs payout bonus (needs Jobs). Jobs pays it, not the
+  # reserve, so the reserve caps and floor above do not limit it.
+  training-enabled: false
+  commerce-enabled: false
+  # Daily limits for resident item orders.
+  # Issuance caps are pinned on first use of a service day and are not refunded on cancellation.
+  commerce:
+    global-orders-per-day: 64
+    global-units-per-day: 512
+    material-units-per-day: 128
+    global-cost-cents-per-day: 1000000
+  # Contracts: a resident asks you to bring plain items, to them or to another resident, before a deadline.
+  # Handing them over takes the items for good. The reward is familiarity with the residents involved. There is
+  # no money, no items and no XP, so contracts can never pay out. Needs town.enabled.
+  # Off: the "Contracts and partners" topic is hidden (unless partnerships are on) and nothing is written.
+  # Read on start and /npcadmin reload.
+  contracts:
+    enabled: false
+    # Contracts a player can take per economy day, 1 to 3. Cancelled and expired contracts still use their slot.
+    per-player-per-day: 1
+    # Safety check, on by default. Handovers only in survival mode. It is only read when a handover starts, so
+    # with contracts and partnerships off it changes nothing.
+    require-survival: true
+    # World names where handovers are allowed. Empty means any world a resident is in. List your survival
+    # worlds here to keep creative or build worlds out.
+    handover-worlds: []
+    # The contracts, at most 64. giver and recipient are resident UUIDs (see /npctown list). Leave recipient out
+    # to have the items brought back to the giver. material is an item name, quantity 1 to 256.
+    # minimum-stage is STRANGER, ACQUAINTANCE, TRUSTED or ESTABLISHED. duration-minutes is 30 to 1440.
+    # An entry with a mistake, or a resident who is not on this server, is skipped with a warning.
+    # These examples use the three built-in residents: Mara Vale, Ellis Ward and Nico Reed. Write your own.
+    definitions:
+      - id: mara-wall-stone
+        giver: f23586b0-11ff-320e-874e-3bb29065d402
+        title: Wall stone
+        description: I am rebuilding a garden wall. Bring me cobblestone.
+        material: COBBLESTONE
+        quantity: 64
+        minimum-stage: STRANGER
+        duration-minutes: 1440
+      - id: mara-beam-logs
+        giver: f23586b0-11ff-320e-874e-3bb29065d402
+        recipient: 739e2063-a802-3e5a-8dc1-a9c03ed761a8
+        title: Beam logs
+        description: Ellis needs oak logs for new shelves. Take them to him.
+        material: OAK_LOG
+        quantity: 16
+        minimum-stage: ACQUAINTANCE
+        duration-minutes: 720
+      - id: ellis-shelf-stock
+        giver: 739e2063-a802-3e5a-8dc1-a9c03ed761a8
+        title: Shelf stock
+        description: My shelves are bare. Bring me wheat.
+        material: WHEAT
+        quantity: 32
+        minimum-stage: ACQUAINTANCE
+        duration-minutes: 1440
+      - id: ellis-hinge-iron
+        giver: 739e2063-a802-3e5a-8dc1-a9c03ed761a8
+        recipient: f23586b0-11ff-320e-874e-3bb29065d402
+        title: Hinge iron
+        description: Mara needs iron for door hinges. Take it to her.
+        material: IRON_INGOT
+        quantity: 8
+        minimum-stage: TRUSTED
+        duration-minutes: 720
+      - id: nico-coal-run
+        giver: 716af3b1-66c6-3d62-b6fe-601e2b013ad9
+        recipient: f23586b0-11ff-320e-874e-3bb29065d402
+        title: Coal run
+        description: Mara's forge is low. Take her some coal.
+        material: COAL
+        quantity: 16
+        minimum-stage: STRANGER
+        duration-minutes: 180
+      - id: nico-route-bread
+        giver: 716af3b1-66c6-3d62-b6fe-601e2b013ad9
+        title: Route bread
+        description: I eat on my rounds. Bring me some bread.
+        material: BREAD
+        quantity: 8
+        minimum-stage: ACQUAINTANCE
+        duration-minutes: 1440
+  # Partnerships: a property owner who knows a resident well can partner with them for a set number of days.
+  # You pay in items, handed over like a contract, and get that resident's perk. A fee perk lowers only the
+  # service fee of that resident's orders; the items in the order stay at full price and the fee is at least $1.
+  # A rank perk helps your homes fill first in daily matching, only while housing.advertising-rank-enabled and
+  # rank-bonus-enabled are both on. No perk moves reserve money or changes rent, caps or funding.
+  # Off: no offers, running partnerships give no perk, and nothing is written. Needs town.enabled.
+  # Read on start and /npcadmin reload.
+  partnerships:
+    enabled: false
+    # Economy days one partnership lasts, 1 to 30.
+    term-days: 7
+    # The renew button shows in the last this many days of a term, 1 to term-days. Renewing adds term-days to
+    # the current end date.
+    renew-window-days: 2
+    # Partners one resident can have at once, 1 to 16.
+    max-partners-per-resident: 4
+    # Familiarity needed with the resident to start: ACQUAINTANCE, TRUSTED or ESTABLISHED.
+    minimum-stage: TRUSTED
+    # Contracts kept for that resident in the last 30 economy days before a first partnership, 0 to 10.
+    # Renewing does not check this again.
+    min-contracts: 2
+    # Lets rank perks count in daily matching. Also needs housing.advertising-rank-enabled.
+    rank-bonus-enabled: false
+    # One offer per resident. resident is a resident UUID. material and quantity (1 to 256) are paid each term.
+    # fee-discount-percent is 0 to 60, off the service fee only. rank-bonus-points is 0 to 4 (one advertising
+    # level is 4). pitch is one sentence, up to 160 characters. Lowering a perk here applies at once to running
+    # partnerships; raising it applies to new ones only.
+    offers:
+      - resident: 739e2063-a802-3e5a-8dc1-a9c03ed761a8
+        material: IRON_INGOT
+        quantity: 16
+        fee-discount-percent: 40
+        rank-bonus-points: 0
+        pitch: Keep me stocked with 16 Iron Ingot a week and I cut my fee by 40% for you.
+      - resident: f23586b0-11ff-320e-874e-3bb29065d402
+        material: STONE
+        quantity: 64
+        fee-discount-percent: 25
+        rank-bonus-points: 0
+        pitch: Bring me 64 Stone a week and I cut my fee by 25% for you.
+      - resident: 716af3b1-66c6-3d62-b6fe-601e2b013ad9
+        material: COAL
+        quantity: 16
+        fee-discount-percent: 0
+        rank-bonus-points: 2
+        pitch: Bring me 16 Coal a week and I tell new arrivals about your homes.
+
+# Recurring owner consent additionally needs system/economy switches and the normal
+# property-payment gate. Each owner's explicit ceiling is persisted by ownership epoch.
+# Disable stops fresh dispatch, not already-observed debit settlement. No automatic retries.
+auto-care:
+  enabled: false
+
+# --- Item repairs ------------------------------------------------------------
+# Owners can fix an open problem (pests, plumbing, break-in) by handing in plain items instead of paying cash.
+# The repair does the same as a cash repair: condition back, upgrade back on, tenants remember it, and it counts
+# on the service record. No money moves. The reserve pays nothing and gets nothing, so caps and rent funding are
+# not touched. Item repairs do not add to a home's rent funding. Auto-care stays cash only.
+# Items come only from the main inventory (not the ender chest, armor or offhand), only as plain stacks: named,
+# enchanted or damaged items are skipped. The take is proven saved before the repair applies. If the home changed
+# in that window the exact items come back with /property repair returns. Anything unclear is held for staff and
+# never retried; staff settle it with the offline ItemRepairRecoveryTool while the server is stopped.
+# Prices come from the commerce price book (the full unit price your price feed publishes). The feed must
+# publish the recipe materials too. An unknown or stale price makes item repair unavailable; cash still works.
+item-repairs:
+  # On: the desk repair button and the Bedrock repair button open a choice (cash or items), and
+  # /property repair <id> items works. Also needs the system and economy switches.
+  # Off: those buttons pay cash exactly as before, /property repair <id> items says the feature is off, and
+  # nothing is written. Read on start and /npcadmin reload.
+  enabled: false
+  # The items must be worth at least this share of the cash price at full price-book value. 15000 is 150 percent.
+  # Whole numbers from 10000 to 100000. Anything else holds item repairs off with a warning. It is a floor, never
+  # a discount.
+  min-value-ratio-bps: 15000
+  # Most items in one hand-in after scaling, 1 to 256. A larger list is refused and cash still works.
+  max-units-per-repair: 256
+  # Most stacks one hand-in can give back if the home changes, 1 to 4. A larger list is refused.
+  max-return-stacks: 4
+  # Base item list per problem: 1 to 4 lines of distinct, stackable item names, 1 to 256 each. Quantities only
+  # ever go up when prices fall, never below these numbers. A bad list makes that problem cash only, with a warning.
+  recipes:
+    PESTS:
+      - {material: PAPER, quantity: 16}
+      - {material: BAKED_POTATO, quantity: 8}
+    PLUMBING:
+      - {material: COPPER_INGOT, quantity: 16}
+      - {material: IRON_INGOT, quantity: 4}
+    BREAK_IN:
+      - {material: IRON_INGOT, quantity: 32}
+      - {material: GLASS, quantity: 8}
+  # Safety check, on by default. It is only read when an item hand-in starts, so with item repairs off it changes
+  # nothing. On: the player must be in survival mode when the hand-in starts and again when the items are taken.
+  # Off: any game mode.
+  require-survival: true
+  # Safety check, on by default. It only acts on a problem with an item hand-in that is running or held for staff,
+  # and those exist only after item repairs ran, so with the feature never turned on it changes nothing. On: a cash
+  # repair or auto-care charge for that problem is refused before any money moves. Off: cash may go ahead, and if
+  # staff later find the items were taken, the items are given back.
+  block-cash-while-items-held: true
+
+# Explicitly approved publication scopes are reused below. A stable authorization
+# generation is an operator-provided UUID; changing it does not reauthorize old rows.
+# This enables private bounded previews/recovery, NEVER Discord sending by itself.
+chronicle:
+  enabled: false
+  authorization-generation: ""
+  refresh-seconds: 5
+  # Default off: staging needs the property's CURRENT revision to equal the move receipt's.
+  # On: the receipt's own recorded revision is the evidence, so later rent or upgrade edits
+  # do not invalidate a true story. A property older than the receipt still refuses.
+  receipt-revision-evidence: false
+
+# Private occupancy staging only; no endpoint or public scopes are enabled by default.
+# Before enabling: approved scopes and an existing private, non-web-served
+# plugins/ProsperityNPC/publication directory are required. No directory is created on tick.
+# Config reload revokes staging until restart, including when replacement config is invalid.
+publication:
+  enabled: false
+  refresh-seconds: 60
+  max-age-seconds: 300
+  recovery-age-seconds: 3600
+  retention-age-seconds: 86400
+  approved-scopes: []
+  # Loopback only. An unused port and a private publication-token.txt
+  # (POSIX 0400/0600, 32 bytes encoded as unpadded base64url) are required.
+  # No token is generated, and changing/rotating it requires a restart.
+  http-enabled: false
+  http-port: 0
+
+# /npcnav scanhere vertical margins, in blocks below and above the staff member's feet.
+# These are the built-in values; change them only for unusually tall or deep builds.
+nav:
+  scan-below: 6
+  scan-above: 4
+
+# Small player-facing conversation and desk fixes. Every flag is off by default,
+# so a server behaves exactly as before until it turns one on.
+# conversation-sliding-deadline, its two pause keys and desk-pause-controls are read when the plugin starts: restart after changing them.
+ux:
+  # A conversation's 90 second idle limit restarts on every choice, instead of one hard cut-off.
+  # A walking resident also stays stopped while someone keeps choosing, up to conversation-pause-cap-seconds
+  # in total for everyone talking to them. Then they walk on and cannot be stopped again for
+  # conversation-pause-cooldown-seconds. Off: one shared 90 second stop every 2 minutes, as before.
+  conversation-sliding-deadline: false
+  # Only read when conversation-sliding-deadline is on. 90 to 300.
+  conversation-pause-cap-seconds: 180
+  # Only read when conversation-sliding-deadline is on. 30 to 600.
+  conversation-pause-cooldown-seconds: 60
+  # When errand buttons fill all three action slots, the last errand button yields so Train stays reachable.
+  reserve-train-slot: false
+  # Hide the hired-work button once the day's one hired job is used, and say so.
+  hire-used-notice: false
+  # Bedrock chat fallback prints typed commands (/resident act <n>, /resident choose <topic>) instead of clickable text.
+  bedrock-typed-fallback: false
+  # Owner desk gets a confirmed Pause button, a Resume button when the property is paused, and the asking rent line.
+  desk-pause-controls: false
+  # Typed /property insure <maximum-dollars>, the same server-quoted payment as the desk button.
+  insure-command: false

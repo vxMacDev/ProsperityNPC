@@ -1,0 +1,228 @@
+package com.prosperitysmp.npc.economy;
+
+import net.milkbowl.vault.economy.Economy;
+import net.milkbowl.vault.economy.EconomyResponse;
+import org.bukkit.OfflinePlayer;
+import org.junit.jupiter.api.Test;
+import java.lang.reflect.Proxy;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Rent/appreciation DEBIT: the appreciation live switch and the owner-away recheck must be the last reads before
+ * the withdraw. The floor check's getBalance is an external Vault callback that may re-enter (a synchronous reload or
+ * a vacation change) and flip either flag; the flags are reread after it. CREDIT is never blocked.
+ *
+ * Drives a real VaultLegObservation against a fake provider, with a supplier shaped like payRent's observer.
+ */
+class FinalDebitChecksReentrancyTest {
+    private static final UUID ID = new UUID(0, 42);
+    private static final OfflinePlayer ACCOUNT = (OfflinePlayer) Proxy.newProxyInstance(
+            OfflinePlayer.class.getClassLoader(), new Class<?>[]{OfflinePlayer.class}, (p, m, a) -> {
+                if (m.getName().equals("getUniqueId")) return ID;
+                throw new AssertionError("unexpected player call: " + m.getName());
+            });
+    private static final long CENTS = 2_500;
+
+    /** Fake Vault provider. getBalance call number flipOnBalanceCall runs the re-entrant hook. */
+    private static final class Provider {
+        double balance = 1_000;
+        int balanceCalls, withdraws, deposits, flipOnBalanceCall = -1;
+        Runnable reentrantHook = () -> { };
+        final Economy economy = (Economy) Proxy.newProxyInstance(Economy.class.getClassLoader(),
+                new Class<?>[]{Economy.class}, (p, m, a) -> {
+                    switch (m.getName()) {
+                        case "isEnabled": return true;
+                        case "getBalance": {
+                            assertSame(ACCOUNT, a[0]);
+                            if (++balanceCalls == flipOnBalanceCall) reentrantHook.run();
+                            return balance;
+                        }
+                        case "withdrawPlayer": case "depositPlayer": {
+                            assertSame(ACCOUNT, a[0]);
+                            double amount = (double) a[1];
+                            if (m.getName().equals("withdrawPlayer")) { withdraws++; balance -= amount; }
+                            else { deposits++; balance += amount; }
+                            return new EconomyResponse(amount, balance, EconomyResponse.ResponseType.SUCCESS, null);
+                        }
+                        default: throw new AssertionError("unexpected economy call: " + m.getName());
+                    }
+                });
+    }
+
+    /** The live flags as the runtime reads them: appreciation on, owner present. */
+    private static final class Flags {
+        final AtomicBoolean appreciationOn = new AtomicBoolean(true), ownerAway = new AtomicBoolean(false);
+        final AtomicInteger gateReads = new AtomicInteger(), awayReads = new AtomicInteger();
+        final BooleanSupplier debitGate = () -> { gateReads.incrementAndGet(); return appreciationOn.get(); };
+        final BooleanSupplier awayHeld = () -> { awayReads.incrementAndGet(); return ownerAway.get(); };
+    }
+
+    private interface Checks {
+        void run(TransferProof.Leg leg, Runnable debitOnlyChecks, BooleanSupplier debitGate, BooleanSupplier awayHeld);
+    }
+
+    /** The fix under test. */
+    private static final Checks FIXED = UtilityPaymentRuntime::finalDebitChecks;
+
+    /** Negative control: the order before the fix (gates, then the external floor read, no reread). */
+    private static final Checks LEGACY = (leg, debitOnlyChecks, gate, away) -> {
+        UtilityPaymentRuntime.requireDebitGate(leg, gate);
+        UtilityPaymentRuntime.requireAwayDebitGate(leg, away);
+        if (leg == TransferProof.Leg.DEBIT) debitOnlyChecks.run();
+    };
+
+    /**
+     * payRent's Vault observer shape: on DEBIT, the second provider check (after the pre-balance read) runs the
+     * final checks, whose floor read is a real provider getBalance call.
+     */
+    private static TransferProof.Observation execute(Provider provider, Flags flags, TransferProof.Leg leg, Checks checks,
+            List<String> trace) {
+        int[] providerChecks = {0};
+        var observer = new VaultLegObservation(provider.economy, () -> {
+            if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) checks.run(leg, () -> {
+                trace.add("floor");
+                provider.economy.getBalance(ACCOUNT);
+            }, flags.debitGate, flags.awayHeld);
+            return provider.economy;
+        }, () -> true);
+        return observer.execute(ID, ACCOUNT, CENTS, leg);
+    }
+
+    @Test void positiveControlWithoutAFlipTheDebitWithdrawsOnce() {
+        var provider = new Provider(); var flags = new Flags(); var trace = new ArrayList<String>();
+        var observation = execute(provider, flags, TransferProof.Leg.DEBIT, FIXED, trace);
+        assertEquals(1, provider.withdraws);
+        assertEquals(List.of("floor"), trace);
+        assertEquals(TransferProof.LegOutcome.CONFIRMED, TransferProof.evaluate(CENTS, TransferProof.Leg.DEBIT, observation));
+        assertEquals(2, flags.gateReads.get(), "read before and after the floor callback");
+        assertEquals(2, flags.awayReads.get(), "read before and after the floor callback");
+    }
+
+    @Test void appreciationTurnedOffInsideTheFloorReadBlocksTheWithdraw() {
+        var provider = new Provider(); var flags = new Flags();
+        // Call 1 is VaultLegObservation's pre-balance; call 2 is requireFloor's read inside the final checks.
+        provider.flipOnBalanceCall = 2;
+        provider.reentrantHook = () -> flags.appreciationOn.set(false);
+        var observation = execute(provider, flags, TransferProof.Leg.DEBIT, FIXED, new ArrayList<>());
+        assertFalse(flags.appreciationOn.get(), "the hook really flipped the flag");
+        assertEquals(0, provider.withdraws, "no withdraw after the live switch turned off");
+        assertEquals(1_000, provider.balance);
+        assertTrue(observation.threw());
+        assertFalse(observation.responsePresent());
+        assertNotEquals(TransferProof.LegOutcome.CONFIRMED, TransferProof.evaluate(CENTS, TransferProof.Leg.DEBIT, observation));
+    }
+
+    @Test void ownerTurnedAwayInsideTheFloorReadBlocksTheWithdraw() {
+        var provider = new Provider(); var flags = new Flags();
+        provider.flipOnBalanceCall = 2;
+        provider.reentrantHook = () -> flags.ownerAway.set(true);
+        var observation = execute(provider, flags, TransferProof.Leg.DEBIT, FIXED, new ArrayList<>());
+        assertTrue(flags.ownerAway.get(), "the hook really flipped the flag");
+        assertEquals(0, provider.withdraws, "no withdraw after the owner went away");
+        assertEquals(1_000, provider.balance);
+        assertTrue(observation.threw());
+        assertFalse(observation.responsePresent());
+    }
+
+    @Test void negativeControlTheOldOrderWithdrawsDespiteEitherFlip() {
+        // Proves the two tests above can fail: without the reread, both flips go unnoticed and money moves.
+        for (boolean appreciation : new boolean[]{true, false}) {
+            var provider = new Provider(); var flags = new Flags();
+            provider.flipOnBalanceCall = 2;
+            provider.reentrantHook = appreciation ? () -> flags.appreciationOn.set(false) : () -> flags.ownerAway.set(true);
+            var observation = execute(provider, flags, TransferProof.Leg.DEBIT, LEGACY, new ArrayList<>());
+            assertEquals(1, provider.withdraws, appreciation ? "appreciation flip" : "away flip");
+            assertEquals(TransferProof.LegOutcome.CONFIRMED,
+                    TransferProof.evaluate(CENTS, TransferProof.Leg.DEBIT, observation));
+        }
+    }
+
+    @Test void creditIsNeverBlockedEvenWithBothFlagsFlippedByTheProvider() {
+        var provider = new Provider(); var flags = new Flags();
+        provider.flipOnBalanceCall = 1;
+        provider.reentrantHook = () -> { flags.appreciationOn.set(false); flags.ownerAway.set(true); };
+        var trace = new ArrayList<String>();
+        // CREDIT through the helper (as the lease authorize calls it for both legs) and through the observer.
+        UtilityPaymentRuntime.finalDebitChecks(TransferProof.Leg.CREDIT, () -> trace.add("debit-only"),
+                flags.debitGate, flags.awayHeld);
+        int[] checks = {0};
+        var observation = new VaultLegObservation(provider.economy, () -> {
+            ++checks[0];
+            UtilityPaymentRuntime.finalDebitChecks(TransferProof.Leg.CREDIT, () -> trace.add("debit-only"),
+                    flags.debitGate, flags.awayHeld);
+            return provider.economy;
+        }, () -> true).execute(ID, ACCOUNT, CENTS, TransferProof.Leg.CREDIT);
+        assertTrue(checks[0] >= 2 && !flags.appreciationOn.get() && flags.ownerAway.get(), "flipped before the deposit");
+        assertEquals(1, provider.deposits);
+        assertEquals(TransferProof.LegOutcome.CONFIRMED, TransferProof.evaluate(CENTS, TransferProof.Leg.CREDIT, observation));
+        assertTrue(trace.isEmpty(), "CREDIT runs no DEBIT-only checks");
+        assertEquals(0, flags.gateReads.get(), "CREDIT never reads the live switch");
+        assertEquals(0, flags.awayReads.get(), "CREDIT never reads owner-away");
+    }
+
+    @Test void flagAlreadyOffFailsFastBeforeAnyExternalCallback() {
+        for (boolean appreciation : new boolean[]{true, false}) {
+            var flags = new Flags();
+            if (appreciation) flags.appreciationOn.set(false); else flags.ownerAway.set(true);
+            var trace = new ArrayList<String>();
+            assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.finalDebitChecks(TransferProof.Leg.DEBIT,
+                    () -> trace.add("external"), flags.debitGate, flags.awayHeld));
+            assertTrue(trace.isEmpty(), "no external callback once a gate already refuses");
+        }
+    }
+
+    @Test void aFlipAtTheEndOfTheExternalChecksIsStillCaught() {
+        // validate's plugin calls run after requireFloor; a flip there is caught by the same reread.
+        for (boolean appreciation : new boolean[]{true, false}) {
+            var flags = new Flags();
+            assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.finalDebitChecks(TransferProof.Leg.DEBIT,
+                    () -> { if (appreciation) flags.appreciationOn.set(false); else flags.ownerAway.set(true); },
+                    flags.debitGate, flags.awayHeld));
+        }
+        var flags = new Flags(); var ran = new AtomicBoolean();
+        UtilityPaymentRuntime.finalDebitChecks(TransferProof.Leg.DEBIT, () -> ran.set(true), flags.debitGate, flags.awayHeld);
+        assertTrue(ran.get(), "positive control: no flip passes and runs the external checks");
+    }
+
+    @Test void payRentRoutesBothDebitCheckPointsThroughTheFinalChecks() throws Exception {
+        String code = Files.readString(Path.of("src/main/java/com/prosperitysmp/npc/economy/UtilityPaymentRuntime.java"));
+        String helper = section(code, "static void finalDebitChecks(", "private boolean payoutAwayHeld(");
+        int run = helper.indexOf("debitOnlyChecks.run();");
+        assertTrue(run > 0);
+        assertTrue(helper.lastIndexOf("requireDebitGate(leg, debitGate);") > run, "live switch reread after the externals");
+        assertTrue(helper.lastIndexOf("requireAwayDebitGate(leg, awayHeld);") > run, "owner-away reread after the externals");
+        assertTrue(helper.indexOf("if (leg != TransferProof.Leg.DEBIT) return;") < run, "CREDIT never runs the externals");
+
+        String rent = section(code, "Runnable floorDeferred, BooleanSupplier debitGate) {", "private CompletableFuture<Integer> payAppreciation(");
+        assertEquals(2, count(rent, "finalDebitChecks(leg, () -> {"), "observer and lease authorize");
+        assertEquals(2, count(rent, "}, debitGate, awayHeld);"));
+        assertEquals(2, count(rent, "requireFloor("), "every floor read sits inside the final checks");
+        assertEquals(0, count(rent, "requireDebitGate("), "no gate outside the helper");
+        assertEquals(0, count(rent, "requireAwayDebitGate("), "no gate outside the helper");
+        // The observer's checks are the last thing the supplier does before returning the provider to withdraw.
+        int observer = rent.indexOf("if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) finalDebitChecks(leg, () -> {");
+        int end = rent.indexOf("}, debitGate, awayHeld);", observer);
+        assertTrue(observer > 0 && end > observer);
+        String tail = rent.substring(end, rent.indexOf("}, Bukkit::isPrimaryThread);", end));
+        assertEquals("}, debitGate, awayHeld);\n                return pinned.getProvider();\n            ",
+                tail.replace("\r\n", "\n"));
+    }
+
+    private static String section(String code, String start, String end) {
+        int from = code.indexOf(start), to = code.indexOf(end, from);
+        assertTrue(from > 0 && to > from, start);
+        return code.substring(from, to);
+    }
+
+    private static int count(String text, String needle) {
+        return text.split(java.util.regex.Pattern.quote(needle), -1).length - 1;
+    }
+}

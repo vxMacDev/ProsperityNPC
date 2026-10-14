@@ -1,0 +1,31 @@
+# ============================================================================
+#  ProsperityNPC staff alerts (ProsperitySMP-SPECIFIC, needs skript-reflect)
+#  Every 10 seconds it takes up to 5 queued alerts from the plugin and shows
+#  each one with watchAlert("[NPC] " + text). watchAlert is defined by this
+#  server's watchlist.sk, so this file does nothing useful on another server.
+#  The plugin only fills the queue when alerts.enabled is true in config.yml.
+#  It never moves money.
+# ============================================================================
+
+import:
+    org.bukkit.Bukkit
+
+every 10 seconds:
+    npc_alerts_v1_tick()
+
+function npc_alerts_v1_tick():
+    set {_plugin} to Bukkit.getPluginManager().getPlugin("ProsperityNPC")
+    if {_plugin} is not set:
+        stop
+    set {_texts} to {_plugin}.drainAlerts(5)
+    if {_texts} is not set:
+        stop
+    set {_count} to {_texts}.size()
+    if {_count} is not a number:
+        stop
+    set {_i} to 0
+    while {_i} < {_count}:
+        set {_text} to {_texts}.get({_i})
+        if {_text} is set:
+            watchAlert("[NPC] " + {_text})
+        add 1 to {_i}

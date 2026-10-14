@@ -1,0 +1,6 @@
+# Skin work in progress, private keys and upload receipts never go in the repo.
+staging/
+*.key
+receipts/
+*.receipt.json
+candidates/

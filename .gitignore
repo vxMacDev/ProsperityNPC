@@ -1,0 +1,14 @@
+# Build output, Gradle state and runtime logs. All regenerable.
+build/
+.gradle/
+logs/
+
+# Third-party jars are not committed. See libs/README.md for the exact builds.
+libs/*.jar
+
+# Skin tool work in progress. tools/skins/README.md runs its commands from the repo root.
+/staging/
+/candidates/
+receipts/
+*.receipt.json
+*.key
