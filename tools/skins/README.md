@@ -41,10 +41,20 @@ plugin's pinned key. These tools make the art and build that file. They never ed
 
 4. **Approve.** The owner looks at the preview and accepts the look before anything is uploaded.
 
-5. **Sign.** Not included yet. Signing uploads one approved PNG to MineSkin and returns a
-   Mojang-signed texture. The upload script stays out of this repo until the owner has read and
-   accepted MineSkin's terms. Save each signed result as a candidate file:
+5. **Sign.** Check the PNGs first, then upload them:
+
+   ```
+   python3 tools/skins/sign.py candidates/ staging/*-v1.png
+   python3 tools/skins/sign.py --upload candidates/ staging/*-v1.png
+   ```
+
+   Each approved PNG goes to MineSkin (unlisted, classic model) and comes back signed by Mojang.
+   The tool then downloads the texture Mojang serves and checks every pixel against the PNG before
+   it saves `candidates/<name>.json`:
    `{"key": "resident/v1/otto-marsh/everyday", "value": "...", "signature": "..."}`.
+   Uploads are permanent, so only sign art the owner has approved. A PNG that already has a
+   candidate is skipped, so a run that stops part way can be started again. An API key is optional
+   (`--key-file`, readable by its owner only). Keep it out of the repo.
 
 6. **Prepare.** Check every candidate and write a new manifest:
 

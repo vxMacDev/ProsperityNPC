@@ -98,9 +98,10 @@ public final class SignedResidentSkin {
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("Invalid texture URL", e);
         }
+        // Mojang writes the texture hash without leading zeros, so about 1 in 16 is shorter than 64 characters.
         require(("http".equals(uri.getScheme()) || "https".equals(uri.getScheme()))
                 && "textures.minecraft.net".equals(uri.getRawAuthority())
-                && uri.getRawPath() != null && uri.getRawPath().matches("/texture/[0-9a-f]{64}")
+                && uri.getRawPath() != null && uri.getRawPath().matches("/texture/[0-9a-f]{1,64}")
                 && uri.getRawQuery() == null && uri.getRawFragment() == null, "Unapproved texture URL");
         String model = "default";
         if (skin.has("metadata")) {

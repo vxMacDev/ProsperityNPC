@@ -176,9 +176,16 @@ class SignedResidentSkinTest {
                 URL.replace("textures.minecraft.net", "textures.minecraft.net:443"),
                 URL.replace("textures.minecraft.net", "user@textures.minecraft.net"),
                 URL + "?x=1", URL + "#x", URL + "/", URL.replace("/texture/", "/texture/../texture/"),
-                URL.replace("/texture/", "/%74exture/"), URL.substring(0, URL.length() - 1),
+                URL.replace("/texture/", "/%74exture/"), URL + "a", URL.replace("a".repeat(64), ""),
                 URL.substring(0, URL.length() - 1) + "A", " " + URL)) {
             rejectsJson(JSON.replace(URL, url));
+        }
+    }
+
+    @Test void acceptsMojangHashesWithoutLeadingZeros() throws Exception {
+        for (int length : new int[]{63, 62, 1}) {
+            String shorter = URL.replace("a".repeat(64), "b".repeat(length));
+            assertEquals(shorter, synthetic(JSON.replace(URL, shorter)).textureUrl());
         }
     }
 

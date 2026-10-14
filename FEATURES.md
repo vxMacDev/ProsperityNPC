@@ -49,8 +49,10 @@ Common requirements, used below:
   (`appearance.outfit-change-hidden-radius`) and nobody is talking to it. At most 2 avatars change per pass
   (`appearance.outfit-changes-per-tick`). Off: outfits are only picked when an avatar appears.
 - **Skin tool.** `tools/skins` in the repo draws original skins in code, makes work and leisure
-  versions by changing clothing colours only, shows them on a page on your own machine and builds
-  a checked `resident-appearance.json`. It never overwrites a file. Signing is not included yet.
+  versions by changing clothing colours only, shows them on a page on your own machine, signs
+  approved ones through MineSkin and builds a checked `resident-appearance.json`. Signing checks
+  that the texture Mojang serves matches the approved PNG pixel for pixel. It never overwrites a
+  signed skin or a manifest.
 - **Shown only near players.** A resident appears when a player is within 48 blocks. At most 3
   per player and 20 on the server. Set under `rendering`.
 - **Real memories.** Residents remember a repair you paid for at their home and a note you
@@ -350,6 +352,8 @@ Common requirements, used below:
   order's save marker. It writes nothing, and there is no in-tool decision for held orders yet.
 - **dev.60.** Paid order deliveries prove the player save with a per-delivery marker
   (`town.commerce.delivery-save-marker`, on by default, inert while commerce is off).
+- **dev.61.** Skins whose Mojang texture id is shorter than 64 characters now load. Mojang drops
+  leading zeros from the id, so about 1 skin in 16 was wrongly refused before.
 - **Accounting bridge.** NPC money shows as its own sources; payments wait for its acknowledgement.
 
 ## Chronicle and publication
@@ -366,8 +370,5 @@ Common requirements, used below:
 
 ## Not built
 
-- Signed skins for the six example residents and for work and leisure outfits. Until they are
-  made, those residents stay hidden and everyone wears everyday clothes.
-- Signing skins in the skin tool (the MineSkin upload).
 - Staff grouping accounts that Floodgate does not link (`/npcadmin links add`).
 - Linked accounts counting as one owner for vacation protection.
