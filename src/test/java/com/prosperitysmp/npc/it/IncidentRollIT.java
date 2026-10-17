@@ -101,6 +101,8 @@ class IncidentRollIT {
                     "V3__purchase_receipts.sql", "V4__transfer_journal.sql", "V5__resident_route_tags.sql",
                     "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V8__eviction_tenancies.sql",
                     "V12__incident_service_receipts.sql", "V23__property_insurance.sql")) applyResource("/db/migration/" + file);
+            // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+            try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
         } catch (Exception | AssertionError failure) {
             try { stopDatabase(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
             throw failure;

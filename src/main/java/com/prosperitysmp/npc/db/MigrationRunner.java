@@ -24,6 +24,14 @@ public final class MigrationRunner {
     private record Migration(int version, String description, String resource) {
     }
 
+    /**
+     * How long a migration statement may wait for a table lock before it gives up. An ALTER queues behind any
+     * open transaction that has touched the table, and the server default wait is a day. Kept under the pool's
+     * 10 second socket timeout so the server reports the timeout before the client drops the connection.
+     */
+    static final int LOCK_WAIT_SECONDS = 5;
+    private static final int ER_LOCK_WAIT_TIMEOUT = 1205;
+
     // Ordered list of migrations. Add new entries; never edit an applied one.
     private static final List<Migration> MIGRATIONS = List.of(
             new Migration(1, "initial_schema", "db/migration/V1__initial_schema.sql"),
@@ -63,7 +71,9 @@ public final class MigrationRunner {
             new Migration(35, "item_repairs", "db/migration/V35__item_repairs.sql"),
             new Migration(36, "town_contracts_partnerships", "db/migration/V36__town_contracts_partnerships.sql"),
             new Migration(37, "partnership_handin_terms", "db/migration/V37__partnership_handin_terms.sql"),
-            new Migration(38, "item_return_staff_decision", "db/migration/V38__item_return_staff_decision.sql"));
+            new Migration(38, "item_return_staff_decision", "db/migration/V38__item_return_staff_decision.sql"),
+            new Migration(39, "nav_surface", "db/migration/V39__nav_surface.sql"),
+            new Migration(40, "money_evidence", "db/migration/V40__money_evidence.sql"));
 
     private final ProsperityNpcPlugin plugin;
     private final Database database;
@@ -118,11 +128,7 @@ public final class MigrationRunner {
 
     private int applyMigration(Connection c, Migration m, String sql) throws SQLException {
         List<String> statements = splitStatements(sql);
-        for (String stmt : statements) {
-            try (Statement st = c.createStatement()) {
-                st.execute(stmt);
-            }
-        }
+        applyStatements(c, "V" + m.version() + " (" + m.description() + ")", statements, LOCK_WAIT_SECONDS);
         try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO npc_schema_migrations (version, description) VALUES (?, ?)")) {
             ps.setInt(1, m.version());
@@ -130,6 +136,68 @@ public final class MigrationRunner {
             ps.executeUpdate();
         }
         return statements.size();
+    }
+
+    /**
+     * Runs the statements with the session's lock wait cut to {@code lockWaitSeconds}, then puts it back (the
+     * connection goes back to a pool). A statement that cannot get its lock fails with one clear message. DDL
+     * commits as it runs, so statements before it stay applied; the script is repeatable, so it can simply be
+     * retried once the other session is done.
+     */
+    public static int applyStatements(Connection c, String label, List<String> statements, int lockWaitSeconds)
+            throws SQLException {
+        int previous = sessionLockWait(c);
+        setSessionLockWait(c, lockWaitSeconds);
+        int running = 0;
+        try {
+            for (String stmt : statements) {
+                running++;
+                try (Statement st = c.createStatement()) {
+                    st.execute(stmt);
+                }
+            }
+            return statements.size();
+        } catch (SQLException failure) {
+            if (isLockTimeout(failure)) {
+                throw new SQLException(lockTimeoutMessage(label, lockWaitSeconds, running, statements.size()),
+                        failure.getSQLState(), failure.getErrorCode(), failure);
+            }
+            throw failure;
+        } finally {
+            try {
+                setSessionLockWait(c, previous);
+            } catch (SQLException ignored) {
+                // The connection is already unusable; the pool will replace it.
+            }
+        }
+    }
+
+    /**
+     * Error 1205 is raised for a metadata lock (another session has the table open in a transaction) and for
+     * an InnoDB row lock alike, so the message names both. Earlier statements of the script are already
+     * applied, because each DDL statement commits by itself.
+     */
+    static String lockTimeoutMessage(String label, int lockWaitSeconds, int statement, int statements) {
+        return "Migration " + label + " gave up waiting for a lock (statement " + statement + " of " + statements
+                + ", limit " + lockWaitSeconds + " s). Another session holds the table open in a transaction, or holds"
+                + " a row lock on it. Earlier statements of the script may already be applied; it is safe to run again:"
+                + " restart once that session has finished";
+    }
+
+    static boolean isLockTimeout(SQLException failure) {
+        return failure.getErrorCode() == ER_LOCK_WAIT_TIMEOUT;
+    }
+
+    private static int sessionLockWait(Connection c) throws SQLException {
+        try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery("SELECT @@SESSION.lock_wait_timeout")) {
+            return rs.next() ? rs.getInt(1) : 86_400;
+        }
+    }
+
+    private static void setSessionLockWait(Connection c, int seconds) throws SQLException {
+        try (Statement st = c.createStatement()) {
+            st.execute("SET SESSION lock_wait_timeout = " + seconds);
+        }
     }
 
     /** Splits a plain-DDL script on statement-terminating semicolons, stripping line comments. */

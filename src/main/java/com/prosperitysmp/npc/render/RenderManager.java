@@ -555,7 +555,7 @@ public final class RenderManager {
             if (spawn == null) {
                 return "no loaded, clear graph node (no chunks loaded)";
             }
-            long startNode = RenderGeometry.nearest(g, CitizensAdapter.vec(spawn));
+            long startNode = RenderGeometry.nearestWalkStart(g, CitizensAdapter.vec(spawn));
             NavGraph.Node sn = g.node(startNode);
             npc = citizens.spawn("NpcRenderTest", spawn);
             nextDebugMs = now + RETRY_MS;
@@ -934,7 +934,7 @@ public final class RenderManager {
                 || !bindingCurrent(candidate, current)) return false;
         Location loc = citizens.location(r.npc);
         if (!CitizensAdapter.loaded(loc) || loc.getWorld() != r.view.world) return false;
-        long start = RenderGeometry.nearest(r.view.graph, CitizensAdapter.vec(loc));
+        long start = RenderGeometry.nearestWalkStart(r.view.graph, CitizensAdapter.vec(loc));
         PremiumWalk.Decision decision = PremiumWalk.decide(r.view.key.worldId(), r.view.key.region(), r.view.graph,
                 candidate.worldId(), candidate.district(), candidate.graph(), candidate.profile(), move.newPropertyId(), start);
         pendingWalks.remove(residentId);
@@ -979,7 +979,7 @@ public final class RenderManager {
             boolean sameIntent = intent.equals(r.intent);
             if (!routePlanDue(sameIntent, atDestination(r.view.graph, r.route, CitizensAdapter.vec(loc)),
                     now, r.nextPlanMs) || !planBudget.acquire(residentId)) return true;
-            long start = RenderGeometry.nearest(r.view.graph, CitizensAdapter.vec(loc));
+            long start = RenderGeometry.nearestWalkStart(r.view.graph, CitizensAdapter.vec(loc));
             if (start < 0 || !RenderGeometry.arrived(CitizensAdapter.vec(loc),
                     RenderGeometry.position(r.view.graph.node(start)))) {
                 return false;
@@ -1021,8 +1021,10 @@ public final class RenderManager {
             r.edgeStartMs = now;
             if (walkEnds(r.walkingHome, r.walkPlanned, r.pathIdx, r.path.size()))
                 r.walkingHome = false; // arrived at the new home; the routine resumes
-            if (!r.walkingHome && r.profile != null && !ResidentRoutine.at(r.profile, r.view.world.getTime()).equals(r.intent)) {
-                // A time skip changes the next destination only after finishing this safe edge.
+            if (!r.walkingHome && r.profile != null && !ResidentRoutine.at(r.profile, r.view.world.getTime()).equals(r.intent)
+                    && replanAllowed(r.view.graph, r.path.get(r.pathIdx - 1))) {
+                // A time skip changes the next destination only after finishing this safe edge,
+                // and never while the resident is still on a road: the crossing is finished first.
                 r.path = null;
                 r.route = null;
                 r.nextPlanMs = 0;
@@ -1040,6 +1042,12 @@ public final class RenderManager {
         return continueEdge(r.edgeRetry, now, r.edgeStartMs, edgeTimeout,
                 () -> citizens.isNavigating(r.npc), () -> issueEdge(r, now, maxFails),
                 () -> failed(r, now, maxFails, "edge timeout/early idle"));
+    }
+
+    /** A new destination may replace the path only once the node just reached is off the road. */
+    static boolean replanAllowed(NavGraph graph, long arrivedNodeId) {
+        NavGraph.Node node = graph.node(arrivedNodeId);
+        return node == null || !node.surface().isStreet();
     }
 
     /** A premium walk ends on finishing a path only if that path was the HOME route, not an older routine path. */
@@ -1174,11 +1182,17 @@ public final class RenderManager {
         if (Double.isNaN(radius) || radius < 0) {
             return null;
         }
-        return view.graph.nodes().stream().sorted(Comparator.comparingLong(NavGraph.Node::id))
+        return spawnCandidates(view.graph).stream()
                 .filter(n -> viewers.isEmpty() || viewers.values().stream()
                         .anyMatch(v -> v.dist2(RenderGeometry.position(n)) <= radius * radius))
                 .map(n -> nodeLocation(view, n.id())).filter(CitizensAdapter::standable)
                 .findFirst().orElse(null);
+    }
+
+    /** Residents appear only on ground they may walk: never on a road or crosswalk. Lowest id first. */
+    static List<NavGraph.Node> spawnCandidates(NavGraph graph) {
+        return graph.nodes().stream().filter(n -> !n.surface().isStreet())
+                .sorted(Comparator.comparingLong(NavGraph.Node::id)).toList();
     }
 
     private long now() { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos); }

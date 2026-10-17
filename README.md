@@ -176,7 +176,7 @@ Routine, history and business lines come from the plugin, because they report fa
 | `/tenants` | players | View and manage your property's tenants |
 | `/npcadmin` | staff | Health, switches, reload, Chronicle, settlement and linked account tools |
 | `/npcproperty` | staff | Enroll and inspect properties |
-| `/npcnav` | staff | Build, validate and publish walking routes |
+| `/npcnav` | staff | Build, validate, audit and publish walking routes that keep to sidewalks |
 | `/npctown` | staff | Place civic residents on published routes. `partners [resident]` lists active partnerships by owner UUID, `partner-end <player> <case-ref>` ends one with no refund, and `contract-resolve` settles held contract handovers |
 | `/residentlab` | staff | Staff-only resident testing |
 
@@ -203,6 +203,16 @@ They need:
 
 ```
 minecraft=/path/to/your/server
+```
+
+Proving which old build wrote a held legacy row also needs
+`/etc/prosperitynpc/legacy-provenance.properties` in the same directory, root-owned and mode
+0600 or 0400. It names the server the install records describe and the folder that holds its
+stopped backups. Without it, held legacy rows stay held.
+
+```
+server_root=/path/to/your/dev/server
+backup_dir=/path/to/your/stopped/backups
 ```
 
 The header comment of each tool lists its exact profile and evidence fields. The plugin jar

@@ -109,6 +109,8 @@ class TenancyDepartureIT {
                 }
             }
             assertTrue(registered, "V15 must be registered, not merely present on disk");
+            // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+            try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
             tables = rows("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
                     + "AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME").stream().map(row -> row.get("TABLE_NAME")).toList();
             assertTrue(tables.contains("npc_tenancy_departures"));

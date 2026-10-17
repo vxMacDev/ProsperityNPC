@@ -9,6 +9,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,7 +31,20 @@ public final class NavGraphRepository {
     private static final int MAX_TAGS_PER_NODE = 8;
 
     public record GraphInfo(UUID graphId, UUID worldUuid, String regionId, String palette,
-                            int version, String status, int nodeCount, int edgeCount) {
+                            int version, String status, int nodeCount, int edgeCount, String paletteHash) {
+    }
+
+    /** One node's stored class, for the audit and revalidate commands. */
+    public record NodeSurface(long nodeId, int x, int y, int z, NavSurface surface) {
+    }
+
+    /** What {@link #copyTags} did, or would have done (nothing is written unless {@code written}). */
+    public record CopyReport(boolean written, int exact, int near, int unmatched, int skippedInvalid,
+                             int refusedFull, int inserted, int alreadyPresent, int anchorNodes,
+                             List<String> details) {
+        public CopyReport {
+            details = List.copyOf(details);
+        }
     }
 
     private final Database database;
@@ -80,11 +94,15 @@ public final class NavGraphRepository {
                     }
                 }
                 try (PreparedStatement ps = timedStatement(c,
-                        "SELECT node_id FROM npc_nav_nodes WHERE graph_id = ? AND node_id = ? FOR UPDATE")) {
+                        "SELECT surface FROM npc_nav_nodes WHERE graph_id = ? AND node_id = ? FOR UPDATE")) {
                     ps.setBytes(1, Uuids.toBytes(graphId));
                     ps.setLong(2, nodeId);
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!rs.next()) throw new IllegalArgumentException("Node does not belong to this graph.");
+                        // A stop on a road would have residents start, wait and end trips in traffic.
+                        if (add && isStreetCode(rs.getInt(1))) {
+                            throw new IllegalArgumentException("That node is on a road or crosswalk; stops go on sidewalks.");
+                        }
                     }
                 }
                 int count;
@@ -124,7 +142,11 @@ public final class NavGraphRepository {
         }
     }
 
-    /** Nearest standing node within 1.5 blocks in 3D, in the caller's captured world only. */
+    private static boolean isStreetCode(int code) {
+        return code == NavSurface.ROAD.code() || code == NavSurface.CROSSING.code();
+    }
+
+    /** Nearest standing node within 1.5 blocks in 3D, in the caller's captured world only. Never a road node. */
     public Long nearestTagNode(UUID graphId, UUID worldUuid, double x, double y, double z) throws SQLException {
         if (graphId == null || worldUuid == null || !Double.isFinite(x)
                 || !Double.isFinite(y) || !Double.isFinite(z)) {
@@ -134,7 +156,7 @@ public final class NavGraphRepository {
                 SELECT n.node_id, POW(n.x + 0.5 - ?, 2) + POW(n.y - ?, 2)
                                  + POW(n.z + 0.5 - ?, 2) AS distance_squared
                 FROM npc_nav_nodes n JOIN npc_nav_graphs g ON g.graph_id = n.graph_id
-                WHERE n.graph_id = ? AND g.world_uuid = ?
+                WHERE n.graph_id = ? AND g.world_uuid = ? AND n.surface NOT IN (3, 4)
                   AND n.x + 0.5 BETWEEN ? AND ? AND n.y BETWEEN ? AND ?
                   AND n.z + 0.5 BETWEEN ? AND ?
                 HAVING distance_squared <= 2.25 ORDER BY distance_squared, n.node_id LIMIT 1
@@ -167,32 +189,49 @@ public final class NavGraphRepository {
         }
     }
 
-    /** Persists a scan as a new DRAFT graph and returns its id. */
+    /** Persists a graph with no palette hash (a legacy or hand-built graph) as a new DRAFT. */
     public UUID saveDraft(UUID worldUuid, String regionId, String palette, NavGraph graph) throws SQLException {
+        return saveDraft(worldUuid, regionId, palette, null, graph);
+    }
+
+    /**
+     * Persists a scan as a new DRAFT graph and returns its id. The palette hash records which effective
+     * block lists the graph was scanned with, because only the palette name is otherwise stored.
+     */
+    public UUID saveDraft(UUID worldUuid, String regionId, String palette, String paletteHash, NavGraph graph)
+            throws SQLException {
         UUID graphId = UUID.randomUUID();
         try (Connection c = database.getConnection()) {
             c.setAutoCommit(false);
             try {
                 int version = nextVersion(c, worldUuid, regionId);
                 try (PreparedStatement ps = c.prepareStatement(
-                        "INSERT INTO npc_nav_graphs (graph_id, world_uuid, region_id, palette, version, status) "
-                                + "VALUES (?, ?, ?, ?, ?, 'DRAFT')")) {
+                        "INSERT INTO npc_nav_graphs (graph_id, world_uuid, region_id, palette, version, status, "
+                                + "palette_hash) VALUES (?, ?, ?, ?, ?, 'DRAFT', ?)")) {
                     ps.setBytes(1, Uuids.toBytes(graphId));
                     ps.setBytes(2, Uuids.toBytes(worldUuid));
                     ps.setString(3, regionId);
                     ps.setString(4, palette);
                     ps.setInt(5, version);
+                    ps.setString(6, paletteHash);
                     ps.executeUpdate();
                 }
                 Map<Long, Long> idMap = new HashMap<>();
                 try (PreparedStatement ps = c.prepareStatement(
-                        "INSERT INTO npc_nav_nodes (graph_id, x, y, z) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO npc_nav_nodes (graph_id, x, y, z, surface, road_width) VALUES (?, ?, ?, ?, ?, ?)",
                         Statement.RETURN_GENERATED_KEYS)) {
                     for (NavGraph.Node n : graph.nodes()) {
                         ps.setBytes(1, Uuids.toBytes(graphId));
                         ps.setInt(2, n.x());
                         ps.setInt(3, n.y());
                         ps.setInt(4, n.z());
+                        ps.setInt(5, n.surface().code());
+                        // NULL where the scan recorded no width, so older and hand-made graphs read back as unmeasured.
+                        if (n.roadWidth() > 0) {
+                            ps.setInt(6, n.roadWidth());
+                        } else {
+                            ps.setNull(6, Types.SMALLINT);
+                        }
                         ps.executeUpdate();
                         try (ResultSet keys = ps.getGeneratedKeys()) {
                             if (keys.next()) {
@@ -271,14 +310,14 @@ public final class NavGraphRepository {
             }
             NavGraph.Builder b = NavGraph.builder();
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT node_id, x, y, z FROM npc_nav_nodes WHERE graph_id = ?")) {
+                    "SELECT node_id, x, y, z, surface, road_width FROM npc_nav_nodes WHERE graph_id = ?")) {
                 ps.setBytes(1, Uuids.toBytes(graphId));
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         long id = rs.getLong(1);
                         List<String> t = tags.getOrDefault(id, List.of());
                         b.addNode(new NavGraph.Node(id, rs.getInt(2), rs.getInt(3), rs.getInt(4),
-                                new HashSet<>(t)));
+                                new HashSet<>(t), NavSurface.fromCode(rs.getInt(5)), rs.getInt(6)));
                     }
                 }
             }
@@ -363,7 +402,8 @@ public final class NavGraphRepository {
              PreparedStatement ps = c.prepareStatement("""
                      SELECT g.world_uuid, g.region_id, g.palette, g.version, g.status,
                             (SELECT COUNT(*) FROM npc_nav_nodes n WHERE n.graph_id = g.graph_id) AS nodes,
-                            (SELECT COUNT(*) FROM npc_nav_edges e WHERE e.graph_id = g.graph_id) AS edges
+                            (SELECT COUNT(*) FROM npc_nav_edges e WHERE e.graph_id = g.graph_id) AS edges,
+                            g.palette_hash
                      FROM npc_nav_graphs g WHERE g.graph_id = ?
                      """)) {
             ps.setBytes(1, Uuids.toBytes(graphId));
@@ -372,30 +412,227 @@ public final class NavGraphRepository {
                     return null;
                 }
                 return new GraphInfo(graphId, Uuids.fromBytes(rs.getBytes(1)), rs.getString(2),
-                        rs.getString(3), rs.getInt(4), rs.getString(5), rs.getInt(6), rs.getInt(7));
+                        rs.getString(3), rs.getInt(4), rs.getString(5), rs.getInt(6), rs.getInt(7), rs.getString(8));
             }
         }
     }
 
     public List<GraphInfo> list(int limit) throws SQLException {
+        return query("ORDER BY g.created_at DESC LIMIT ?", Math.max(1, limit));
+    }
+
+    /** Every ACTIVE graph, one per published district. */
+    public List<GraphInfo> listActive() throws SQLException {
+        return query("WHERE g.status = 'ACTIVE' ORDER BY g.created_at DESC LIMIT ?", 1000);
+    }
+
+    private List<GraphInfo> query(String tail, int limit) throws SQLException {
         List<GraphInfo> out = new ArrayList<>();
         try (Connection c = database.getConnection();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT g.graph_id, g.world_uuid, g.region_id, g.palette, g.version, g.status,
-                            (SELECT COUNT(*) FROM npc_nav_nodes n WHERE n.graph_id = g.graph_id) AS nodes,
-                            (SELECT COUNT(*) FROM npc_nav_edges e WHERE e.graph_id = g.graph_id) AS edges
-                     FROM npc_nav_graphs g ORDER BY g.created_at DESC LIMIT ?
-                     """)) {
-            ps.setInt(1, Math.max(1, limit));
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT g.graph_id, g.world_uuid, g.region_id, g.palette, g.version, g.status, "
+                             + "(SELECT COUNT(*) FROM npc_nav_nodes n WHERE n.graph_id = g.graph_id), "
+                             + "(SELECT COUNT(*) FROM npc_nav_edges e WHERE e.graph_id = g.graph_id), "
+                             + "g.palette_hash FROM npc_nav_graphs g " + tail)) {
+            ps.setInt(1, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     out.add(new GraphInfo(Uuids.fromBytes(rs.getBytes(1)), Uuids.fromBytes(rs.getBytes(2)),
                             rs.getString(3), rs.getString(4), rs.getInt(5), rs.getString(6),
-                            rs.getInt(7), rs.getInt(8)));
+                            rs.getInt(7), rs.getInt(8), rs.getString(9)));
                 }
             }
         }
         return out;
+    }
+
+    /** Each node's position and stored class (no tags, no edges): enough to compare with the world. */
+    public List<NodeSurface> nodeSurfaces(UUID graphId) throws SQLException {
+        List<NodeSurface> out = new ArrayList<>();
+        try (Connection c = database.getConnection();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT node_id, x, y, z, surface FROM npc_nav_nodes WHERE graph_id = ? ORDER BY node_id")) {
+            ps.setBytes(1, Uuids.toBytes(graphId));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new NodeSurface(rs.getLong(1), rs.getInt(2), rs.getInt(3), rs.getInt(4),
+                            NavSurface.fromCode(rs.getInt(5))));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Copies authored route tags from one graph onto a DRAFT of the same world, matching each tag to the
+     * node at the same position (EXACT) or one step up or down in the same column (NEAR). Road nodes are
+     * never a target, tags that are no longer valid are reported, and the 8-tag cap holds. Without
+     * {@code partial}, one tag with no home writes nothing at all.
+     */
+    public CopyReport copyTags(UUID from, UUID toDraft, boolean partial) throws SQLException {
+        if (from == null || toDraft == null || from.equals(toDraft)) {
+            throw new IllegalArgumentException("Pick two different graphs.");
+        }
+        record SourceTag(int x, int y, int z, String tag) { }
+        record Target(long id, int x, int y, int z, NavSurface surface) { }
+        record Planned(SourceTag source, Target target) { }
+        try (Connection c = database.getConnection()) {
+            c.setAutoCommit(false);
+            try {
+                byte[] world;
+                try (PreparedStatement ps = timedStatement(c,
+                        "SELECT status, world_uuid FROM npc_nav_graphs WHERE graph_id = ? FOR UPDATE")) {
+                    ps.setBytes(1, Uuids.toBytes(toDraft));
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next() || !"DRAFT".equals(rs.getString(1))) {
+                            throw new IllegalArgumentException("Only an existing DRAFT graph can receive tags.");
+                        }
+                        world = rs.getBytes(2);
+                    }
+                }
+                try (PreparedStatement ps = timedStatement(c,
+                        "SELECT world_uuid FROM npc_nav_graphs WHERE graph_id = ?")) {
+                    ps.setBytes(1, Uuids.toBytes(from));
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) throw new IllegalArgumentException("No graph " + from);
+                        if (!java.util.Arrays.equals(world, rs.getBytes(1))) {
+                            throw new IllegalArgumentException("Those graphs are in different worlds.");
+                        }
+                    }
+                }
+                List<SourceTag> sourceTags = new ArrayList<>();
+                try (PreparedStatement ps = timedStatement(c, "SELECT n.x, n.y, n.z, t.tag FROM npc_nav_tags t "
+                        + "JOIN npc_nav_nodes n ON n.node_id = t.node_id WHERE n.graph_id = ? ORDER BY n.node_id, t.tag")) {
+                    ps.setBytes(1, Uuids.toBytes(from));
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            sourceTags.add(new SourceTag(rs.getInt(1), rs.getInt(2), rs.getInt(3), rs.getString(4)));
+                        }
+                    }
+                }
+                Map<String, List<Target>> byPosition = new HashMap<>();
+                Map<String, List<Target>> byColumn = new HashMap<>();
+                try (PreparedStatement ps = timedStatement(c, "SELECT node_id, x, y, z, surface FROM npc_nav_nodes "
+                        + "WHERE graph_id = ? ORDER BY node_id")) {
+                    ps.setBytes(1, Uuids.toBytes(toDraft));
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            Target target = new Target(rs.getLong(1), rs.getInt(2), rs.getInt(3), rs.getInt(4),
+                                    NavSurface.fromCode(rs.getInt(5)));
+                            if (target.surface().isStreet()) continue; // a stop never goes on a road
+                            byPosition.computeIfAbsent(target.x() + "," + target.y() + "," + target.z(),
+                                    k -> new ArrayList<>()).add(target);
+                            byColumn.computeIfAbsent(target.x() + "," + target.z(), k -> new ArrayList<>()).add(target);
+                        }
+                    }
+                }
+                Map<Long, Set<String>> afterTags = new HashMap<>();
+                try (PreparedStatement ps = timedStatement(c, "SELECT t.node_id, t.tag FROM npc_nav_tags t "
+                        + "JOIN npc_nav_nodes n ON n.node_id = t.node_id WHERE n.graph_id = ?")) {
+                    ps.setBytes(1, Uuids.toBytes(toDraft));
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            afterTags.computeIfAbsent(rs.getLong(1), k -> new HashSet<>()).add(rs.getString(2));
+                        }
+                    }
+                }
+
+                List<String> details = new ArrayList<>();
+                List<Planned> plan = new ArrayList<>();
+                int exact = 0;
+                int near = 0;
+                int unmatched = 0;
+                int invalid = 0;
+                int full = 0;
+                int present = 0;
+                for (SourceTag source : sourceTags) {
+                    String at = source.x() + "," + source.y() + "," + source.z();
+                    if (!isValidDraftTag(source.tag())) {
+                        invalid++;
+                        details.add("SKIPPED_INVALID " + source.tag() + " @" + at);
+                        continue;
+                    }
+                    Target target = null;
+                    boolean isExact = true;
+                    int dy = 0;
+                    List<Target> same = byPosition.get(at);
+                    if (same != null) {
+                        target = same.getFirst();
+                    } else {
+                        isExact = false;
+                        for (Target candidate : byColumn.getOrDefault(source.x() + "," + source.z(), List.of())) {
+                            int d = candidate.y() - source.y();
+                            if (Math.abs(d) <= 1 && (target == null || Math.abs(d) < Math.abs(dy))) {
+                                target = candidate;
+                                dy = d;
+                            }
+                        }
+                    }
+                    if (target == null) {
+                        unmatched++;
+                        details.add("UNMATCHED " + source.tag() + " @" + at);
+                        continue;
+                    }
+                    Set<String> tags = afterTags.computeIfAbsent(target.id(), k -> new HashSet<>());
+                    String where = " -> node " + target.id() + " " + target.surface();
+                    if (tags.contains(source.tag())) {
+                        present++;
+                        details.add("PRESENT " + source.tag() + " @" + at + where);
+                        continue;
+                    }
+                    if (tags.size() >= MAX_TAGS_PER_NODE) {
+                        full++;
+                        details.add("REFUSED_FULL " + source.tag() + " @" + at + where);
+                        continue;
+                    }
+                    tags.add(source.tag());
+                    plan.add(new Planned(source, target));
+                    if (isExact) {
+                        exact++;
+                        details.add("EXACT " + source.tag() + " @" + at + where);
+                    } else {
+                        near++;
+                        details.add("NEAR " + source.tag() + " @" + at + where + " dy=" + dy);
+                    }
+                }
+                int anchors = (int) afterTags.values().stream().filter(t -> !t.isEmpty()).count();
+                if (!partial && (unmatched > 0 || full > 0)) {
+                    c.rollback();
+                    return new CopyReport(false, exact, near, unmatched, invalid, full, 0, present, anchors, details);
+                }
+                try (PreparedStatement ps = timedStatement(c,
+                        "INSERT INTO npc_nav_tags (node_id, tag) VALUES (?, ?)")) {
+                    for (Planned p : plan) {
+                        ps.setLong(1, p.target().id());
+                        ps.setString(2, p.source().tag());
+                        ps.executeUpdate();
+                    }
+                }
+                c.commit();
+                return new CopyReport(true, exact, near, unmatched, invalid, full, plan.size(), present, anchors, details);
+            } catch (SQLException | RuntimeException failure) {
+                c.rollback();
+                throw failure;
+            } finally {
+                c.setAutoCommit(true);
+            }
+        }
+    }
+
+    /**
+     * Brings an ARCHIVED graph back as a new DRAFT (next version, same nodes, edges, tags and classes).
+     * It never publishes: {@link #publish} still accepts only a DRAFT.
+     */
+    public UUID restore(UUID archived) throws SQLException {
+        GraphInfo info = archived == null ? null : info(archived);
+        if (info == null || !"ARCHIVED".equals(info.status())) {
+            throw new IllegalArgumentException("Only an ARCHIVED graph can be restored.");
+        }
+        NavGraph graph = loadGraph(archived);
+        if (graph == null) {
+            throw new IllegalArgumentException("No graph " + archived);
+        }
+        return saveDraft(info.worldUuid(), info.regionId(), info.palette(), info.paletteHash(), graph);
     }
 
     private boolean graphExists(Connection c, UUID graphId) throws SQLException {

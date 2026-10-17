@@ -27,7 +27,13 @@ public final class StaffAlerts {
         /** A paid order's save before delivery could not be read back repeatedly; nothing was given or held. */
         COMMERCE_SAVE_CHECK,
         /** A paid order delivery is held for staff after it started (save marker on). */
-        COMMERCE_DELIVERY_HELD }
+        COMMERCE_DELIVERY_HELD,
+        /** A rent or appreciation payout was refused before any money moved. */
+        PAYOUT_REFUSED,
+        /** A payment was refused before any money moved for a reason that looks like a fault. */
+        PAYMENT_REFUSED_UNEXPECTEDLY,
+        /** Several payments in a row were refused before any money moved, with none paid in between. */
+        PAYMENT_REFUSALS_REPEATED }
 
     public static final int MAX_QUEUED = 64;
     public static final int MAX_DRAIN = 20;

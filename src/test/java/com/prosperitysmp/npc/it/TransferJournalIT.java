@@ -14,8 +14,10 @@ import com.prosperitysmp.npc.economy.TransferJournal.Handle;
 import com.prosperitysmp.npc.economy.TransferJournal.Receipt;
 import com.prosperitysmp.npc.economy.TransferJournal.Start;
 import com.prosperitysmp.npc.economy.TransferJournal.State;
+import com.prosperitysmp.npc.economy.HeldClass;
 import com.prosperitysmp.npc.economy.TransferProof.Leg;
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
+import com.prosperitysmp.npc.economy.TransferProof.Refusal;
 import com.prosperitysmp.npc.property.Property;
 import com.prosperitysmp.npc.property.PropertyRepository;
 import org.junit.jupiter.api.AfterAll;
@@ -91,6 +93,8 @@ class TransferJournalIT {
         applyResource("/db/migration/V2__resident_identity.sql");
         applyResource("/db/migration/V3__purchase_receipts.sql");
         applyResource(V4);
+        applyResource("/db/migration/V17__transfer_resolutions.sql");
+        try (Connection c = database.getConnection()) { assertTrue(com.prosperitysmp.npc.db.V40Fixture.apply(c) >= 5); }
     }
 
     @AfterAll
@@ -105,7 +109,7 @@ class TransferJournalIT {
     @BeforeEach
     void freshJournal() throws SQLException {
         dropFixtureTriggers();
-        for (String table : List.of("npc_transfer_observations", "npc_transfer_attempts", "npc_purchase_intents",
+        for (String table : List.of("npc_transfer_resolutions", "npc_transfer_observations", "npc_transfer_attempts", "npc_purchase_intents",
                 "npc_economy_events", "npc_property_ownership", "npc_property_funding", "npc_properties")) {
             execute("DELETE FROM " + table);
         }
@@ -860,6 +864,243 @@ class TransferJournalIT {
         assertFunding(source, 1);
     }
 
+    // ---- Refusals before the money call, fractional balances, and the recovery paths built on them.
+
+    private static final String OPERATOR = "staff:test";
+    private static final String EVIDENCE = "e".repeat(64);
+    private static Observation refused(Refusal reason) {
+        return Observation.refused(reason, new IllegalStateException("private detail"), null, null);
+    }
+    private static Observation legacyThrow(double balance) {
+        return new Observation(false, false, null, balance, balance, true);
+    }
+
+    @Test
+    void refusedDebitIsADeclineThatKeepsItsReasonAndReleasesTheDay() throws Exception {
+        Handle handle = started(EventSource.UTILITY, run, State.DEBIT_INTENT);
+        Observation evidence = refused(Refusal.LEASE_REFUSED);
+        Receipt declined = journal.recordDebit(handle, evidence);
+        assertEquals(State.DECLINED, declined.state());
+        assertEquals("DEBIT_REFUSED_BEFORE_CALL", declined.outcome());
+        assertReceipt(handle, State.DECLINED, false, "FAILED", 0L);
+        assertTrue(confirmedDeclined(handle.eventId()), "a later same-day bill may be prepared");
+        Observation stored = journal.observation(handle.attemptId(), Leg.DEBIT).orElseThrow();
+        assertEquals(Refusal.LEASE_REFUSED, stored.refusedBeforeCall());
+        assertEquals("java.lang.IllegalStateException", stored.refusalCause());
+        assertEquals(List.of(List.of("LEASE_REFUSED", "java.lang.IllegalStateException")),
+                rows("SELECT refused_before_call,refusal_cause FROM npc_transfer_observations WHERE leg='DEBIT'"));
+        assertEquals(declined, journal.recordDebit(handle, evidence), "an exact replay is accepted");
+        assertNoFunding();
+    }
+
+    @Test
+    void refusedCreditStaysUncertainWithItsOwnOutcome() throws Exception {
+        Handle handle = started(EventSource.UPGRADE, run, State.CREDIT_INTENT);
+        Receipt held = journal.recordCredit(handle, refused(Refusal.BALANCE_UNVERIFIABLE));
+        assertEquals(State.AMBIGUOUS, held.state());
+        assertEquals("CREDIT_REFUSED_BEFORE_CALL", held.outcome());
+        assertReceipt(handle, State.AMBIGUOUS, true, "AMBIGUOUS", null);
+        assertFalse(confirmedDeclined(handle.eventId()));
+        assertNoFunding();
+    }
+
+    @Test
+    void anAcknowledgementThatDiffersOnlyInTheRefusalConflicts() throws Exception {
+        Handle handle = started(EventSource.UPGRADE, run, State.DEBIT_INTENT);
+        journal.recordDebit(handle, refused(Refusal.LEASE_REFUSED));
+        List<List<String>> before = journalRows();
+        for (Observation other : List.of(refused(Refusal.LEASE_FAILED),
+                Observation.refused(Refusal.LEASE_REFUSED, new java.util.NoSuchElementException(), null, null),
+                new Observation(false, false, null, null, null, true))) {
+            var conflict = assertThrows(SQLException.class, () -> journal.recordDebit(handle, other));
+            assertEquals("Conflicting transfer acknowledgement", conflict.getMessage());
+        }
+        assertEquals(before, journalRows());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"reason-without-cause", "cause-without-reason", "unknown-reason", "with-response", "with-success",
+            "with-reported", "without-throw", "bad-cause"})
+    void theTableRefusesAnImpossibleRefusal(String fixture) throws Exception {
+        Handle handle = started(EventSource.UPGRADE, run, State.DEBIT_INTENT);
+        String reason = fixture.equals("cause-without-reason") ? "NULL" : fixture.equals("unknown-reason") ? "'MAYBE'" : "'LEASE_REFUSED'";
+        String cause = fixture.equals("reason-without-cause") ? "NULL" : fixture.equals("bad-cause") ? "'has space'" : "'none'";
+        String present = fixture.equals("with-response") ? "1" : "0", success = fixture.equals("with-success") ? "1" : "0";
+        String reported = fixture.equals("with-reported") ? "0" : "NULL";
+        String threw = fixture.equals("without-throw") ? "0" : "1";
+        String insert = "INSERT INTO npc_transfer_observations(attempt_id,leg,response_present,response_success,reported_bits,"
+                + "before_bits,after_bits,threw,refused_before_call,refusal_cause) VALUES(?,'DEBIT',%s,%s,%s,NULL,NULL,%s,%s,%s)";
+        assertThrows(SQLException.class, () -> execute(String.format(insert, present, success, reported, threw, reason, cause),
+                handle.attemptId()));
+        // The positive control: the same row with every field right is accepted.
+        execute(String.format(insert, "0", "0", "NULL", "1", "'LEASE_REFUSED'", "'none'"), handle.attemptId());
+    }
+
+    @Test
+    void fractionalReserveAndOwnerBalancesArePaidAndRereadCleanly() throws Exception {
+        Handle handle = pending(EventSource.RENT, run);
+        assertTrue(journal.beginDebit(handle).newlyStarted());
+        Observation debit = new Observation(true, true, 10.0, 57492.488404927248686, 57482.488404927248686, false);
+        assertEquals(State.CREDIT_READY, journal.recordDebit(handle, debit).state());
+        assertTrue(journal.beginCredit(handle).newlyStarted());
+        Observation credit = new Observation(true, true, 10.0, 1234.5678901, 1244.5678901, false);
+        assertEquals(State.PAID, journal.recordCredit(handle, credit).state());
+        assertReceipt(handle, State.PAID, true, "PAID", CENTS);
+        assertObservation(handle, Leg.DEBIT, debit);
+        assertObservation(handle, Leg.CREDIT, credit);
+        assertFunding(EventSource.RENT, 1);
+        assertEquals(State.PAID, new TransferJournal(database, reserve).find(handle.eventId()).orElseThrow().state());
+    }
+
+    @Test
+    void legacyRefusalIsRecordedOnlyForADebitTheOldGateRefused() throws Exception {
+        Handle accepted = started(EventSource.UTILITY, run, State.DEBIT_INTENT);
+        assertEquals(State.AMBIGUOUS, journal.recordDebit(accepted, legacyThrow(100.001)).state());
+        UUID resolution = UUID.randomUUID();
+        // A dry run checks and writes everything, then rolls it back.
+        List<List<String>> before = journalRows();
+        assertEquals(State.DECLINED, journal.resolveLegacyRefusal(accepted, resolution, OPERATOR, EVIDENCE, false).state());
+        assertEquals(before, journalRows());
+        assertEquals(0, resolutionCount());
+        Receipt declined = journal.resolveLegacyRefusal(accepted, resolution, OPERATOR, EVIDENCE, true);
+        assertEquals(State.DECLINED, declined.state());
+        assertEquals("LEGACY_REFUSAL_VERIFIED", declined.outcome());
+        assertReceipt(accepted, State.DECLINED, false, "FAILED", 0L);
+        assertTrue(confirmedDeclined(accepted.eventId()));
+        assertEquals(List.of(java.util.Arrays.asList("LEGACY_REFUSAL", null, null, null)),
+                rows("SELECT kind,credit_proof,refund_before_bits,refund_after_bits FROM npc_transfer_resolutions"));
+        assertEquals(declined, journal.resolveLegacyRefusal(accepted, resolution, OPERATOR, EVIDENCE, true), "exact replay");
+        assertThrows(SQLException.class, () -> journal.resolveLegacyRefusal(accepted, resolution, "staff:other", EVIDENCE, true));
+        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(accepted, resolution, OPERATOR, EVIDENCE, observedFile(),
+                1L, 2L));
+
+        Handle moved = started(EventSource.UTILITY, run, State.DEBIT_INTENT);
+        journal.recordDebit(moved, new Observation(false, false, null, 100.001, 100.002, true));
+        assertThrows(SQLException.class, () -> journal.resolveLegacyRefusal(moved, UUID.randomUUID(), OPERATOR, EVIDENCE, true),
+                "before != after");
+        Handle passed = started(EventSource.UTILITY, run, State.DEBIT_INTENT);
+        journal.recordDebit(passed, legacyThrow(100.0));
+        assertThrows(SQLException.class, () -> journal.resolveLegacyRefusal(passed, UUID.randomUUID(), OPERATOR, EVIDENCE, true),
+                "the old gate would have passed: the call may have run");
+        Handle credited = started(EventSource.UPGRADE, run, State.CREDIT_INTENT);
+        journal.recordCredit(credited, legacyThrow(20.005));
+        assertThrows(SQLException.class, () -> journal.resolveLegacyRefusal(credited, UUID.randomUUID(), OPERATOR, EVIDENCE, true),
+                "the credit has started");
+        assertEquals(1, resolutionCount());
+    }
+
+    @Test
+    void aRefusedCreditIsRefundedByStaffAndThenProvesCompensated() throws Exception {
+        Handle handle = started(EventSource.UPGRADE, run, State.CREDIT_INTENT);
+        journal.recordCredit(handle, refused(Refusal.LEASE_REFUSED));
+        UUID resolution = UUID.randomUUID();
+        String file = observedFile();
+        long refundBefore = bits(DEBIT.afterDollars()), refundAfter = bits(DEBIT.beforeDollars());
+        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle, resolution, OPERATOR, EVIDENCE, file,
+                refundAfter, refundBefore), "swapped bits");
+        Receipt done = journal.resolveRefundedDebit(handle, resolution, OPERATOR, EVIDENCE, file, refundBefore, refundAfter);
+        assertEquals(State.COMPENSATED, done.state());
+        assertTrue(done.creditStarted());
+        assertReceipt(handle, State.COMPENSATED, true, "FAILED", 0L);
+        assertTrue(confirmedDeclined(handle.eventId()), "a refunded payout releases its reservation");
+        assertEquals(List.of(List.of("REFUND", "REFUSED")), rows("SELECT kind,credit_proof FROM npc_transfer_resolutions"));
+        assertEquals(done, journal.resolveRefundedDebit(handle, resolution, OPERATOR, EVIDENCE, file, refundBefore, refundAfter));
+        assertNoFunding();
+    }
+
+    @Test
+    void aCreditThatMayHaveBeenCalledCanNeverBeRefundedThisWay() throws Exception {
+        Handle handle = started(EventSource.UPGRADE, run, State.CREDIT_INTENT);
+        journal.recordCredit(handle, new Observation(false, false, null, 20.0, 20.0, true));
+        long refundBefore = bits(DEBIT.afterDollars()), refundAfter = bits(DEBIT.beforeDollars());
+        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle, UUID.randomUUID(), OPERATOR, EVIDENCE,
+                observedFile(), refundBefore, refundAfter));
+        // Not even with provenance: the stored credit is whole cents, so the old gate would have let it through.
+        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle, UUID.randomUUID(), OPERATOR, EVIDENCE,
+                observedFile(), refundBefore, refundAfter, true, true));
+        assertReceipt(handle, State.AMBIGUOUS, true, "AMBIGUOUS", null);
+        assertEquals(0, resolutionCount());
+    }
+
+    @Test
+    void aLegacyRefusedCreditNeedsVerifiedProvenance() throws Exception {
+        Handle handle = started(EventSource.UPGRADE, run, State.CREDIT_INTENT);
+        journal.recordCredit(handle, legacyThrow(20.005));
+        long refundBefore = bits(DEBIT.afterDollars()), refundAfter = bits(DEBIT.beforeDollars());
+        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle, UUID.randomUUID(), OPERATOR, EVIDENCE,
+                observedFile(), refundBefore, refundAfter), "no provenance");
+        Receipt done = journal.resolveRefundedDebit(handle, UUID.randomUUID(), OPERATOR, EVIDENCE, observedFile(), refundBefore,
+                refundAfter, true, true);
+        assertEquals(State.COMPENSATED, done.state());
+        assertEquals(List.of(List.of("REFUND", "LEGACY")), rows("SELECT kind,credit_proof FROM npc_transfer_resolutions"));
+        assertReceipt(handle, State.COMPENSATED, true, "FAILED", 0L);
+    }
+
+    @Test
+    void tamperedResolutionsNeverProveCompensation() throws Exception {
+        // A legacy refusal row relabelled COMPENSATED: no refund kind, so no proof.
+        Handle legacy = started(EventSource.UTILITY, run, State.DEBIT_INTENT);
+        journal.recordDebit(legacy, legacyThrow(100.001));
+        journal.resolveLegacyRefusal(legacy, UUID.randomUUID(), OPERATOR, EVIDENCE, true);
+        execute("UPDATE npc_transfer_attempts SET state='COMPENSATED' WHERE event_id=?", legacy.eventId());
+        assertEquals("Transfer phase and durable evidence disagree",
+                assertThrows(SQLException.class, () -> journal.find(legacy.eventId())).getMessage());
+        // A refund whose credit may have been called, labelled as refused: the stored credit decides, not the label.
+        Handle called = started(EventSource.UPGRADE, run, State.CREDIT_INTENT);
+        journal.recordCredit(called, new Observation(false, false, null, 20.0, 20.0, true));
+        execute("""
+                INSERT INTO npc_transfer_resolutions(attempt_id,resolution_id,operator_ref,evidence_sha256,original_outcome,
+                refund_before_bits,refund_after_bits,kind,credit_proof) VALUES(?,?,?,?,'CREDIT_UNCERTAIN',?,?,'REFUND','REFUSED')
+                """, called.attemptId(), UUID.randomUUID(), OPERATOR, EVIDENCE, bits(DEBIT.afterDollars()), bits(DEBIT.beforeDollars()));
+        execute("UPDATE npc_economy_events SET state='FAILED',paid_amount_cents=0 WHERE event_id=?", called.eventId());
+        execute("UPDATE npc_transfer_attempts SET state='COMPENSATED' WHERE event_id=?", called.eventId());
+        assertEquals("Transfer phase and durable evidence disagree",
+                assertThrows(SQLException.class, () -> journal.find(called.eventId())).getMessage());
+        // The table itself refuses a legacy refusal carrying refund bits.
+        Handle other = started(EventSource.UTILITY, run, State.DEBIT_INTENT);
+        assertThrows(SQLException.class, () -> execute("""
+                INSERT INTO npc_transfer_resolutions(attempt_id,resolution_id,operator_ref,evidence_sha256,original_outcome,
+                refund_before_bits,refund_after_bits,kind) VALUES(?,?,?,?,'X',1,2,'LEGACY_REFUSAL')
+                """, other.attemptId(), UUID.randomUUID(), OPERATOR, EVIDENCE));
+    }
+
+    @Test
+    void heldRowsAreListedAndSortedWithoutChangingThem() throws Exception {
+        Handle legacy = started(EventSource.UTILITY, run, State.DEBIT_INTENT);
+        journal.recordDebit(legacy, legacyThrow(100.001));
+        Handle refusedCredit = started(EventSource.UPGRADE, run, State.CREDIT_INTENT);
+        journal.recordCredit(refusedCredit, refused(Refusal.LEASE_REFUSED));
+        Handle unknown = started(EventSource.UPGRADE, run, State.AMBIGUOUS);
+        started(EventSource.UPGRADE, run, State.PAID);
+        Handle interrupted = started(EventSource.UPGRADE, run, State.DEBIT_INTENT);
+        List<List<String>> before = journalRows();
+        var held = journal.held(100);
+        assertEquals(before, journalRows(), "classify only reads");
+        assertEquals(journal.heldCount(), held.size(), "the classify total equals what the startup hold sees");
+        assertEquals(4, held.size());
+        var byEvent = new java.util.HashMap<Long, HeldClass>();
+        for (var row : held) byEvent.put(row.eventId(), row.heldClass());
+        assertEquals(HeldClass.D_LEGACY_DEBIT_REFUSAL, byEvent.get(legacy.eventId()));
+        assertEquals(HeldClass.R_REFUSED_CREDIT, byEvent.get(refusedCredit.eventId()));
+        assertEquals(HeldClass.U_UNPROVABLE, byEvent.get(unknown.eventId()));
+        assertEquals(HeldClass.U_UNPROVABLE, byEvent.get(interrupted.eventId()));
+        assertTrue(held.stream().allMatch(row -> row.createdAt() != null));
+    }
+
+    private boolean confirmedDeclined(long eventId) throws Exception {
+        var method = TransferJournal.class.getDeclaredMethod("confirmedDeclined", Connection.class, long.class);
+        method.setAccessible(true);
+        try (Connection c = database.getConnection()) {
+            c.setAutoCommit(false);
+            try { return (boolean) method.invoke(journal, c, eventId); }
+            finally { c.rollback(); }
+        }
+    }
+
+    private static long resolutionCount() throws SQLException {
+        return Long.parseLong(rows("SELECT COUNT(*) FROM npc_transfer_resolutions").getFirst().getFirst());
+    }
+
     private Handle pending(EventSource source, UUID runId) throws SQLException {
         long eventId = events.insertPending(EconomyEvent.pending("transfer|" + UUID.randomUUID(), CENTS, source,
                 property, owner, 0, owner, DAY));
@@ -1155,6 +1396,11 @@ class TransferJournalIT {
             if (values[i] instanceof UUID uuid) ps.setBytes(i + 1, Uuids.toBytes(uuid));
             else ps.setObject(i + 1, values[i]);
         }
+    }
+
+    /** The SHA-256 of a new refund-observed.json: each staff refund is recorded in its own file. */
+    private static String observedFile() {
+        return (UUID.randomUUID().toString() + UUID.randomUUID()).replace("-", "");
     }
 
     private static void applyResource(String path) throws Exception {

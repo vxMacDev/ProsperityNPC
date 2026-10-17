@@ -66,6 +66,8 @@ class AutoCareRepositoryIT {
                 for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8))) execute(sql);
             }
         }
+        // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+        try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
     }
 
     @AfterAll static void stop() throws Exception {
@@ -243,6 +245,37 @@ class AutoCareRepositoryIT {
         assertThrows(IllegalArgumentException.class, () -> care.pending(101));
         assertThrows(IllegalArgumentException.class, () -> care.enabled(0));
         assertEquals(1, scalar("SELECT COUNT(*) FROM npc_auto_care_claims"));
+    }
+
+    @Test void refusedDebitIsADeclineThatReleasesTheBudget() throws Exception {
+        configure(1000, ALL);
+        var claim = reserve(Action.UTILITY, 100).claim(); long event = event(claim);
+        assertTrue(care.bind(claim.claimId(), event).newlyBound());
+        assertEquals(ReserveStatus.LIMIT, reserve(Action.MAINTAIN, 1000).status());
+        var journal = new TransferJournal(database, RESERVE); var handle = handle(event);
+        journal.beginDebit(handle);
+        assertEquals(TransferJournal.State.DECLINED, journal.recordDebit(handle, Observation.refused(
+                com.prosperitysmp.npc.economy.TransferProof.Refusal.INSUFFICIENT_FUNDS, null, 0.5, 0.5)).state());
+        assertEquals(UtilityRepository.State.DECLINED, utilities.reconcile(event).orElseThrow().state());
+        // The auto-care reader must see the refusal, or this decline reads as missing proof.
+        assertEquals(State.DECLINED, care.reconcile(claim.claimId()).state());
+        assertEquals(ReserveStatus.REPLAY, reserve(Action.UTILITY, 100).status(), "the day's slot stays used");
+        assertTrue(reserve(Action.MAINTAIN, 1000).newlyReserved(), "the budget is released");
+    }
+
+    @Test void aLegacyRefusalResolvedByStaffIsADecline() throws Exception {
+        configure(1000, ALL);
+        var claim = reserve(Action.UTILITY, 100).claim(); long event = event(claim);
+        care.bind(claim.claimId(), event);
+        var journal = new TransferJournal(database, RESERVE); var handle = handle(event);
+        journal.beginDebit(handle);
+        assertEquals(TransferJournal.State.AMBIGUOUS, journal.recordDebit(handle,
+                new Observation(false, false, null, 1000.001, 1000.001, true)).state());
+        assertEquals(TransferJournal.State.DECLINED,
+                journal.resolveLegacyRefusal(handle, UUID.randomUUID(), "staff:test", "e".repeat(64), true).state());
+        assertEquals(UtilityRepository.State.DECLINED, utilities.reconcile(event).orElseThrow().state());
+        assertEquals(State.DECLINED, care.reconcile(claim.claimId()).state());
+        assertTrue(reserve(Action.MAINTAIN, 1000).newlyReserved(), "the budget is released");
     }
 
     private AutoCareRepository repository() { return new AutoCareRepository(database, RESERVE, Clock.systemUTC(), ZoneOffset.UTC, 0); }

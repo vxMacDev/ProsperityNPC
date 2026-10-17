@@ -7,6 +7,9 @@ import java.util.function.LongSupplier;
 public final class NavTerrainCapture implements NavScanLogic.Terrain {
     public static final byte SUPPORT = 1;
     public static final byte CLEAR = 2;
+    /** Bits 2-4 hold the support's {@link NavSurface} code. */
+    public static final int SURFACE_SHIFT = 2;
+    public static final int SURFACE_MASK = 0b11100;
     @FunctionalInterface public interface Reader { byte read(int x, int y, int z); }
     private final NavScanLogic.Bounds bounds;
     private final int height, depth, top;
@@ -37,7 +40,10 @@ public final class NavTerrainCapture implements NavScanLogic.Terrain {
             int z = bounds.minZ() + column % depth;
             int y = bounds.minY() + next % height;
             byte value = reader.read(x, y, z);
-            if ((value & ~(SUPPORT | CLEAR)) != 0) throw new IllegalArgumentException("unknown terrain flags");
+            if ((value & ~(SUPPORT | CLEAR | SURFACE_MASK)) != 0) throw new IllegalArgumentException("unknown terrain flags");
+            int surface = (value & SURFACE_MASK) >> SURFACE_SHIFT;
+            if (surface > NavSurface.CROSSING.code()) throw new IllegalArgumentException("unknown surface code");
+            if (surface != 0 && (value & SUPPORT) == 0) throw new IllegalArgumentException("surface without support");
             cells[next++] = value;
         }
         return complete();
@@ -58,4 +64,7 @@ public final class NavTerrainCapture implements NavScanLogic.Terrain {
 
     @Override public boolean isSupport(int x, int y, int z) { return (at(x, y, z) & SUPPORT) != 0; }
     @Override public boolean isClear(int x, int y, int z) { return (at(x, y, z) & CLEAR) != 0; }
+    @Override public NavSurface surface(int x, int y, int z) {
+        return NavSurface.fromCode((at(x, y, z) & SURFACE_MASK) >> SURFACE_SHIFT);
+    }
 }

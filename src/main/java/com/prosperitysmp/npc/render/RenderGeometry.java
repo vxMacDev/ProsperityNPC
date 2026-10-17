@@ -32,6 +32,27 @@ public final class RenderGeometry {
         return best;
     }
 
+    /**
+     * Where a resident starts a route from: the closest node that is not on a road. A resident that is
+     * somehow standing on a road is not matched to a road node, so it fails the arrival check and is
+     * removed rather than planning a trip from the middle of the street.
+     */
+    static long nearestWalkStart(NavGraph graph, Vec position) {
+        long best = -1;
+        double distance = Double.POSITIVE_INFINITY;
+        for (NavGraph.Node node : graph.nodes()) {
+            if (node.surface().isStreet()) {
+                continue;
+            }
+            double d = position(node).dist2(position);
+            if (d < distance || (d == distance && node.id() < best)) {
+                best = node.id();
+                distance = d;
+            }
+        }
+        return best;
+    }
+
     public static boolean adjacent(Vec from, Vec to) {
         double dx = Math.abs(from.x() - to.x());
         double dz = Math.abs(from.z() - to.z());

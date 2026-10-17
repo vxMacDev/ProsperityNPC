@@ -491,11 +491,58 @@ publication:
   http-enabled: false
   http-port: 0
 
-# /npcnav scanhere vertical margins, in blocks below and above the staff member's feet.
-# These are the built-in values; change them only for unusually tall or deep builds.
+# District navigation. Block lists and numbers only: nothing here is tied to a place.
+# Locations come from staff scans (/npcnav scanbox), never from this file.
 nav:
+  # /npcnav scanhere vertical margins, in blocks below and above the staff member's feet.
   scan-below: 6
   scan-above: 4
+  # Clear blocks needed above a support, and the largest step between neighbours (0..1).
+  headroom: 2
+  max-step: 1
+
+  # Named palettes. Two forms:
+  #  - list form (legacy):  name: [MATERIAL, ...]  every block is plain walkable ground,
+  #    stored as "unclassified"; publishing such a graph needs "/npcnav publish <id> legacy".
+  #  - section form: sidewalk / road / crossing / access lists plus street tuning below.
+  #    A typo, a block in two lists, an empty sidewalk or road list, or a block that is not
+  #    a full block is an ERROR. Only the palette name "default" falls back to the built-in list.
+  palettes: {}
+  # Example (uncomment and copy under palettes: to use; DEV first):
+  #   city:
+  #     sidewalk: [STONE, ANDESITE, POLISHED_ANDESITE, STONE_BRICKS]
+  #     road: [CYAN_TERRACOTTA, GRAY_CONCRETE_POWDER, YELLOW_CONCRETE]
+  #     # White-line crosswalk paint. Whether SMOOTH_STONE curbs and plot outlines belong in a class is a server choice.
+  #     crossing: [SMOOTH_QUARTZ]
+  #     # Optional: lot paths, doorsteps and plazas residents may walk on but never cross a road from.
+  #     access: []
+
+  # Street rules, used when a section-form palette is scanned (costs are baked into the graph).
+  street:
+    # A painted crosswalk is used when the sidewalk detour to reach it is under this many blocks.
+    crosswalk-reach: 12          # 0..64
+    # A crossing longer than this many road blocks is not a crossing (it is dropped).
+    max-crossing-length: 16      # 1..32
+    # Share of white-line blocks along a crossing for it to count as a crosswalk. The two end blocks
+    # are not counted (an edge line along the road lands there), and at least 2 white blocks are needed.
+    crosswalk-min-share: 0.4     # >0..1
+
+  revalidate:
+    reads-per-tick: 512          # 1..4096, same budget as a scan slice
+    max-nodes: 50000
+    max-chunks: 256              # only used with the "load" argument
+    load-concurrency: 4
+
+  audit:
+    max-seconds: 20              # over this, the verdict is INCONCLUSIVE, never PASS
+    max-starts: 1024
+    max-nodes: 50000             # a graph with more nodes than this is not audited: the verdict is INCONCLUSIVE
+    gate-publish: true           # publish runs the audit and refuses a FAIL, an unclassified graph or one too big to route
+    # Section-form palette that "audit <id> live" reads the world with when the graph was scanned with a
+    # plain list palette (a list has no classes, so reading the world through it could never fail).
+    # "audit <id> live palette <name>" overrides it for one run. Empty: such a graph is refused.
+    palette: ""
+    report-dir: nav-audit        # under plugins/ProsperityNPC/
 
 # Small player-facing conversation and desk fixes. Every flag is off by default,
 # so nothing changes until you turn one on.

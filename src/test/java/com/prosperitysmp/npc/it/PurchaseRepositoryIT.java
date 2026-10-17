@@ -103,6 +103,8 @@ class PurchaseRepositoryIT {
         applyResource("/db/migration/V8__eviction_tenancies.sql");
         applyResource("/db/migration/V15__tenancy_departures.sql");
         applyResource("/db/migration/V17__transfer_resolutions.sql");
+        // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+        try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
     }
 
     @AfterAll
@@ -1163,15 +1165,16 @@ class PurchaseRepositoryIT {
         var debit = new Observation(true,true,150.0,18.5,-131.5,false);
         assertEquals(TransferJournal.State.AMBIGUOUS,journal.recordDebit(handle,debit).state());
         UUID resolution = UUID.randomUUID();
+        String file = "c".repeat(64);
         long before = Double.doubleToRawLongBits(-131.5), after = Double.doubleToRawLongBits(18.5);
-        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle,resolution,"operator-test","b".repeat(64),before,Double.doubleToRawLongBits(19.0)));
+        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle,resolution,"operator-test","b".repeat(64),file,before,Double.doubleToRawLongBits(19.0)));
         assertEquals(0,count("npc_transfer_resolutions"));
-        var resolved = journal.resolveRefundedDebit(handle,resolution,"operator-test","b".repeat(64),before,after);
+        var resolved = journal.resolveRefundedDebit(handle,resolution,"operator-test","b".repeat(64),file,before,after);
         assertEquals(TransferJournal.State.COMPENSATED,resolved.state());
         applyResource("/db/migration/V17__transfer_resolutions.sql");
         assertEquals(resolved,journal.find(intent.eventId()).orElseThrow());
-        assertEquals(resolved,journal.resolveRefundedDebit(handle,resolution,"operator-test","b".repeat(64),before,after));
-        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle,UUID.randomUUID(),"operator-test","b".repeat(64),before,after));
+        assertEquals(resolved,journal.resolveRefundedDebit(handle,resolution,"operator-test","b".repeat(64),file,before,after));
+        assertThrows(SQLException.class, () -> journal.resolveRefundedDebit(handle,UUID.randomUUID(),"operator-test","b".repeat(64),"d".repeat(64),before,after));
         assertEquals(1,count("npc_transfer_resolutions"));
         assertEquals(debit,journal.observation(handle.attemptId(),com.prosperitysmp.npc.economy.TransferProof.Leg.DEBIT).orElseThrow());
         assertTrue(journal.observation(handle.attemptId(),com.prosperitysmp.npc.economy.TransferProof.Leg.CREDIT).isEmpty());

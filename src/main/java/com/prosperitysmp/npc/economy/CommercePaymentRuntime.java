@@ -38,6 +38,8 @@ public final class CommercePaymentRuntime {
     private final CommercePriceBook prices;
     private final EconomyClock days;
     private final UUID reserve, runId = UUID.randomUUID();
+    /** Main thread only: payments refused before any money moved. */
+    private final RefusalMonitor refusals;
     private final ThreadPoolExecutor worker;
     private final ArrayBlockingQueue<Runnable> completions = new ArrayBlockingQueue<>(16);
     private final Executor mainExecutor = this::post;
@@ -54,6 +56,13 @@ public final class CommercePaymentRuntime {
         reserve = ReserveAccount.fromConfig(plugin.getConfig());
         database = Objects.requireNonNull(plugin.database());
         orders = new CommerceOrderRepository(database, reserve);
+        refusals = new RefusalMonitor((kind, subject, text) -> plugin.alerts().raise(kind, subject, text),
+                plugin.getLogger()::warning, Bukkit::isPrimaryThread);
+        String build = plugin.getPluginMeta().getVersion();
+        Path ownJar;
+        try { ownJar = Path.of(CommercePaymentRuntime.class.getProtectionDomain().getCodeSource().getLocation().toURI()); }
+        catch (Exception unavailable) { ownJar = null; }
+        final Path runJar = ownJar;
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(16), r -> {
             Thread t = new Thread(r, "npc-commerce-payment");
             t.setDaemon(true);
@@ -73,6 +82,9 @@ public final class CommercePaymentRuntime {
             }, 1, 1);
             ticker = scheduled;
             CompletableFuture.supplyAsync(() -> {
+                // Ties every order this run writes (run_id) to the build and jar that wrote it.
+                try { plugin.getLogger().info(UtilityPaymentRuntime.runLine("NPC commerce run", runId, build, runJar)); }
+                catch (RuntimeException unlogged) { /* Startup continues; the hold check below still runs. */ }
                 try {
                     if (orders.recoverOtherRuns(runId, 100) != 0) return false;
                     try (var c = database.getConnection(); var ps = c.prepareStatement("""
@@ -138,7 +150,7 @@ public final class CommercePaymentRuntime {
                 reply.accept(new Result(Status.UNAVAILABLE, null));
                 return false;
             }
-            long balance = TransferProof.toCents(pinned.getProvider().getBalance(player)).orElseThrow();
+            long balance = TransferProof.availableCents(pinned.getProvider().getBalance(player)).orElseThrow();
             if (balance < order.costCents()) {
                 reply.accept(new Result(Status.INSUFFICIENT_FUNDS, null));
                 return false;
@@ -171,18 +183,25 @@ public final class CommercePaymentRuntime {
             reply.accept(new Result(Status.BUSY, null));
             return false;
         }
-        fingerprint.thenComposeAsync(sha -> {
+        // Nothing is written until the order is reserved below: a failure up to there started no payment.
+        fingerprint.handle((sha, error) -> {
+            if (error != null) throw NotStarted.of(error);
+            return sha;
+        }).thenComposeAsync(sha -> {
             if (!actor(player, order, entry, feeDiscountPct, authorized)) {
                 return CompletableFuture.completedFuture(new Result(Status.CANCELLED, null));
             }
-            provider(pinned, lease);
+            try { provider(pinned, lease); }
+            catch (RuntimeException | LinkageError refused) { throw new NotStarted(refused); }
             return CompletableFuture.supplyAsync(() -> {
                 try { return orders.reserve(order, limits).receipt(); }
                 catch (Exception failure) { throw new IllegalStateException("Commerce reservation unconfirmed", failure); }
             }, worker).thenComposeAsync(receipt -> {
                 if (receipt.state() != CommerceOrderRepository.State.RESERVED) return completed(receipt);
                 if (!actor(player, order, entry, feeDiscountPct, authorized)) return cancel(order);
-                provider(pinned, lease);
+                // Reserved but no debit intent yet: cancel the order exactly as a lost actor does.
+                try { provider(pinned, lease); }
+                catch (RuntimeException | LinkageError refused) { return cancel(order); }
                 var handle = new CommerceOrderRepository.Handle(order.orderId(), runId, order.playerId(), reserve, sha);
                 return CompletableFuture.supplyAsync(() -> {
                     try { return orders.beginDebit(order, handle, partnerCheck); }
@@ -191,12 +210,14 @@ public final class CommercePaymentRuntime {
                     if (!start.newlyStarted()) return start.receipt().state() == CommerceOrderRepository.State.RESERVED
                             ? cancel(order) : completed(start.receipt());
                     var observed = observe(player, order, entry, feeDiscountPct, authorized, pinned, lease, TransferProof.Leg.DEBIT);
+                    if (observed.refusedBeforeCall() != null)
+                        refusals.refused("commerce", "order " + order.orderId(), TransferProof.Leg.DEBIT, observed);
                     return CompletableFuture.supplyAsync(() -> {
                         try { return orders.recordDebit(handle, observed); }
                         catch (Exception failure) { throw new IllegalStateException("Commerce debit acknowledgement unconfirmed"); }
                     }, worker).thenComposeAsync(debit -> {
+                        // The credit leg checks the provider first; a refusal there is journaled for staff to refund.
                         if (debit.state() != CommerceOrderRepository.State.CREDIT_READY) return completed(debit);
-                        provider(pinned, lease);
                         return CompletableFuture.supplyAsync(() -> {
                             try { return orders.beginCredit(handle); }
                             catch (Exception failure) { throw new IllegalStateException("Commerce credit intent unconfirmed"); }
@@ -204,6 +225,8 @@ public final class CommercePaymentRuntime {
                             if (!credit.newlyStarted()) return completed(credit.receipt());
                             var credited = observe(player, order, entry, feeDiscountPct, authorized, pinned, lease,
                                     TransferProof.Leg.CREDIT);
+                            if (credited.refusedBeforeCall() != null)
+                                refusals.refused("commerce", "order " + order.orderId(), TransferProof.Leg.CREDIT, credited);
                             Instant funded = Instant.now();
                             return CompletableFuture.supplyAsync(() -> {
                                 try {
@@ -221,7 +244,11 @@ public final class CommercePaymentRuntime {
         }, mainExecutor).whenComplete((outcome, failure) -> {
             try { post(() -> {
                 plugin.accountingProjection().invalidate();
-                Result actual = failure == null ? outcome : new Result(knownLimit(failure) ? Status.LIMIT : Status.HELD, null);
+                NotStarted stopped = NotStarted.in(failure);
+                if (stopped != null) refusals.notStarted("commerce", "order " + order.orderId(), stopped.getCause());
+                Result actual = failure == null ? outcome : stopped != null ? new Result(Status.UNAVAILABLE, null)
+                        : new Result(knownLimit(failure) ? Status.LIMIT : Status.HELD, null);
+                if (actual.status() == Status.FUNDED) refusals.paid("commerce");
                 if (actual.status() == Status.HELD) {
                     held = true;
                     plugin.getLogger().warning("Commerce held for recovery; order " + order.orderId());
@@ -242,14 +269,19 @@ public final class CommercePaymentRuntime {
             int feeDiscountPct, BooleanSupplier authorized, RegisteredServiceProvider<Economy> pinned, FinancialFence.Lease lease,
             TransferProof.Leg leg) {
         var observation = new VaultLegObservation(pinned.getProvider(), () -> {
-            provider(pinned, lease);
-            // Completing a verified debit does not depend on the player staying in the menu or online.
-            if (leg == TransferProof.Leg.DEBIT && !actor(player, order, entry, feeDiscountPct, authorized))
-                throw new IllegalStateException("Commerce debit authority changed");
+            // Completing a verified debit depends only on the provider: not on the player staying in the menu or
+            // online, nor on a reload or kill switch since the debit.
+            UtilityPaymentRuntime.requireLegAuthority(leg, this::registration, pinned, () -> {
+                provider(pinned, lease);
+                if (!actor(player, order, entry, feeDiscountPct, authorized))
+                    throw new IllegalStateException("Commerce debit authority changed");
+            });
             return pinned.getProvider();
         }, Bukkit::isPrimaryThread);
         UUID account = leg == TransferProof.Leg.DEBIT ? order.playerId() : reserve;
-        return observation.execute(account, Bukkit.getOfflinePlayer(account), order.costCents(), leg);
+        UUID counterparty = leg == TransferProof.Leg.DEBIT ? reserve : order.playerId();
+        return observation.execute(account, Bukkit.getOfflinePlayer(account), Bukkit.getOfflinePlayer(counterparty),
+                order.costCents(), leg);
     }
 
     private void provider(RegisteredServiceProvider<Economy> pinned, FinancialFence.Lease lease) {

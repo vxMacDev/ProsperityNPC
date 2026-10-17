@@ -64,6 +64,8 @@ class CommerceOrderRepositoryIT {
                 for(String sql:MigrationRunner.splitStatements(new String(input.readAllBytes(),StandardCharsets.UTF_8))) execute(sql);
             }
         }
+        // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+        try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
         var profile=ResidentCatalogue.betaCast().getFirst(); new ResidentRepository(database).register(profile); resident=profile.id();
     }
     @AfterAll static void stop() throws Exception {
@@ -494,7 +496,7 @@ class CommerceOrderRepositoryIT {
         assertEquals(0,repository.cancelUnstartedBefore(NOW.plusSeconds(10000),100));
         assertEquals(1,repository.outstanding(order.playerId(),8).size());
         PaymentResolution conflict=new PaymentResolution(resolution.resolutionId(),"another-actor",resolution.caseRef(),resolution.notes(),
-                resolution.requestSha256(),resolution.decision(),resolution.caseEvidence(),null,null,resolution.resolvedAt());
+                resolution.requestSha256(),resolution.decision(),resolution.caseEvidence(),null,null,null,resolution.resolvedAt());
         assertThrows(SQLException.class,() -> repository.reconcilePayment(order,handle,conflict));
         assertEquals(1,count("npc_commerce_payment_resolutions"));
     }
@@ -527,7 +529,7 @@ class CommerceOrderRepositoryIT {
             assertThrows(SQLException.class,() -> repository.reconcilePayment(order,wrong,resolution));
         assertThrows(SQLException.class,() -> new CommerceOrderRepository(database,UUID.randomUUID()).reconcilePayment(order,h,resolution));
         PaymentResolution wrongHash=new PaymentResolution(UUID.randomUUID(),"operator","case-50","Reviewed immutable evidence", "f".repeat(64),
-                PaymentDecision.VERIFIED_PAID,PAYLOAD,null,null,resolution.resolvedAt());
+                PaymentDecision.VERIFIED_PAID,PAYLOAD,null,null,null,resolution.resolvedAt());
         assertThrows(IllegalArgumentException.class,() -> repository.reconcilePayment(order,h,wrongHash));
         execute("CREATE TRIGGER commerce_fixture_failure BEFORE UPDATE ON npc_commerce_orders FOR EACH ROW "
                 +"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='fixture rollback'");
@@ -571,14 +573,149 @@ class CommerceOrderRepositoryIT {
         assertEquals(1,count("npc_commerce_payment_resolutions"));
     }
 
+    // ---- Refusals before the money call, fractional refunds, refused-credit refunds and legacy refusals.
+
+    private static Observation refused(com.prosperitysmp.npc.economy.TransferProof.Refusal reason) {
+        return Observation.refused(reason, new IllegalStateException("private"), null, null);
+    }
+    private Receipt heldAfterRefusedCredit(CommerceOrder order) throws SQLException {
+        repository.reserve(order,BUDGETS); Handle h=handle(order); repository.beginDebit(order,h); repository.recordDebit(h,DEBIT);
+        repository.beginCredit(h);
+        return repository.recordCredit(h,refused(com.prosperitysmp.npc.economy.TransferProof.Refusal.LEASE_REFUSED),NOW);
+    }
+
+    @Test void refusedDebitIsADeclineThatStillUsesTheDaysSlot() throws SQLException {
+        CommerceOrder order=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(order,BUDGETS);
+        Handle h=handle(order); repository.beginDebit(order,h);
+        Observation evidence=refused(com.prosperitysmp.npc.economy.TransferProof.Refusal.INSUFFICIENT_FUNDS);
+        Receipt declined=repository.recordDebit(h,evidence);
+        assertEquals(State.DECLINED,declined.state()); assertEquals("DEBIT_REFUSED_BEFORE_CALL",declined.outcome());
+        assertEquals(declined,repository.recordDebit(h,evidence));
+        assertThrows(SQLException.class,() -> repository.recordDebit(h,refused(com.prosperitysmp.npc.economy.TransferProof.Refusal.LEASE_REFUSED)),
+                "an acknowledgement differing only in the refusal conflicts");
+        assertEquals(1,scalar("SELECT issued_orders FROM npc_commerce_days"),"the slot stays used");
+        assertEquals(1,scalar("SELECT COUNT(*) FROM npc_commerce_money_evidence WHERE refused_before_call='INSUFFICIENT_FUNDS'"
+                +" AND refusal_cause='java.lang.IllegalStateException'"));
+    }
+
+    @Test void aFractionalDebitCanBeRefundedExactly() throws SQLException {
+        CommerceOrder order=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(order,BUDGETS);
+        Handle h=handle(order); repository.beginDebit(order,h);
+        repository.recordDebit(h,new Observation(true,true,10.0,1234.5678901,1224.5678901,false));
+        repository.cancel(order);
+        assertEquals(State.AMBIGUOUS,found(order).state());
+        assertThrows(SQLException.class,() -> repository.reconcilePayment(order,h,refund(order,1224.5678901,1234.5778901)));
+        assertEquals(State.COMPENSATED,repository.reconcilePayment(order,h,refund(order,1224.5678901,1234.5678901)).state());
+    }
+
+    @Test void aRefusedCreditIsRefundedAndStaysCompensated() throws SQLException {
+        CommerceOrder order=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY);
+        Receipt held=heldAfterRefusedCredit(order);
+        assertEquals(State.AMBIGUOUS,held.state()); assertEquals("CREDIT_REFUSED_BEFORE_CALL",held.outcome());
+        Handle h=handle(order);
+        PaymentResolution refund=refund(order,90d,100d);
+        // A dry run checks and writes everything, then rolls it back.
+        assertEquals(State.COMPENSATED,repository.reconcilePayment(order,h,refund,false,false).state());
+        assertEquals(State.AMBIGUOUS,found(order).state()); assertEquals(0,count("npc_commerce_payment_resolutions"));
+        Receipt done=repository.reconcilePayment(order,h,refund);
+        assertEquals(State.COMPENSATED,done.state()); assertTrue(done.creditStarted());
+        assertEquals(done,repository.reconcilePayment(order,h,refund));
+        assertEquals(1,scalar("SELECT credit_started FROM npc_commerce_orders WHERE state='COMPENSATED'"));
+        assertTrue(repository.paidProof(order.playerId(),order.orderId()).isEmpty());
+    }
+
+    @Test void aCreditThatMayHaveBeenCalledIsNeverRefundedThisWay() throws SQLException {
+        CommerceOrder order=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(order,BUDGETS);
+        Handle h=handle(order); repository.beginDebit(order,h); repository.recordDebit(h,DEBIT); repository.beginCredit(h);
+        repository.recordCredit(h,new Observation(false,false,null,20.0,20.0,true),NOW);
+        assertThrows(SQLException.class,() -> repository.reconcilePayment(order,h,refund(order,90d,100d)));
+        assertThrows(SQLException.class,() -> repository.reconcilePayment(order,h,refund(order,90d,100d),true,true),
+                "whole-cent credit: the old gate would have let the call run");
+        assertEquals(State.AMBIGUOUS,found(order).state());
+    }
+
+    @Test void legacyRefusalNeedsProvenanceAndTheOldGatesShape() throws SQLException {
+        CommerceOrder order=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(order,BUDGETS);
+        Handle h=handle(order); repository.beginDebit(order,h);
+        repository.recordDebit(h,new Observation(false,false,null,100.001,100.001,true));
+        PaymentResolution legacy=resolution(order,PaymentDecision.VERIFIED_LEGACY_REFUSAL);
+        assertThrows(SQLException.class,() -> repository.reconcilePayment(order,h,legacy),"no provenance");
+        Receipt declined=repository.reconcilePayment(order,h,legacy,true,true);
+        assertEquals(State.DECLINED,declined.state()); assertEquals("VERIFIED_LEGACY_REFUSAL",declined.outcome());
+        assertEquals(declined,repository.reconcilePayment(order,h,legacy,true,true));
+        assertEquals(1,scalar("SELECT COUNT(*) FROM npc_commerce_payment_resolutions WHERE decision='VERIFIED_LEGACY_REFUSAL'"));
+
+        CommerceOrder passed=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(passed,BUDGETS);
+        Handle ph=handle(passed); repository.beginDebit(passed,ph);
+        repository.recordDebit(ph,new Observation(false,false,null,100.0,100.0,true));
+        assertThrows(SQLException.class,() -> repository.reconcilePayment(passed,ph,resolution(passed,PaymentDecision.VERIFIED_LEGACY_REFUSAL),true,true),
+                "the old gate would have passed");
+        CommerceOrder credited=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY);
+        heldAfterRefusedCredit(credited);
+        assertThrows(SQLException.class,() -> repository.reconcilePayment(credited,handle(credited),
+                resolution(credited,PaymentDecision.VERIFIED_LEGACY_REFUSAL),true,true),"the credit has started");
+    }
+
+    @Test void aDryRunLeavesNothingBehindNotEvenTheCustodyGuard() throws SQLException {
+        // A player whose first order is held has no custody guard row yet. A dry run must not leave one behind.
+        CommerceOrder order=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY);
+        heldAfterRefusedCredit(order);
+        assertEquals(0,count("npc_item_custody_players"));
+        PaymentResolution refund=refund(order,90d,100d);
+        assertEquals(State.COMPENSATED,repository.reconcilePayment(order,handle(order),refund,false,false).state());
+        assertEquals(0,count("npc_item_custody_players"),"a dry run writes nothing");
+        assertEquals(State.AMBIGUOUS,found(order).state());
+        // A dry run that fails its checks writes nothing either.
+        assertThrows(SQLException.class,() -> repository.reconcilePayment(order,handle(order),refund(order,90d,100.01),false,false));
+        assertEquals(0,count("npc_item_custody_players"));
+        // Applied, the guard row commits together with the resolution.
+        assertEquals(State.COMPENSATED,repository.reconcilePayment(order,handle(order),refund).state());
+        assertEquals(1,count("npc_item_custody_players"));
+        assertEquals(State.COMPENSATED,repository.reconcilePayment(order,handle(order),refund).state(),"exact replay");
+    }
+
+    @Test void anAppliedLegacyDecisionIsFoundAgainForItsReplay() throws Exception {
+        // The tool reads the order's own creation time, so the same evidence replays after the order left the held list.
+        CommerceOrder order=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(order,BUDGETS);
+        Handle h=handle(order); repository.beginDebit(order,h);
+        repository.recordDebit(h,new Observation(false,false,null,100.001,100.001,true));
+        String created=com.prosperitysmp.npc.commerce.CommerceRecoveryTool.legacyRowTime(repository,order.playerId(),order.orderId());
+        assertEquals(created,repository.held(100).getFirst().createdAt());
+        PaymentResolution legacy=resolution(order,PaymentDecision.VERIFIED_LEGACY_REFUSAL);
+        Receipt declined=repository.reconcilePayment(order,h,legacy,true,true);
+        assertTrue(repository.held(100).isEmpty());
+        assertEquals(created,com.prosperitysmp.npc.commerce.CommerceRecoveryTool.legacyRowTime(repository,order.playerId(),order.orderId()));
+        assertEquals(declined,repository.reconcilePayment(order,h,legacy,true,true));
+        assertThrows(IllegalStateException.class,
+                () -> com.prosperitysmp.npc.commerce.CommerceRecoveryTool.legacyRowTime(repository,order.playerId(),UUID.randomUUID()));
+    }
+
+    @Test void heldOrdersAreListedAndSortedWithoutChangingThem() throws SQLException {
+        CommerceOrder refusedCredit=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); heldAfterRefusedCredit(refusedCredit);
+        CommerceOrder legacy=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(legacy,BUDGETS);
+        repository.beginDebit(legacy,handle(legacy)); repository.recordDebit(handle(legacy),new Observation(false,false,null,100.001,100.001,true));
+        CommerceOrder unknown=order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY); repository.reserve(unknown,BUDGETS);
+        repository.beginDebit(unknown,handle(unknown)); repository.recordDebit(handle(unknown),new Observation(false,false,null,null,null,true));
+        fund(order(UUID.randomUUID(),Source.MERCHANT_GOODS,"STONE",1,DAY));
+        int evidence=count("npc_commerce_money_evidence");
+        var held=repository.held(100);
+        assertEquals(repository.heldCount(),held.size()); assertEquals(3,held.size());
+        assertEquals(evidence,count("npc_commerce_money_evidence"));
+        var classes=new java.util.HashMap<UUID,com.prosperitysmp.npc.economy.HeldClass>();
+        for(var row:held) classes.put(row.orderId(),row.heldClass());
+        assertEquals(com.prosperitysmp.npc.economy.HeldClass.R_REFUSED_CREDIT,classes.get(refusedCredit.orderId()));
+        assertEquals(com.prosperitysmp.npc.economy.HeldClass.D_LEGACY_DEBIT_REFUSAL,classes.get(legacy.orderId()));
+        assertEquals(com.prosperitysmp.npc.economy.HeldClass.U_UNPROVABLE,classes.get(unknown.orderId()));
+    }
+
     private static PaymentResolution resolution(CommerceOrder order,PaymentDecision decision) {
         return new PaymentResolution(UUID.randomUUID(),"operator","case-50","Reviewed immutable SQL fixture evidence",order.requestSha256(),
-                decision,PAYLOAD,null,null,NOW.plusSeconds(100));
+                decision,PAYLOAD,null,null,null,NOW.plusSeconds(100));
     }
     private static PaymentResolution refund(CommerceOrder order,double before,double after) {
         return new PaymentResolution(UUID.randomUUID(),"operator","case-50","Independently verified existing external refund (SQL fixture)",
                 order.requestSha256(),PaymentDecision.VERIFIED_REFUNDED_DEBIT,PAYLOAD,Double.doubleToRawLongBits(before),
-                Double.doubleToRawLongBits(after),NOW.plusSeconds(100));
+                Double.doubleToRawLongBits(after),(UUID.randomUUID().toString()+UUID.randomUUID()).replace("-",""),NOW.plusSeconds(100));
     }
 
     private static ItemDeliveryEvidence confirmed(ItemCustody request) {

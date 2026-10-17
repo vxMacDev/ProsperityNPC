@@ -248,7 +248,7 @@ class DevUpgradeIT {
         List<Migration> all = registeredMigrations(Integer.MAX_VALUE);
         Migration contracts = all.stream().filter(m -> m.version() == 36).findFirst().orElseThrow();
         assertEquals("town_contracts_partnerships", contracts.description());
-        assertEquals(38, all.getLast().version(), "V37 (partnership hand-in terms) and V38 follow it");
+        assertEquals(40, all.getLast().version(), "V37 (partnership hand-in terms), V38, V39 and V40 follow it");
         Map<String, String> clean = null;
         for (int prefix = 0; prefix <= contracts.statements().size(); prefix++) {
             try (Connection c = freshSchema()) {
@@ -281,7 +281,7 @@ class DevUpgradeIT {
         List<Migration> all = registeredMigrations(Integer.MAX_VALUE);
         Migration terms = all.stream().filter(m -> m.version() == 37).findFirst().orElseThrow();
         assertEquals("partnership_handin_terms", terms.description());
-        assertEquals(38, all.getLast().version(), "V38 (item return staff decision) follows it");
+        assertEquals(40, all.getLast().version(), "V38 (item return staff decision), V39 and V40 follow it");
         Map<String, String> clean = null;
         for (int prefix = 0; prefix <= terms.statements().size(); prefix++) {
             try (Connection c = freshSchema()) {
@@ -316,7 +316,7 @@ class DevUpgradeIT {
         List<Migration> all = registeredMigrations(Integer.MAX_VALUE);
         Migration staff = all.stream().filter(m -> m.version() == 38).findFirst().orElseThrow();
         assertEquals("item_return_staff_decision", staff.description());
-        assertEquals(38, all.getLast().version());
+        assertEquals(40, all.getLast().version(), "V39 and V40 follow it");
         Map<String, String> clean = null;
         for (int prefix = 0; prefix <= staff.statements().size(); prefix++) {
             try (Connection c = freshSchema()) {

@@ -1,15 +1,18 @@
 package com.prosperitysmp.npc.nav;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import java.util.List;
 import java.util.Objects;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 
 /**
  * Builds a draft {@link NavGraph} from real world blocks. It samples the
  * scan box on the main thread and delegates the node/edge rules to the pure
- * {@link NavScanLogic}. Capture is sliced across ticks and never loads a chunk.
+ * {@link NavScanLogic}. Capture is sliced across ticks and never loads a chunk itself;
+ * staff can ask for the box to be loaded first with {@link NavChunkLoader}.
  * Only the completed captured terrain may be passed to worker-side graph derivation.
  */
 public final class NavGraphScanner {
@@ -59,15 +62,27 @@ public final class NavGraphScanner {
                     throw new IllegalStateException("scan contains an unloaded chunk; use a smaller loaded area");
                 }
                 Block block = world.getBlockAt(x, y, z);
-                return (byte) ((palette.isWalkable(block.getType()) ? NavTerrainCapture.SUPPORT : 0)
-                        | (block.isEmpty() || block.isPassable() ? NavTerrainCapture.CLEAR : 0));
+                Material type = block.getType();
+                // The class rides along in the same read, so classifying costs no extra world access.
+                int support = palette.isWalkable(type)
+                        ? NavTerrainCapture.SUPPORT | palette.surfaceOf(type).code() << NavTerrainCapture.SURFACE_SHIFT : 0;
+                return (byte) (support | (block.isEmpty() || block.isPassable() ? NavTerrainCapture.CLEAR : 0));
             }, 512, 2_000_000L, System::nanoTime);
         }
 
+        /** The chunks the scan box touches, for {@link NavChunkLoader} when staff ask to load them. */
+        public List<Long> chunks() {
+            return NavChunkLoader.chunksOf(bounds.minX(), bounds.maxX(), bounds.minZ(), bounds.maxZ());
+        }
+
+        public World world() {
+            return world;
+        }
+
         /** Worker-safe after advance returns true; no Bukkit or world calls. */
-        public NavGraph finish() {
+        public NavScanLogic.ScanResult finish() {
             if (!terrain.complete()) throw new IllegalStateException("scan is incomplete");
-            return NavScanLogic.scan(bounds, terrain, headroom, maxStep);
+            return NavScanLogic.scan(bounds, terrain, headroom, maxStep, palette.rules());
         }
     }
 }

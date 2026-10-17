@@ -5,7 +5,11 @@ import com.prosperitysmp.npc.commerce.CommerceOrderRepository.PaymentDecision;
 import com.prosperitysmp.npc.commerce.CommerceOrderRepository.PaymentResolution;
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.DatabaseSettings;
+import com.prosperitysmp.npc.economy.HeldClass;
+import com.prosperitysmp.npc.economy.LegacyProvenance;
 import com.prosperitysmp.npc.economy.RecoveryServers;
+import com.prosperitysmp.npc.economy.RefundClaims;
+import com.prosperitysmp.npc.economy.RefundEvidence;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -19,35 +23,66 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 
 /**
  * Root-only offline tool for a stopped, runtime-masked server. It never calls Vault, item delivery or migrations.
  * The profile (service, server_root, database, user, reserve_uuid) must match {@link RecoveryServers#FILE}, and the
  * private evidence manifest must repeat its service, server_root, database and reserve_uuid. The other manifest fields
  * are the required(...) reads below. --reconcile-payment records a staff decision on one order, --cancel-unstarted
- * cancels old untouched reservations, and --inspect-delivery only reads.
- * Usage: --reconcile-payment|--cancel-unstarted|--inspect-delivery &lt;profile&gt; &lt;evidence&gt;. Connects to MariaDB on
- * 127.0.0.1:3306.
+ * cancels old untouched reservations, --inspect-delivery and --classify only read. --reconcile-payment is a dry run
+ * unless the last argument is --apply: a dry run performs every check and write and then rolls them back. A refund
+ * decision accepts an order whose reserve credit never started or was refused before its money call; its refund
+ * evidence is checked by {@link RefundEvidence}, including the player's balance saved on the stopped server. The
+ * decision VERIFIED_LEGACY_REFUSAL, and a refund over a credit an older build's gate refused (credit_proof=LEGACY),
+ * also need the provenance fields of {@link LegacyProvenance}.
+ * A refund that matches the balances of one already used for this payer, recorded after this order was issued, is
+ * refused. Only when staff made a second, separate refund for this held order, --apply --distinct-refund skips that
+ * one rule for this resolution; every other check still runs, and the claim records the assertion.
+ * Usage: --reconcile-payment|--cancel-unstarted|--inspect-delivery &lt;profile&gt; &lt;evidence&gt; [--apply], or
+ * --reconcile-payment &lt;profile&gt; &lt;evidence&gt; --apply --distinct-refund, or
+ * --classify &lt;profile&gt;. Connects to MariaDB on 127.0.0.1:3306.
  */
 public final class CommerceRecoveryTool {
     private CommerceRecoveryTool() { }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 3 || (!args[0].equals("--reconcile-payment") && !args[0].equals("--cancel-unstarted")
-                && !args[0].equals("--inspect-delivery")))
+        boolean classify = args.length == 2 && args[0].equals("--classify");
+        boolean distinctRefund = args.length == 5 && args[0].equals("--reconcile-payment") && args[3].equals("--apply")
+                && args[4].equals("--distinct-refund");
+        boolean apply = (args.length == 4 && args[0].equals("--reconcile-payment") && args[3].equals("--apply")) || distinctRefund;
+        if (!classify && !apply && (args.length != 3 || (!args[0].equals("--reconcile-payment") && !args[0].equals("--cancel-unstarted")
+                && !args[0].equals("--inspect-delivery"))))
             throw new IllegalArgumentException("Expected --reconcile-payment|--cancel-unstarted|--inspect-delivery"
-                    + " <private profile.properties> <private evidence.properties>");
+                    + " <private profile.properties> <private evidence.properties> [--apply], or --reconcile-payment"
+                    + " <private profile.properties> <private evidence.properties> --apply --distinct-refund,"
+                    + " or --classify <private profile.properties>");
         if (!command("id", "-u").equals("0")) throw new IllegalStateException("Root operator required");
         Properties config = properties(privateBytes(Path.of(args[1]).toAbsolutePath(), 16384));
         String service = required(config, "service");
         String root = RecoveryServers.rootFor(service);
         if (!root.equals(required(config, "server_root"))) throw new IllegalArgumentException("Service/root mismatch");
         offline(service);
+        if (classify) {
+            for (String key : new String[]{"database", "user"})
+                if (!required(config, key).matches("[A-Za-z0-9_]{1,64}")) throw new IllegalArgumentException("Invalid connection identifier");
+            Path password = Path.of(root, "plugins/ProsperityNPC/db-password.txt");
+            if (!password.equals(password.toRealPath()) || !Files.isRegularFile(password, LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(password) > 4096 || !privateMode(password)) throw new IllegalArgumentException("Invalid password custody");
+            try (Database db = new Database()) {
+                db.connect(new DatabaseSettings("127.0.0.1", 3306, required(config, "database"), required(config, "user"),
+                        Files.readString(password).trim(), 1, 5000));
+                System.out.println(classifyReport(new CommerceOrderRepository(db, UUID.fromString(required(config, "reserve_uuid")))));
+            }
+            return;
+        }
         Path manifest = Path.of(args[2]).toAbsolutePath();
         byte[] manifestBytes = privateBytes(manifest, 16384);
         Properties evidence = properties(manifestBytes);
@@ -84,12 +119,22 @@ public final class CommerceRecoveryTool {
             UUID orderId = UUID.fromString(required(evidence, "order_id"));
             Handle handle = new Handle(orderId, UUID.fromString(required(evidence, "run_id")), payer, reserve,
                     required(evidence, "provider_sha256"));
-            CommerceOrder order = repository.find(payer, orderId).orElseThrow(() -> new IllegalStateException("Unknown commerce order"))
-                    .order();
+            var found = repository.find(payer, orderId).orElseThrow(() -> new IllegalStateException("Unknown commerce order"));
+            CommerceOrder order = found.order();
             if (!order.requestSha256().equals(required(evidence, "request_sha256"))
                     || order.costCents() != Long.parseLong(required(evidence, "cost_cents")))
                 throw new IllegalArgumentException("Order hash/cost evidence conflicts");
             PaymentDecision decision = PaymentDecision.valueOf(required(evidence, "decision"));
+            if (distinctRefund && decision != PaymentDecision.VERIFIED_REFUNDED_DEBIT)
+                throw new IllegalArgumentException("--distinct-refund applies only to a VERIFIED_REFUNDED_DEBIT decision");
+            boolean legacy = decision == PaymentDecision.VERIFIED_LEGACY_REFUSAL
+                    || (decision == PaymentDecision.VERIFIED_REFUNDED_DEBIT && "LEGACY".equals(evidence.getProperty("credit_proof")));
+            if (legacy) {
+                String build = LegacyProvenance.verify(root, legacyRowTime(repository, payer, orderId), evidence,
+                        name -> privateBytes(manifest.getParent().resolve(name), 128 * 1024 * 1024),
+                        LegacyProvenance.namesIn(manifest.getParent()));
+                System.out.println("Provenance: order written by reviewed build " + build + ".");
+            }
             // payment-observed.json beside the manifest is independently reviewed evidence, not a substitute for persisted
             // observations. A refund decision also needs the refund intent and observation files and an unchanged reserve.
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -97,11 +142,14 @@ public final class CommerceRecoveryTool {
                 part(bundle, manifestBytes);
                 part(bundle, artifact(manifest, "payment-observed.json", required(evidence, "payment_observation_sha256")));
                 if (decision == PaymentDecision.VERIFIED_REFUNDED_DEBIT) {
-                    if (!required(evidence, "refund_completed").equals("true")
-                            || !required(evidence, "reserve_before").equals(required(evidence, "reserve_after")))
-                        throw new IllegalArgumentException("Independently completed refund with unchanged reserve required");
                     part(bundle, artifact(manifest, "refund-intent.json", required(evidence, "intent_sha256")));
-                    part(bundle, artifact(manifest, "refund-observed.json", required(evidence, "observation_sha256")));
+                    byte[] observed = artifact(manifest, "refund-observed.json", required(evidence, "observation_sha256"));
+                    // The player paid, so the reserve must be unchanged by the refund.
+                    RefundEvidence.check(evidence, payer, orderId, false, observed);
+                    // An applied refund replays exactly or not at all, so only an unresolved order needs the saved balance.
+                    if (found.state() != CommerceOrderRepository.State.COMPENSATED)
+                        RefundEvidence.requireSaved(evidence, RefundEvidence.savedBalanceBits(Path.of(root), payer));
+                    part(bundle, observed);
                 } else if (evidence.containsKey("refund_before_bits") || evidence.containsKey("refund_after_bits"))
                     throw new IllegalArgumentException("Refund bits without refund decision");
             }
@@ -111,10 +159,15 @@ public final class CommerceRecoveryTool {
                     order.requestSha256(), decision, new CustodyBytes(bytes.toByteArray()),
                     refund ? Long.valueOf(required(evidence, "refund_before_bits")) : null,
                     refund ? Long.valueOf(required(evidence, "refund_after_bits")) : null,
+                    refund ? required(evidence, "observation_sha256") : null,
                     Instant.parse(required(evidence, "resolved_at")));
             offline(service);
-            var receipt = repository.reconcilePayment(order, handle, resolution);
-            System.out.println("Commerce order " + orderId + ": " + receipt.state() + "; resolution=" + resolution.resolutionId());
+            var receipt = repository.reconcilePayment(order, handle, resolution, legacy, apply, distinctRefund);
+            if (distinctRefund)
+                RefundClaims.reportDistinctRefund(db, RefundClaims.Source.COMMERCE, orderId, resolution.resolutionId(),
+                        operator, Logger.getLogger(CommerceRecoveryTool.class.getName()));
+            System.out.println((apply ? "" : "Dry run, nothing written (add --apply): ") + "Commerce order " + orderId + ": "
+                    + receipt.state() + "; resolution=" + resolution.resolutionId());
         }
     }
 
@@ -157,6 +210,28 @@ public final class CommerceRecoveryTool {
             System.out.println(deliveryReport(orderId + " " + order.state(), order.order().material(), receipt, read, recorded, hash(saved))
                     + "\n" + orderMarkerLine(nonce, read.deliveryMarker()) + "\n" + versionLine(read));
         }
+    }
+
+    /**
+     * The order's creation time, read from the order itself whatever its state, so an applied legacy decision can be
+     * replayed with the same evidence after its terminal output was lost.
+     */
+    public static String legacyRowTime(CommerceOrderRepository repository, UUID payer, UUID orderId) throws Exception {
+        return repository.createdAt(payer, orderId).orElseThrow(() -> new IllegalStateException("Unknown commerce order"));
+    }
+
+    /** Counts per class, and the startup hold's own count, which must be the same total. */
+    static String classifyReport(CommerceOrderRepository repository) throws Exception {
+        long holding = repository.heldCount();
+        var rows = repository.held(100_000);
+        Map<HeldClass, Integer> counts = new EnumMap<>(HeldClass.class);
+        for (HeldClass c : HeldClass.values()) counts.put(c, 0);
+        for (var row : rows) counts.merge(row.heldClass(), 1, Integer::sum);
+        if (rows.size() != holding)
+            throw new IllegalStateException("Classified " + rows.size() + " orders but the startup hold sees " + holding);
+        StringBuilder out = new StringBuilder("Commerce orders holding payments: " + holding);
+        for (var entry : counts.entrySet()) out.append("\n  ").append(entry.getKey()).append(": ").append(entry.getValue());
+        return out.toString();
     }
 
     static String deliveryReport(String order, String material, ItemCustodyRepository.Receipt receipt, ItemSaveProof.SavedUnits read,

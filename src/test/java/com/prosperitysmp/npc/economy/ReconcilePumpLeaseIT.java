@@ -169,7 +169,13 @@ class ReconcilePumpLeaseIT {
             journal = State.CREDIT_READY; calls.add("debit-acknowledged"); onDebitAck.run(); return receipt(h, payer, journal);
         }
         public Start beginCredit(Handle h) { journal = State.CREDIT_INTENT; return new Start(true, receipt(h, payer, journal)); }
-        public Receipt recordCredit(Handle h, Observation o) { journal = State.PAID; return receipt(h, payer, journal); }
+        Observation credit;
+        public Receipt recordCredit(Handle h, Observation o) {
+            // As the real journal: a credit refused before its money call leaves the transfer uncertain.
+            credit = o;
+            journal = o.refusedBeforeCall() != null ? State.AMBIGUOUS : State.PAID;
+            return receipt(h, payer, journal);
+        }
 
         CompletableFuture<Receipt> start(OwnershipFence fence, ArmAdapter.OwnerRead read, Property admitted,
                                          Map<UUID, Property> cache) {
@@ -279,9 +285,11 @@ class ReconcilePumpLeaseIT {
         pay.drain();
 
         assertNotEquals(p, cache.get(p.propertyId()), "the record was swapped between DEBIT and CREDIT");
-        var failure = assertThrows(java.util.concurrent.CompletionException.class, done::join);
-        assertEquals("Utility property changed", failure.getCause().getMessage());
-        assertEquals(State.CREDIT_INTENT, pay.journal, "debited, never credited");
+        // The credit is refused before its money call and journaled as such: still held for staff, never retried.
+        assertEquals(State.AMBIGUOUS, done.join().state());
+        assertEquals(TransferProof.Refusal.LEASE_REFUSED, pay.credit.refusedBeforeCall());
+        assertEquals("java.lang.IllegalStateException", pay.credit.refusalCause());
+        assertEquals(State.AMBIGUOUS, pay.journal, "debited, credit refused, never credited");
         assertEquals(List.of("authorized-DEBIT", "money-DEBIT", "debit-acknowledged"), pay.calls);
         assertThrows(IllegalStateException.class, () -> fence.acquire(ownerRead(p)), "the payment's lease stays held");
     }

@@ -86,9 +86,11 @@ class RentIsolationIT {
                     "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V8__eviction_tenancies.sql",
                     "V9__housing_registry.sql", "V10__housing_moves.sql", "V11__housing_history_order.sql",
                     "V12__incident_service_receipts.sql", "V13__utility_obligations.sql",
-                    "V16__rent_reservations.sql", "V33__payout_retirements.sql")) {
+                    "V16__rent_reservations.sql", "V17__transfer_resolutions.sql", "V33__payout_retirements.sql")) {
                 applyResource("/db/migration/" + file);
             }
+            // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+            try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
             tables = rows("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
                     + "AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME").stream().map(List::getFirst).toList();
             assertTrue(tables.containsAll(List.of("npc_rent_reservations", "npc_transfer_attempts", "npc_economy_events")));
@@ -206,6 +208,78 @@ class RentIsolationIT {
     }
 
     /** Mirrors requestRentBatch: plan owners, reserve and read pending for eligible only, then one journaled transfer each. */
+    @Test
+    void refusedPayoutsMoveNoMoneyAndReleaseTheirCapsOnceProved() throws Exception {
+        Function<Property, Optional<String>> armUp = p -> Optional.of("owner-read:" + p.ownerUuid());
+        var plan = UtilityPaymentRuntime.planRent(enabled(), RESERVE, true, armUp);
+        var rents = new RentReservationRepository(database, RESERVE, clock, ZONE, RESET, false);
+        rents.reserve(DAY, plan.eligible(), limits());
+        var rows = rents.pending(DAY, plan.eligible());
+        assertEquals(4, rows.size());
+        long reserved = rents.serverSpentCents(DAY);
+        assertTrue(reserved > 0);
+        var balances = new java.util.HashMap<UUID, Double>();
+        balances.put(RESERVE, 57492.488404927248686);
+        for (var row : rows) balances.put(row.property().ownerUuid(), 1234.5678901);
+        var near = rows.get(0);
+        // One cent more than the receiver limit allows once this payout lands.
+        balances.put(near.property().ownerUuid(), 900_000_000.0 - near.cents() / 100.0 + 0.01);
+        List<String> calls = new ArrayList<>();
+        List<com.prosperitysmp.npc.economy.TransferProof.Refusal> heard = new ArrayList<>();
+        boolean[] reload = {false};
+        var vault = new com.prosperitysmp.npc.economy.TransferDispatchFixture.Vault(journal(), balances,
+                leg -> reload[0] && leg == com.prosperitysmp.npc.economy.TransferProof.Leg.CREDIT, calls,
+                (leg, o) -> heard.add(o.refusedBeforeCall()));
+
+        // An owner above the receiver limit: declined before any money call, and the dispatcher stays open.
+        var untouched = new java.util.HashMap<>(balances);
+        var declined = vault.submit(payout(near)).toCompletableFuture().join();
+        assertEquals(TransferJournal.State.DECLINED, declined.state());
+        assertEquals("DEBIT_REFUSED_BEFORE_CALL", declined.outcome());
+        assertEquals(untouched, balances, "no money moved");
+        assertTrue(calls.stream().noneMatch(c -> c.startsWith("withdrawPlayer") || c.startsWith("depositPlayer")), calls.toString());
+        assertEquals(List.of(com.prosperitysmp.npc.economy.TransferProof.Refusal.COUNTERPARTY_UNVERIFIABLE), heard);
+        assertEquals(reserved - near.cents(), rents.serverSpentCents(DAY), "a proved decline no longer holds the caps");
+        assertEquals(1, count("npc_economy_events WHERE event_id=? AND state='FAILED' AND paid_amount_cents=0", near.eventId()));
+
+        // The fractional reserve pays the next owner through the same dispatcher.
+        var paid = rows.get(1);
+        assertEquals(TransferJournal.State.PAID, vault.submit(payout(paid)).toCompletableFuture().join().state());
+
+        // A change of economy provider between the legs refuses the credit: held for staff, the debit is not lost or
+        // retried.
+        reload[0] = true;
+        var refused = rows.get(2);
+        Handle refusedHandle = payout(refused);
+        var held = vault.submit(refusedHandle).toCompletableFuture().join();
+        assertEquals(TransferJournal.State.AMBIGUOUS, held.state());
+        assertEquals("CREDIT_REFUSED_BEFORE_CALL", held.outcome());
+        assertTrue(vault.submit(payout(rows.get(3))).toCompletableFuture().isCompletedExceptionally(), "payments stay held");
+        assertEquals(reserved - near.cents(), rents.serverSpentCents(DAY), "an uncertain payout keeps its caps");
+        // Before staff stop the server, other money reaches the reserve, so it is no longer at the debit's after
+        // balance. Staff then put back exactly the refused payout and record that refund.
+        Observation debit = journal().observation(refusedHandle.attemptId(), com.prosperitysmp.npc.economy.TransferProof.Leg.DEBIT)
+                .orElseThrow();
+        java.math.BigDecimal reserveNow = new java.math.BigDecimal("57455.928404927248686");
+        assertNotEquals(Double.doubleToRawLongBits(debit.afterDollars()), Double.doubleToRawLongBits(reserveNow.doubleValue()));
+        double refundBefore = reserveNow.doubleValue();
+        double refundAfter = reserveNow.add(java.math.BigDecimal.valueOf(refused.cents(), 2)).doubleValue();
+        double oneCentShort = reserveNow.add(java.math.BigDecimal.valueOf(refused.cents() - 1, 2)).doubleValue();
+        assertThrows(SQLException.class, () -> journal().resolveRefundedDebit(refusedHandle, UUID.randomUUID(), "staff:test",
+                "e".repeat(64), "c".repeat(64), Double.doubleToRawLongBits(refundBefore), Double.doubleToRawLongBits(oneCentShort)),
+                "a refund one cent short is refused");
+        balances.put(RESERVE, refundAfter);
+        var refunded = journal().resolveRefundedDebit(refusedHandle, UUID.randomUUID(), "staff:test", "e".repeat(64),
+                "c".repeat(64), Double.doubleToRawLongBits(refundBefore), Double.doubleToRawLongBits(refundAfter));
+        assertEquals(TransferJournal.State.COMPENSATED, refunded.state());
+        assertEquals(reserved - near.cents() - refused.cents(), rents.serverSpentCents(DAY), "the refunded payout releases its caps");
+        assertEquals(1, count(RENT_ATTEMPTS + " AND a.state='PAID'"));
+    }
+
+    private static Handle payout(RentReservationRepository.Reserved row) {
+        return new Handle(UUID.randomUUID(), row.eventId(), UUID.randomUUID(), "b".repeat(64));
+    }
+
     private int batch(boolean isolate, Function<Property, Optional<String>> read) throws SQLException {
         var plan = UtilityPaymentRuntime.planRent(enabled(), RESERVE, isolate, read);
         var rents = new RentReservationRepository(database, RESERVE, clock, ZONE, RESET, false);

@@ -153,4 +153,92 @@ class NavScanLogicTest {
         assertThrows(IllegalArgumentException.class, () -> NavScanLogic.scan(box(0, 0, 0, 0), noReads, 2, -1));
         assertThrows(IllegalArgumentException.class, () -> NavScanLogic.scan(box(0, 0, 0, 0), noReads, 2, 2));
     }
+
+    // ---- golden legacy output: a scan with no classes must be exactly the pre-street scan ----
+
+    private static FakeWorld mixedField() {
+        FakeWorld w = new FakeWorld();
+        for (int x = 0; x < 12; x++) {
+            for (int z = 0; z < 12; z++) {
+                if ((x * 5 + z * 3) % 7 == 0) continue; // holes
+                int y = 63 + ((x * 7 + z * 13) % 3 == 0 ? 1 : 0); // steps up and down
+                w.support(x, y, z);
+                if ((x + z) % 11 == 0) w.solid(x, y + 2, z); // roof: no headroom
+            }
+        }
+        return w;
+    }
+
+    /** The scan as it was before streets, written out independently of NavScanLogic. */
+    private static Set<String> referenceScan(NavScanLogic.Terrain t, Bounds b) {
+        java.util.Map<String, Integer> standY = new java.util.HashMap<>();
+        for (int x = b.minX(); x <= b.maxX(); x++) {
+            for (int z = b.minZ(); z <= b.maxZ(); z++) {
+                for (int y = b.maxY(); y >= b.minY(); y--) {
+                    if (t.isSupport(x, y, z) && t.isClear(x, y + 1, z) && t.isClear(x, y + 2, z)) {
+                        standY.put(x + "," + z, y + 1);
+                        break;
+                    }
+                }
+            }
+        }
+        Set<String> out = new HashSet<>();
+        for (var e : standY.entrySet()) {
+            String[] xz = e.getKey().split(",");
+            int x = Integer.parseInt(xz[0]);
+            int z = Integer.parseInt(xz[1]);
+            int y = e.getValue();
+            out.add("node " + x + "," + y + "," + z);
+            for (int[] d : new int[][]{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+                Integer n = standY.get((x + d[0]) + "," + (z + d[1]));
+                if (n != null && Math.abs(n - y) <= 1) out.add("edge " + x + "," + y + "," + z + " -> " + (x + d[0]) + "," + n + "," + (z + d[1]) + " 10");
+            }
+            for (int[] d : new int[][]{{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}) {
+                Integer n = standY.get((x + d[0]) + "," + (z + d[1]));
+                Integer o1 = standY.get((x + d[0]) + "," + z);
+                Integer o2 = standY.get(x + "," + (z + d[1]));
+                if (n != null && Math.abs(n - y) <= 1 && o1 != null && o2 != null
+                        && Math.abs(o1 - y) <= 1 && Math.abs(o2 - y) <= 1) {
+                    out.add("edge " + x + "," + y + "," + z + " -> " + (x + d[0]) + "," + n + "," + (z + d[1]) + " 14");
+                }
+            }
+        }
+        return out;
+    }
+
+    private static Set<String> describe(NavGraph g) {
+        Set<String> out = new HashSet<>();
+        for (NavGraph.Node n : g.nodes()) out.add("node " + n.x() + "," + n.y() + "," + n.z());
+        for (NavGraph.Edge e : g.edges()) {
+            NavGraph.Node a = g.node(e.from());
+            NavGraph.Node b = g.node(e.to());
+            out.add("edge " + a.x() + "," + a.y() + "," + a.z() + " -> " + b.x() + "," + b.y() + "," + b.z() + " " + e.cost());
+        }
+        return out;
+    }
+
+    @Test
+    void goldenLegacyScanIsExactlyTheOldNodesEdgesAndCosts() {
+        FakeWorld w = mixedField();
+        Bounds b = new Bounds(0, 60, 11, 70, 0, 11);
+        NavGraph g = NavScanLogic.scan(b, w, 2, 1);
+        Set<String> expected = referenceScan(w, b);
+        assertEquals(expected, describe(g));
+        assertTrue(expected.stream().anyMatch(l -> l.endsWith(" 14")) && expected.stream().anyMatch(l -> l.endsWith(" 10")));
+        assertEquals(Set.of(10, 14), g.edges().stream().map(NavGraph.Edge::cost).collect(java.util.stream.Collectors.toSet()));
+        assertTrue(g.nodes().stream().allMatch(n -> n.surface() == NavSurface.UNKNOWN));
+        // The streets-aware entry point with legacy rules gives the same graph and no crossings.
+        var result = NavScanLogic.scan(b, w, 2, 1, StreetRules.LEGACY);
+        assertEquals(g.edges(), result.graph().edges());
+        assertEquals(0, result.stats().streetNodes());
+        assertEquals(0, result.stats().totalDropped());
+    }
+
+    @Test
+    void goldenFieldIsNotTrivial() {
+        // Control: the field really has holes, steps and roofs, so the golden comparison can fail.
+        NavGraph g = NavScanLogic.scan(new Bounds(0, 60, 11, 70, 0, 11), mixedField(), 2, 1);
+        assertTrue(g.nodeCount() > 90 && g.nodeCount() < 144, "nodes " + g.nodeCount());
+        assertTrue(g.nodes().stream().map(NavGraph.Node::y).distinct().count() >= 2);
+    }
 }

@@ -52,6 +52,8 @@ class InsuranceRepositoryIT {
             for (String file : List.of("V1__initial_schema.sql", "V3__purchase_receipts.sql", "V4__transfer_journal.sql",
                     "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V8__eviction_tenancies.sql",
                     "V23__property_insurance.sql")) apply(file);
+            // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+            try (var v40 = db.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
         } catch (Exception | AssertionError failure) {
             try { stop(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
             throw failure;

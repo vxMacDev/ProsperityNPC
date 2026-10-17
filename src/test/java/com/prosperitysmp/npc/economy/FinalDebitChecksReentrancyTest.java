@@ -29,11 +29,17 @@ class FinalDebitChecksReentrancyTest {
                 if (m.getName().equals("getUniqueId")) return ID;
                 throw new AssertionError("unexpected player call: " + m.getName());
             });
+    /** The other side of the payout: the owner who receives it. Only its balance is read during the debit. */
+    private static final OfflinePlayer OWNER = (OfflinePlayer) Proxy.newProxyInstance(
+            OfflinePlayer.class.getClassLoader(), new Class<?>[]{OfflinePlayer.class}, (p, m, a) -> {
+                if (m.getName().equals("getUniqueId")) return new UUID(0, 43);
+                throw new AssertionError("unexpected player call: " + m.getName());
+            });
     private static final long CENTS = 2_500;
 
-    /** Fake Vault provider. getBalance call number flipOnBalanceCall runs the re-entrant hook. */
+    /** Fake two-account Vault provider. getBalance call number flipOnBalanceCall runs the re-entrant hook. */
     private static final class Provider {
-        double balance = 1_000;
+        double balance = 1_000, ownerBalance = 50;
         int balanceCalls, withdraws, deposits, flipOnBalanceCall = -1;
         Runnable reentrantHook = () -> { };
         final Economy economy = (Economy) Proxy.newProxyInstance(Economy.class.getClassLoader(),
@@ -41,9 +47,9 @@ class FinalDebitChecksReentrancyTest {
                     switch (m.getName()) {
                         case "isEnabled": return true;
                         case "getBalance": {
-                            assertSame(ACCOUNT, a[0]);
+                            assertTrue(a[0] == ACCOUNT || a[0] == OWNER);
                             if (++balanceCalls == flipOnBalanceCall) reentrantHook.run();
-                            return balance;
+                            return a[0] == OWNER ? ownerBalance : balance;
                         }
                         case "withdrawPlayer": case "depositPlayer": {
                             assertSame(ACCOUNT, a[0]);
@@ -93,7 +99,7 @@ class FinalDebitChecksReentrancyTest {
             }, flags.debitGate, flags.awayHeld);
             return provider.economy;
         }, () -> true);
-        return observer.execute(ID, ACCOUNT, CENTS, leg);
+        return observer.execute(ID, ACCOUNT, OWNER, CENTS, leg);
     }
 
     @Test void positiveControlWithoutAFlipTheDebitWithdrawsOnce() {
@@ -108,8 +114,9 @@ class FinalDebitChecksReentrancyTest {
 
     @Test void appreciationTurnedOffInsideTheFloorReadBlocksTheWithdraw() {
         var provider = new Provider(); var flags = new Flags();
-        // Call 1 is VaultLegObservation's pre-balance; call 2 is requireFloor's read inside the final checks.
-        provider.flipOnBalanceCall = 2;
+        // Call 1 is the owner's headroom read, call 2 VaultLegObservation's pre-balance, and call 3 is
+        // requireFloor's read inside the final checks.
+        provider.flipOnBalanceCall = 3;
         provider.reentrantHook = () -> flags.appreciationOn.set(false);
         var observation = execute(provider, flags, TransferProof.Leg.DEBIT, FIXED, new ArrayList<>());
         assertFalse(flags.appreciationOn.get(), "the hook really flipped the flag");
@@ -117,12 +124,14 @@ class FinalDebitChecksReentrancyTest {
         assertEquals(1_000, provider.balance);
         assertTrue(observation.threw());
         assertFalse(observation.responsePresent());
-        assertNotEquals(TransferProof.LegOutcome.CONFIRMED, TransferProof.evaluate(CENTS, TransferProof.Leg.DEBIT, observation));
+        assertEquals(TransferProof.Refusal.PRECHECK_REFUSED, observation.refusedBeforeCall());
+        assertEquals("java.lang.IllegalStateException", observation.refusalCause());
+        assertEquals(TransferProof.LegOutcome.NO_MOVEMENT, TransferProof.evaluate(CENTS, TransferProof.Leg.DEBIT, observation));
     }
 
     @Test void ownerTurnedAwayInsideTheFloorReadBlocksTheWithdraw() {
         var provider = new Provider(); var flags = new Flags();
-        provider.flipOnBalanceCall = 2;
+        provider.flipOnBalanceCall = 3;
         provider.reentrantHook = () -> flags.ownerAway.set(true);
         var observation = execute(provider, flags, TransferProof.Leg.DEBIT, FIXED, new ArrayList<>());
         assertTrue(flags.ownerAway.get(), "the hook really flipped the flag");
@@ -130,13 +139,31 @@ class FinalDebitChecksReentrancyTest {
         assertEquals(1_000, provider.balance);
         assertTrue(observation.threw());
         assertFalse(observation.responsePresent());
+        assertEquals(TransferProof.Refusal.PRECHECK_REFUSED, observation.refusedBeforeCall());
+        assertEquals(TransferProof.LegOutcome.NO_MOVEMENT, TransferProof.evaluate(CENTS, TransferProof.Leg.DEBIT, observation));
+    }
+
+    @Test void flipsInTheHeadroomAndPreBalanceReadsAlsoBlockTheWithdraw() {
+        // Calls 1 (the owner's headroom) and 2 (the payer's pre-balance) are external too, and both come before the
+        // final checks, so the checks see the flip.
+        for (int call : new int[]{1, 2}) {
+            for (boolean appreciation : new boolean[]{true, false}) {
+                var provider = new Provider(); var flags = new Flags();
+                provider.flipOnBalanceCall = call;
+                provider.reentrantHook = appreciation ? () -> flags.appreciationOn.set(false) : () -> flags.ownerAway.set(true);
+                var observation = execute(provider, flags, TransferProof.Leg.DEBIT, FIXED, new ArrayList<>());
+                assertEquals(0, provider.withdraws, "call " + call);
+                assertEquals(TransferProof.Refusal.PRECHECK_REFUSED, observation.refusedBeforeCall(), "call " + call);
+                assertEquals(TransferProof.LegOutcome.NO_MOVEMENT, TransferProof.evaluate(CENTS, TransferProof.Leg.DEBIT, observation));
+            }
+        }
     }
 
     @Test void negativeControlTheOldOrderWithdrawsDespiteEitherFlip() {
         // Proves the two tests above can fail: without the reread, both flips go unnoticed and money moves.
         for (boolean appreciation : new boolean[]{true, false}) {
             var provider = new Provider(); var flags = new Flags();
-            provider.flipOnBalanceCall = 2;
+            provider.flipOnBalanceCall = 3;
             provider.reentrantHook = appreciation ? () -> flags.appreciationOn.set(false) : () -> flags.ownerAway.set(true);
             var observation = execute(provider, flags, TransferProof.Leg.DEBIT, LEGACY, new ArrayList<>());
             assertEquals(1, provider.withdraws, appreciation ? "appreciation flip" : "away flip");
@@ -159,7 +186,7 @@ class FinalDebitChecksReentrancyTest {
             UtilityPaymentRuntime.finalDebitChecks(TransferProof.Leg.CREDIT, () -> trace.add("debit-only"),
                     flags.debitGate, flags.awayHeld);
             return provider.economy;
-        }, () -> true).execute(ID, ACCOUNT, CENTS, TransferProof.Leg.CREDIT);
+        }, () -> true).execute(ID, ACCOUNT, OWNER, CENTS, TransferProof.Leg.CREDIT);
         assertTrue(checks[0] >= 2 && !flags.appreciationOn.get() && flags.ownerAway.get(), "flipped before the deposit");
         assertEquals(1, provider.deposits);
         assertEquals(TransferProof.LegOutcome.CONFIRMED, TransferProof.evaluate(CENTS, TransferProof.Leg.CREDIT, observation));

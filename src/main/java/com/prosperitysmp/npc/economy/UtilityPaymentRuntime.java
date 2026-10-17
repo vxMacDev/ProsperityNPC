@@ -21,6 +21,7 @@ import java.util.Collection;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.List;
@@ -37,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.DoubleSupplier;
 import java.util.function.Function;
 import java.util.function.IntConsumer;
 import java.util.function.Supplier;
@@ -82,6 +84,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     private final AutoCareRepository autoCare;
     private final RentReservationRepository rents;
     private final TransferJournal journal;
+    /** Main thread only: payments refused before any money moved. */
+    private final RefusalMonitor refusals;
     private final EconomyClock days;
     private final ThreadPoolExecutor worker;
     private final ArrayBlockingQueue<Runnable> deliveries = new ArrayBlockingQueue<>(4);
@@ -156,6 +160,13 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 Boolean.TRUE.equals(plugin.getConfig().get("housing.premium-enabled")),
                 plugin.accountLinks(), plugin::linkedAccountsEnabled);
         journal = new TransferJournal(plugin.database(), reserve);
+        refusals = new RefusalMonitor((kind, subject, text) -> plugin.alerts().raise(kind, subject, text),
+                plugin.getLogger()::warning, Bukkit::isPrimaryThread);
+        String build = plugin.getPluginMeta().getVersion();
+        Path ownJar;
+        try { ownJar = Path.of(UtilityPaymentRuntime.class.getProtectionDomain().getCodeSource().getLocation().toURI()); }
+        catch (Exception unavailable) { ownJar = null; }
+        final Path runJar = ownJar;
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(2), r -> {
             Thread t = new Thread(r, "npc-utility-payment");
             t.setDaemon(true);
@@ -174,6 +185,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         var database = plugin.database();
         // One bounded pass, not an automatic recovery loop. Existing ambiguity also holds a new host.
         CompletableFuture.supplyAsync(() -> {
+            // Ties every row this run writes (run_id) to the build and jar that wrote it.
+            plugin.getLogger().info(runLine("NPC run", runId, build, runJar));
             try {
                 int changed = journal.recoverOtherRuns(runId, 100);
                 if (changed != 0) return false;
@@ -290,7 +303,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         if (registration == null || !registration.getProvider().isEnabled()) return false;
         final long availableCents;
         try {
-            availableCents = TransferProof.toCents(registration.getProvider().getBalance(Bukkit.getOfflinePlayer(actor))).orElseThrow();
+            availableCents = TransferProof.availableCents(registration.getProvider().getBalance(Bukkit.getOfflinePlayer(actor))).orElseThrow();
         } catch (RuntimeException unreadable) { return false; }
         final Path providerJar;
         try {
@@ -325,8 +338,14 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
             return false; // No file task or SQL was accepted.
         }
         fingerprint
+                // Nothing is written until prepare below: a failure up to there started no payment.
+                .handle((sha, error) -> {
+                    if (error != null) throw NotStarted.of(error);
+                    return sha;
+                })
                 .thenComposeAsync(sha -> {
-                    validate(property, actor, authorized, registration, lease, day);
+                    try { validate(property, actor, authorized, registration, lease, day); }
+                    catch (RuntimeException | LinkageError refused) { throw new NotStarted(refused); }
                     return CompletableFuture.supplyAsync(() -> {
                         var prepared = prepare(requestId, property, actor, incidentId, target, day, maximumCents, availableCents);
                         if (recurring != null) {
@@ -345,32 +364,34 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                             worker).thenComposeAsync(prepared -> {
                         // Proven no-new-payment paths do not need renewed presentation permission to release.
                         if (prepared.terminal() != null) return CompletableFuture.completedFuture(prepared.terminal());
-                        validate(property, actor, authorized, registration, lease, day);
-                        // Held by owner-away since admission: fail closed into recovery; the prepared row is kept, not erased.
-                        requireAwayDebitGate(TransferProof.Leg.DEBIT, awayHeld);
+                        // Authority and owner-away are rechecked in authorize, on main right before the debit. A refusal
+                        // there is journaled as a decline and the prepared row is declined with it, so it never holds.
                         if (prepared.cents() <= 0 || prepared.cents() > maximumCents)
                             throw new IllegalStateException("Payment preparation binding failed");
                         var handle = new TransferJournal.Handle(UUID.randomUUID(), prepared.eventId(), runId, sha);
                         var transfer = new JournaledTransfer(journal, (receipt, leg) -> {
                             int[] providerChecks = {0};
                             var observer = new VaultLegObservation(registration.getProvider(), () -> {
-                                validate(property, actor, () -> actorAuthorization(leg, authorized), registration, lease,
-                                        leg == TransferProof.Leg.CREDIT ? days.today() : day);
+                                requireLegAuthority(leg, () -> registration(), registration,
+                                        () -> validate(property, actor, authorized, registration, lease, day));
                                 // Second provider check: after the pre-balance read, immediately before the withdraw.
                                 if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) requireAwayDebitGate(leg, awayHeld);
                                 return registration.getProvider();
                             }, Bukkit::isPrimaryThread);
                             UUID account = leg == TransferProof.Leg.DEBIT ? actor : reserve;
-                            return observer.execute(account, Bukkit.getOfflinePlayer(account), receipt.cents(), leg);
-                        }, worker, mainExecutor);
+                            UUID counterparty = leg == TransferProof.Leg.DEBIT ? reserve : actor;
+                            return observer.execute(account, Bukkit.getOfflinePlayer(account),
+                                    Bukkit.getOfflinePlayer(counterparty), receipt.cents(), leg);
+                        }, worker, mainExecutor, (leg, refused) -> refusals.refused("utility", "event " + prepared.eventId(), leg, refused));
                         return transfer.submit(handle, new JournaledTransfer.Lease() {
                             public void authorize(TransferJournal.Receipt receipt, TransferProof.Leg leg) {
-                                validate(property, actor, () -> actorAuthorization(leg, authorized), registration, lease,
-                                        leg == TransferProof.Leg.CREDIT ? days.today() : day);
+                                // A receipt bound to another payment is a defect: it holds for staff, never declines.
                                 if (!receipt.handle().equals(handle) || !receipt.payer().equals(actor)
                                         || !receipt.payee().equals(reserve) || receipt.cents() != prepared.cents()
                                         || receipt.cents() > maximumCents)
-                                    throw new IllegalStateException("Utility transfer binding failed");
+                                    throw new JournaledTransfer.BindingFailed("Utility transfer binding failed");
+                                requireLegAuthority(leg, () -> registration(), registration,
+                                        () -> validate(property, actor, authorized, registration, lease, day));
                                 requireAwayDebitGate(leg, awayHeld);
                             }
                             public void releaseVerified(TransferJournal.Receipt receipt) {
@@ -404,6 +425,13 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                     try { post(() -> {
                         plugin.accountingProjection().invalidate();
                         recovery = true;
+                        NotStarted stopped = NotStarted.in(failure);
+                        if (stopped != null && releaseUnstarted(lease, requestId)) {
+                            refusals.notStarted("utility", "request " + requestId, stopped.getCause());
+                            finished.accept(false);
+                            respond(authorized, reply, NOT_STARTED_REPLY);
+                            return;
+                        }
                         if (failure != null) {
                             plugin.getLogger().warning("Payment recovery required; request " + requestId + "; lease retained.");
                             plugin.alerts().raise(StaffAlerts.Kind.PAYMENT_HELD_FOR_REVIEW, "request-" + requestId,
@@ -432,6 +460,8 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                         busy = false;
                         recovery = false;
                         releaseFinancial();
+                        if (state == Result.PAID || state == Result.REPAIRED || state == Result.EVICTED || state == Result.INSURED
+                                || state == Result.PURCHASED) refusals.paid("utility");
                         finished.accept(true);
                         respond(authorized, reply, switch (state) {
                             case ALREADY_PAID -> "Utility bill already paid; no additional charge.";
@@ -456,6 +486,60 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                     } catch (RuntimeException stopped) { /* Shutdown retains the lease; no further money call. */ }
                 });
         return true;
+    }
+
+    /**
+     * The startup line that ties every row a run writes (run_id) to the build and jar that wrote it, for example
+     * "NPC run <uuid> build 0.2.0-dev.63 jar <sha256>". An unreadable jar prints "unavailable". Worker thread.
+     */
+    static String runLine(String label, UUID runId, String build, Path jar) {
+        String jarSha;
+        try { jarSha = jar == null ? "unavailable" : hash(jar); }
+        catch (RuntimeException unreadable) { jarSha = "unavailable"; }
+        return label + " " + runId + " build " + build + " jar " + jarSha;
+    }
+
+    /** The reply when a request stopped before any payment row or transfer existed. */
+    static final String NOT_STARTED_REPLY = "No payment was started. Nothing was charged.";
+    /** The reply when a rent batch stopped before any reservation or transfer existed. */
+    static final String RENT_NOT_STARTED_REPLY = "Rent batch not started; nothing was paid.";
+
+    /**
+     * Main thread. A request that stopped before any SQL row or transfer existed releases what it held. False
+     * when the lease cannot be released, which leaves the request to the normal recovery hold.
+     */
+    private boolean releaseUnstarted(OwnershipFence.Lease lease, UUID requestId) {
+        try { lease.releaseReconciled(); }
+        catch (RuntimeException failureToRelease) {
+            plugin.getLogger().warning("Utility lease release requires review; request " + requestId);
+            return false;
+        }
+        retainedLease = null;
+        busy = false;
+        recovery = false;
+        releaseFinancial();
+        return true;
+    }
+
+    /**
+     * Main thread. A rent batch that stopped before any reservation or transfer existed releases its leases. False
+     * when one cannot be released, which leaves the batch to the normal recovery hold.
+     */
+    private boolean releaseUnstartedRent(UUID batchId) {
+        return releasedQuietly(this::releaseUnusedRent, plugin.getLogger()::warning,
+                "Rent lease release requires review; batch " + batchId);
+    }
+
+    /** Runs a release. False, with the warning logged, when it throws: the caller then keeps its recovery hold. */
+    static boolean releasedQuietly(Runnable release, Consumer<String> warn, String warning) {
+        try {
+            release.run();
+            return true;
+        } catch (RuntimeException | LinkageError failed) {
+            try { warn.accept(warning); }
+            catch (RuntimeException | LinkageError unlogged) { /* The recovery hold still follows. */ }
+            return false;
+        }
     }
 
     /** Explicit current-day batch; utility, repairs and rent share the same admission gate. */
@@ -544,10 +628,16 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
             releaseFinancial();
             return false;
         }
-        fingerprint.thenComposeAsync(sha -> {
-            requireLimits(limits);
-            for (Property property : properties)
-                validate(property, property.ownerUuid(), authorized, pinned, rentLeases.get(property.propertyId()), day);
+        // Nothing is written until the reservation step below: a failure up to there started no payout.
+        fingerprint.handle((sha, error) -> {
+            if (error != null) throw NotStarted.of(error);
+            return sha;
+        }).thenComposeAsync(sha -> {
+            try {
+                requireLimits(limits);
+                for (Property property : properties)
+                    validate(property, property.ownerUuid(), authorized, pinned, rentLeases.get(property.propertyId()), day);
+            } catch (RuntimeException | LinkageError refused) { throw new NotStarted(refused); }
             // Re-read on main after the fingerprint hop: switched off mid-batch means no retirement in this batch.
             boolean retireNow = retire && payoutRetirementActive();
             // Re-read on main too: either read in use means due rent changes are held (the safe side).
@@ -591,6 +681,16 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         }, mainExecutor).whenComplete((paid, failure) -> {
             try { post(() -> {
                 plugin.accountingProjection().invalidate();
+                NotStarted stopped = NotStarted.in(failure);
+                // No reservation or transfer exists for this batch, so every lease it took may reopen. A lease that
+                // cannot be released leaves the batch to the normal recovery hold below.
+                if (stopped != null && releaseUnstartedRent(batchId)) {
+                    busy = false;
+                    releaseFinancial();
+                    refusals.notStarted("rent", "batch " + batchId, stopped.getCause());
+                    respond(authorized, reply, RENT_NOT_STARTED_REPLY);
+                    return;
+                }
                 if (failure != null) {
                     recovery = true;
                     plugin.getLogger().warning("Rent recovery required; batch " + batchId + "; unreleased leases retained.");
@@ -952,6 +1052,22 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         requireAwayDebitGate(leg, awayHeld);
     }
 
+    /**
+     * Main thread. Tells staff and the server log about a rent or appreciation payout that stopped before its debit
+     * intent, once its lease is released. Nothing moved, so a report that fails must not stop the batch and hold the
+     * homes after it: it is written to the server log instead, never thrown. A null alert or warning is not sent.
+     */
+    private void payoutNotStarted(StaffAlerts.Kind kind, String subject, String alert, String warning) {
+        reportNotStarted((k, s, text) -> plugin.alerts().raise(k, s, text), text -> plugin.getLogger().warning(text),
+                kind, subject, alert, warning);
+    }
+
+    static void reportNotStarted(RefusalMonitor.Alerts alerts, Consumer<String> log, StaffAlerts.Kind kind,
+            String subject, String alert, String warning) {
+        if (alert != null) RefusalMonitor.quietly(() -> alerts.raise(kind, subject, alert));
+        if (warning != null) RefusalMonitor.quietly(() -> log.accept(warning));
+    }
+
     /** Main thread. Rent and appreciation: this home is held by owner-away now (flag on only). */
     private boolean payoutAwayHeld(Property property) {
         return awayHeldNow(plugin.getConfig().get(AWAY_DEBIT_RECHECK), () -> plugin.ownerAway().holds(property));
@@ -963,6 +1079,18 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 + (held == 0 ? "" : " Rent held: owner unavailable for " + held + " propert" + (held == 1 ? "y." : "ies."))
                 + (!appreciate ? "" : appreciated < 0 ? " Yesterday's appreciation held this batch; none paid."
                         : " Yesterday's appreciation: " + appreciated + " verified payouts.");
+    }
+
+    /** The owner-away decision, or null when it cannot be read. Before any intent exists, unknown means hold. */
+    static Boolean awayDecision(BooleanSupplier held) {
+        try { return held.getAsBoolean(); }
+        catch (RuntimeException | LinkageError unreadable) { return null; }
+    }
+
+    /** Whole cents certainly available, or empty when the balance cannot be read or verified. */
+    static OptionalLong readableCents(DoubleSupplier balance) {
+        try { return TransferProof.availableCents(balance.getAsDouble()); }
+        catch (RuntimeException | LinkageError unreadable) { return OptionalLong.empty(); }
     }
 
     /** Rent has no payout flag of its own beyond ready(), so its DEBIT gate never refuses. */
@@ -980,24 +1108,49 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         Objects.requireNonNull(debitGate);
         Property property = row.property();
         var lease = rentLeases.get(property.propertyId());
-        requireLimits(limits);
-        validate(property, property.ownerUuid(), authorized, pinned, lease, day);
+        try {
+            requireLimits(limits);
+            validate(property, property.ownerUuid(), authorized, pinned, lease, day);
+        } catch (RuntimeException | LinkageError refused) {
+            // No debit intent has been dispatched. Like the owner-away hold below, release the lease and leave the
+            // SQL reservation PENDING. A lease that cannot be released stays the normal recovery hold.
+            lease.releaseReconciled();
+            rentLeases.remove(property.propertyId());
+            payoutNotStarted(StaffAlerts.Kind.PAYOUT_REFUSED, "property-" + property.propertyId(),
+                    "Payout not started: authority changed. Property " + property.regionId() + ".",
+                    "Payout not started for property " + property.regionId() + ": authority changed ("
+                            + TransferProof.causeName(refused) + "). Reservation left pending; no money moved.");
+            return CompletableFuture.completedFuture(false);
+        }
         BooleanSupplier awayHeld = () -> payoutAwayHeld(property);
-        if (awayHeld.getAsBoolean()) {
+        // An owner-away decision that cannot be read holds this payout like an away owner: no intent exists yet.
+        Boolean away = awayDecision(awayHeld);
+        if (away == null || away) {
             // Held by owner-away since the batch admitted it. No debit intent has been dispatched: release the lease and
             // leave the SQL reservation PENDING, as a floor deferral does, without counting as a floor deferral.
             lease.releaseReconciled(); rentLeases.remove(property.propertyId());
-            plugin.getLogger().warning("Payout held: owner away for property " + property.regionId()
-                    + " (decided after the batch started). Reservation left pending; no money moved.");
+            if (away == null) {
+                payoutNotStarted(StaffAlerts.Kind.PAYOUT_REFUSED, "property-" + property.propertyId(),
+                        "Payout not started: the owner-away decision cannot be read. Property " + property.regionId() + ".",
+                        "Payout held for property " + property.regionId()
+                                + ": the owner-away decision cannot be read. Reservation left pending; no money moved.");
+            } else {
+                payoutNotStarted(null, null, null, "Payout held: owner away for property " + property.regionId()
+                        + " (decided after the batch started). Reservation left pending; no money moved.");
+            }
             return CompletableFuture.completedFuture(false);
         }
-        long available = TransferProof.toCents(pinned.getProvider().getBalance(Bukkit.getOfflinePlayer(reserve))).orElseThrow();
-        if(!floorAllows(available,row.cents(),limits.centralBankFloorCents())) {
+        // A reserve balance that cannot be read defers the payout, as an unverifiable one does.
+        var available = readableCents(() -> pinned.getProvider().getBalance(Bukkit.getOfflinePlayer(reserve)));
+        if(available.isEmpty() || !floorAllows(available.getAsLong(),row.cents(),limits.centralBankFloorCents())) {
             // No debit intent has been dispatched. Retain the SQL reservation, not a live lease.
             lease.releaseReconciled();
             rentLeases.remove(property.propertyId());
-            plugin.alerts().raise(StaffAlerts.Kind.RESERVE_BELOW_FLOOR, "property-" + property.propertyId(),
-                    "Payout deferred: the reserve would fall below its floor. Property " + property.regionId() + ".");
+            payoutNotStarted(StaffAlerts.Kind.RESERVE_BELOW_FLOOR, "property-" + property.propertyId(),
+                    available.isEmpty()
+                            ? "Payout deferred: the reserve balance cannot be verified. Property " + property.regionId() + "."
+                            : "Payout deferred: the reserve would fall below its floor. Property " + property.regionId() + ".",
+                    null);
             floorDeferred.run();
             return CompletableFuture.completedFuture(false);
         }
@@ -1005,10 +1158,10 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         var transfer = new JournaledTransfer(journal, (receipt, leg) -> {
             int[] providerChecks = {0};
             var observer = new VaultLegObservation(pinned.getProvider(), () -> {
-                requireLimits(limits);
-                // A day rollover cannot revoke credit for a debit already acknowledged on the captured day.
-                validate(property, property.ownerUuid(), () -> actorAuthorization(leg, authorized), pinned, lease,
-                        leg == TransferProof.Leg.CREDIT ? days.today() : day);
+                requireLegAuthority(leg, () -> registration(), pinned, () -> {
+                    requireLimits(limits);
+                    validate(property, property.ownerUuid(), authorized, pinned, lease, day);
+                });
                 // VaultLegObservation's second provider check is after its pre-balance and immediately
                 // before withdrawal. Do not apply this subtraction again to the post-debit balance.
                 // The flags are reread after requireFloor's getBalance and validate's plugin calls, any of which may
@@ -1021,16 +1174,27 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
                 return pinned.getProvider();
             }, Bukkit::isPrimaryThread);
             UUID account = leg == TransferProof.Leg.DEBIT ? reserve : property.ownerUuid();
-            return observer.execute(account, Bukkit.getOfflinePlayer(account), receipt.cents(), leg);
-        }, worker, mainExecutor);
+            UUID counterparty = leg == TransferProof.Leg.DEBIT ? property.ownerUuid() : reserve;
+            return observer.execute(account, Bukkit.getOfflinePlayer(account), Bukkit.getOfflinePlayer(counterparty),
+                    receipt.cents(), leg);
+        }, worker, mainExecutor, (leg, refused) -> {
+            // Refused before any money moved. A refused debit is declined and today's reservation stays used;
+            // a refused credit holds payments until staff refund the debit.
+            plugin.alerts().raise(StaffAlerts.Kind.PAYOUT_REFUSED, "property-" + property.propertyId(),
+                    "Payout refused before any money moved (" + refused.refusedBeforeCall() + ", " + leg + "). Property "
+                            + property.regionId() + ".");
+            refusals.refused("rent", "event " + row.eventId(), leg, refused);
+        });
         return transfer.submit(handle, new JournaledTransfer.Lease() {
             public void authorize(TransferJournal.Receipt receipt, TransferProof.Leg leg) {
-                requireLimits(limits);
-                validate(property, property.ownerUuid(), () -> actorAuthorization(leg, authorized), pinned, lease,
-                        leg == TransferProof.Leg.CREDIT ? days.today() : day);
+                // A receipt bound to another payout is a defect: it holds for staff, never declines.
                 if (!receipt.handle().equals(handle) || !receipt.payer().equals(reserve)
                         || !receipt.payee().equals(property.ownerUuid()) || receipt.cents() != row.cents())
-                    throw new IllegalStateException("Rent transfer binding failed");
+                    throw new JournaledTransfer.BindingFailed("Rent transfer binding failed");
+                requireLegAuthority(leg, () -> registration(), pinned, () -> {
+                    requireLimits(limits);
+                    validate(property, property.ownerUuid(), authorized, pinned, lease, day);
+                });
                 finalDebitChecks(leg, () -> {
                     requireFloor(pinned.getProvider(), receipt.cents(), limits.centralBankFloorCents());
                     requireLimits(limits);
@@ -1044,6 +1208,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         }).thenApply(receipt -> {
             if (receipt.state() != TransferJournal.State.PAID && receipt.state() != TransferJournal.State.DECLINED)
                 throw new IllegalStateException("Rent transfer requires recovery");
+            if (receipt.state() == TransferJournal.State.PAID) refusals.paid("rent");
             return receipt.state() == TransferJournal.State.PAID;
         }).toCompletableFuture();
     }
@@ -1058,8 +1223,14 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     private CompletableFuture<Integer> payAppreciation(List<Property> properties, String sha, EconomyLimits limits,
             LocalDate day, RegisteredServiceProvider<Economy> pinned, BooleanSupplier authorized) {
         main();
-        requireLimits(limits);
         if (!rentLeases.isEmpty()) throw new IllegalStateException("Rent leases outstanding before appreciation");
+        // Limits reloaded since rent: nothing is reserved or leased yet, so appreciation simply does not run.
+        try { requireLimits(limits); }
+        catch (RuntimeException | LinkageError changed) {
+            payoutNotStarted(null, null, null, "Appreciation not started: limits changed (" + TransferProof.causeName(changed)
+                    + "). Nothing reserved; no money moved.");
+            return CompletableFuture.completedFuture(-1);
+        }
         // Reread on main before every dispatch: /npcadmin reload can turn appreciation off during any async hop.
         BooleanSupplier stillOn = () -> appreciationEnabled(plugin.getConfig().get(APPRECIATION));
         if (!stillOn.getAsBoolean()) return CompletableFuture.completedFuture(-1);
@@ -1161,7 +1332,7 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
     }
 
     private void requireFloor(Economy provider, long cents, long floor) {
-        long balance = TransferProof.toCents(provider.getBalance(Bukkit.getOfflinePlayer(reserve))).orElseThrow();
+        long balance = TransferProof.availableCents(provider.getBalance(Bukkit.getOfflinePlayer(reserve))).orElseThrow();
         if (cents <= 0 || floor < 0 || balance < cents || balance - cents < floor)
             throw new IllegalStateException("Rent reserve floor unavailable");
     }
@@ -1385,10 +1556,21 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
         return plugin.accountingProjection() != null && plugin.accountingProjection().ready();
     }
 
-    static boolean actorAuthorization(TransferProof.Leg leg, BooleanSupplier authorized) {
-        // CREDIT is reachable only after an acknowledged debit. It completes the already
-        // authorized receipt; closing the menu or disconnecting cannot revoke that obligation.
-        return leg == TransferProof.Leg.CREDIT || authorized.getAsBoolean();
+    /**
+     * What a leg rechecks on main before its money call. The debit runs every check. The credit is reachable only
+     * after an acknowledged debit and completes it: a config reload, a kill switch, a limit, the player leaving or
+     * losing permission, a home sale or a day rollover between the legs must not strand money already taken. So
+     * the credit checks only that the economy provider the debit used is still the registered one and enabled.
+     * The receipt's binding to its accounts is checked before this, for both legs.
+     */
+    static void requireLegAuthority(TransferProof.Leg leg, Supplier<RegisteredServiceProvider<Economy>> registered,
+                                    RegisteredServiceProvider<Economy> pinned, Runnable debitChecks) {
+        if (leg != TransferProof.Leg.CREDIT) {
+            debitChecks.run();
+            return;
+        }
+        if (registered.get() != pinned || !pinned.getPlugin().isEnabled() || !pinned.getProvider().isEnabled())
+            throw new IllegalStateException("Economy provider changed before the credit");
     }
 
     private void validate(Property property, UUID actor, BooleanSupplier authorized,
@@ -1445,6 +1627,12 @@ public final class UtilityPaymentRuntime implements AutoCloseable {
 
     private synchronized void post(Runnable task) {
         if (closed || !deliveries.offer(task)) throw new RejectedExecutionException("Utility delivery unavailable");
+    }
+
+    /** True while a payment of this runtime is held for staff, including the startup hold. Main thread. */
+    public boolean recoveryHeld() {
+        main();
+        return recovery;
     }
 
     public String status() {

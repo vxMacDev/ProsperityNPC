@@ -109,6 +109,8 @@ class UtilityServiceRepositoryIT {
                 if (number == 14) v14 = path;
             }
             assertNotNull(v14, "V14 must be registered in MigrationRunner, not just present on disk");
+            // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+            try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
             tables = rows("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
                     + "AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME").stream().map(List::getFirst).toList();
             assertTrue(tables.containsAll(List.of("npc_utility_bills", "npc_utility_payments")));

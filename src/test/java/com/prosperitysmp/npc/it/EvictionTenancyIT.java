@@ -82,6 +82,8 @@ class EvictionTenancyIT {
                     "V6__incident_repairs.sql", "V7__incident_rolls.sql")) applyResource("/db/migration/" + file);
             applyResource(V8);
             applyResource("/db/migration/V15__tenancy_departures.sql");
+            // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+            try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
         } catch (Exception | AssertionError failure) {
             try { stopDatabase(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
             throw failure;

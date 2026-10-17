@@ -50,6 +50,8 @@ class AccountingProjectionCommerceIT {
                 for(String sql:MigrationRunner.splitStatements(new String(input.readAllBytes(),StandardCharsets.UTF_8))) execute(sql);
             }
         }
+        // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+        try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
         var profile=ResidentCatalogue.betaCast().getFirst(); new ResidentRepository(database).register(profile); resident=profile.id();
     }
     @AfterAll static void stop() throws Exception {

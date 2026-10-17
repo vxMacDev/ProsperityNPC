@@ -401,8 +401,8 @@ public final class AutoCareRepository {
                     yield Proof.PAID;
                 }
                 case DECLINED -> {
-                    require(!creditStarted && credit == null && TransferProof.evaluate(claim.quotedCents(), TransferProof.Leg.DEBIT, debit)
-                            == TransferProof.LegOutcome.NO_MOVEMENT, "Auto-care decline proof missing");
+                    require(!creditStarted && TransferJournal.declinedProof(c, handle.attemptId(), claim.quotedCents(), false, debit, credit),
+                            "Auto-care decline proof missing");
                     yield Proof.DECLINED;
                 }
                 case DEBIT_INTENT -> {
@@ -428,9 +428,15 @@ public final class AutoCareRepository {
         try (var ps = prepare(c, "SELECT * FROM npc_transfer_observations WHERE attempt_id=? AND leg=? FOR UPDATE", attempt, leg.name());
              var rs = ps.executeQuery()) {
             if (!next(c, ps, rs)) return null;
-            var result = new TransferProof.Observation(number(rs, "response_present", 0, 1) == 1,
-                    number(rs, "response_success", 0, 1) == 1, dollars(rs, "reported_bits"), dollars(rs, "before_bits"),
-                    dollars(rs, "after_bits"), number(rs, "threw", 0, 1) == 1);
+            TransferProof.Observation result;
+            try {
+                result = new TransferProof.Observation(number(rs, "response_present", 0, 1) == 1,
+                        number(rs, "response_success", 0, 1) == 1, dollars(rs, "reported_bits"), dollars(rs, "before_bits"),
+                        dollars(rs, "after_bits"), number(rs, "threw", 0, 1) == 1,
+                        TransferJournal.refusal(rs.getString("refused_before_call")), rs.getString("refusal_cause"));
+            } catch (IllegalArgumentException malformed) {
+                throw new SQLException("Invalid auto-care observation", malformed);
+            }
             require(!next(c, ps, rs), "Duplicate auto-care observation");
             return result;
         }

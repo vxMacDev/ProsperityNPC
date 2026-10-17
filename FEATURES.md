@@ -115,9 +115,32 @@ Common requirements, used below:
 - **Directions.** A private boss-bar compass, in a straight line, to a fixed stop. For an errand
   it points to the recipient's market stop. It stops within 5 blocks or after 5 minutes. On:
   `town.enabled` plus the `system` and `rendering` switches.
-- **Route authoring (staff).** `/npcnav scanhere|scanbox|taghere|corridor|validate|publish|info|list`.
+- **Route authoring (staff).** `/npcnav scanhere|scanbox|taghere|copytags|corridor|validate|audit|publish|restore|revalidate|palette|info|list`.
   Always on for staff with `prosperitynpc.admin`. `nav.scan-below` and `nav.scan-above` set how
   far `scanhere` looks.
+- **Sidewalk routing.** Residents walk only on sidewalk blocks (plus optional "access" blocks for lot
+  paths and doorsteps). They step onto a road only to cross it, in a straight line to the sidewalk
+  directly opposite, and never turn, cut a corner or walk along the road. When a painted crosswalk is
+  within `nav.street.crosswalk-reach` blocks of sidewalk detour they use it, on any road width;
+  otherwise they cross straight over the shortest stretch. They never spawn, start or end a trip on a
+  road, and a time-of-day change mid-crossing waits until the crossing is finished. Everything is block
+  lists and numbers in `nav.palettes` and `nav.street`; places come from staff scans, never from code.
+  A palette is a plain list of materials (every block is ordinary ground, as before) or a section with
+  `sidewalk`, `road`, `crossing` and `access` lists. A typo, a block in two lists, an empty sidewalk
+  or road list, or a block that is not a full block is an error, and only the name `default` falls back
+  to the built-in list. Graphs scanned before dev.62 keep working unchanged until rescanned. Staff steps:
+  `/npcnav palette <name>`, `scanbox ... <palette> load`, `copytags <old> <draft>`, `audit <draft>`,
+  `corridor`, `publish`. Add `legacy` to publish an unclassified graph on purpose.
+- **Keeping routes honest.** `/npcnav revalidate <graph|active> [load]` reports whether the world still
+  matches a published graph (CLEAN, DRIFTED, INCOMPLETE or WORLD_MISSING) and prints a ready rescan box.
+  `/npcnav audit <graph> [live] [load] [palette <name>]` walks the routes residents would take and fails
+  on any road rule broken; it is never PASS while anything is unclassified or unread. A live audit reads
+  the world with a classified palette: the one named on the command, else the graph's own, else
+  `nav.audit.palette`, and it is refused when none is classified. `/npcnav audit selftest`
+  proves the audit can fail. Each writes a log line and a JSON file under `plugins/ProsperityNPC/nav-audit/`.
+  `nav.audit.gate-publish` (on) makes `publish` refuse unclassified graphs, a changed palette and a failed
+  audit, and a graph too big for residents to plan across. `load` loads chunks without generating them,
+  DEV only. Needs migration V39.
 
 ## Training and resident shops
 
@@ -354,6 +377,11 @@ Common requirements, used below:
   (`town.commerce.delivery-save-marker`, on by default, inert while commerce is off).
 - **dev.61.** Skins whose Mojang texture id is shorter than 64 characters now load. Mojang drops
   leading zeros from the id, so about 1 skin in 16 was wrongly refused before.
+- **dev.62.** Sidewalk-aware resident routing, `/npcnav` revalidate, audit, copytags, restore and palette
+  (see Route authoring). Adds V39 (a surface class per node and the palette hash per graph). Old graphs are
+  unclassified and route exactly as before until rescanned; rolling back the jar needs no schema step.
+- **dev.63.** Legacy install-record proof reads its server and backup folder from the root-owned
+  `/etc/prosperitynpc/legacy-provenance.properties`. Without it, held legacy rows stay held.
 - **Accounting bridge.** NPC money shows as its own sources; payments wait for its acknowledgement.
 
 ## Chronicle and publication

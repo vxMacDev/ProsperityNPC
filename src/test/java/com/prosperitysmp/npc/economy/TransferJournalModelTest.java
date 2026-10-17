@@ -32,6 +32,10 @@ class TransferJournalModelTest {
         assertNotNull(new Receipt(handle(),HASH,PAYER,PAYEE,1,state,null,started));
         if (state == State.AMBIGUOUS) {
             assertNotNull(new Receipt(handle(),HASH,PAYER,PAYEE,1,state,"INTERRUPTED_RUN",true));
+        } else if (state == State.COMPENSATED) {
+            // A refund may follow a credit that started but was refused before its money call; the journal's proof
+            // decides whether that refund stands, not the receipt shape.
+            assertNotNull(new Receipt(handle(),HASH,PAYER,PAYEE,1,state,"OPERATOR_REFUND_VERIFIED",true));
         } else {
             assertThrows(IllegalArgumentException.class,
                     () -> new Receipt(handle(),HASH,PAYER,PAYEE,1,state,null,!started));

@@ -13,22 +13,46 @@ import java.util.Set;
 
 /**
  * An immutable navigation graph for a district: waypoint nodes with a world
- * position and semantic tags, plus directed, positively-weighted edges. The
- * scanner derives a graph from block material, so nothing is pinned to hardcoded
- * coordinates and it survives map changes. The graph is then validated and
- * published. Pathfinding ({@link Dijkstra}) and validation ({@link NavGraphValidator})
+ * position, a surface class and semantic tags, plus directed, positively-weighted
+ * edges. The scanner derives a graph from block material, so nothing is pinned to
+ * hardcoded coordinates. A graph describes the world as it was scanned: after the
+ * map changes, {@code /npcnav revalidate} says whether a published graph still matches.
+ * The graph is validated and published. Pathfinding ({@link Dijkstra}) and validation ({@link NavGraphValidator})
  * operate purely on this structure with no world or database access.
  */
 public final class NavGraph {
 
-    /** A walkable waypoint. {@code tags} are explicit, reviewable semantics (spawn, crosswalk, …). */
-    public record Node(long id, int x, int y, int z, Set<String> tags) {
+    /**
+     * A walkable waypoint. {@code tags} are explicit, reviewable semantics (spawn, home, and so on);
+     * {@code surface} is what the node stands on, and a crosswalk is a surface, not a tag.
+     * {@code roadWidth} is, for a node on a crossing, how far the street ran sideways of the crossing where
+     * the scan measured it (its own cell included); 0 means none was recorded (an older graph, or one made by hand).
+     */
+    public record Node(long id, int x, int y, int z, Set<String> tags, NavSurface surface, int roadWidth) {
         public Node {
             tags = tags == null ? Set.of() : Collections.unmodifiableSet(new HashSet<>(tags));
+            surface = surface == null ? NavSurface.UNKNOWN : surface;
+            if (roadWidth < 0) {
+                throw new IllegalArgumentException("road width cannot be negative");
+            }
+        }
+
+        public Node(long id, int x, int y, int z, Set<String> tags, NavSurface surface) {
+            this(id, x, y, z, tags, surface, 0);
+        }
+
+        /** A node of an unclassified (legacy) graph. */
+        public Node(long id, int x, int y, int z, Set<String> tags) {
+            this(id, x, y, z, tags, NavSurface.UNKNOWN, 0);
         }
 
         public boolean hasTag(String tag) {
             return tags.contains(tag);
+        }
+
+        /** The same node with other tags. */
+        public Node withTags(Set<String> other) {
+            return new Node(id, x, y, z, other, surface, roadWidth);
         }
     }
 
@@ -103,6 +127,11 @@ public final class NavGraph {
 
         public Builder addNode(long id, int x, int y, int z, String... tags) {
             nodes.put(id, new Node(id, x, y, z, new HashSet<>(Arrays.asList(tags))));
+            return this;
+        }
+
+        public Builder addNode(long id, int x, int y, int z, NavSurface surface, String... tags) {
+            nodes.put(id, new Node(id, x, y, z, new HashSet<>(Arrays.asList(tags)), surface));
             return this;
         }
 

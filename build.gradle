@@ -3,7 +3,13 @@ plugins {
 }
 
 group = 'com.prosperitysmp'
-version = '0.2.0-dev.61'
+version = '0.2.0-dev.63'
+
+// -PnpcBuildDir=<path> moves build output, and with it the integration-test temp folder, to another drive when this
+// one is short of space. Use a fast disk: the MariaDB integration tests time out on spinning drives.
+if (project.hasProperty('npcBuildDir')) {
+    layout.buildDirectory.set(file(project.property('npcBuildDir')))
+}
 
 repositories {
     mavenCentral()
@@ -107,7 +113,16 @@ test {
     // Several ITs also unpack MariaDB into their own temp folder. Keep all of it inside build/ and clear it before each run.
     def itTmp = layout.buildDirectory.dir('tmp/it-tmp').get().asFile
     systemProperty 'java.io.tmpdir', itTmp.absolutePath
-    doFirst { if (itTmp.exists()) itTmp.deleteDir(); itTmp.mkdirs() }
+    // One MariaDB data folder is about 160 MB and MariaDB4j only deletes it when the test JVM exits, so a single JVM
+    // for the whole suite piled up about 10 GB and filled the build drive (2026-10-14). A fresh JVM every 10 classes
+    // keeps the peak near 1.6 GB.
+    forkEvery = 10
+    doFirst {
+        if (itTmp.exists()) itTmp.deleteDir()
+        itTmp.mkdirs()
+        long freeGb = itTmp.usableSpace >> 30
+        if (freeGb < 6) throw new GradleException("Only ${freeGb} GB free on the build drive. The integration tests need about 6 GB.")
+    }
     // Reuse the already-resolved server APIs for held-service linkage tests.
     // This neither adds artifacts nor packages Paper/ARM/Citizens into the plugin.
     classpath += configurations.compileClasspath

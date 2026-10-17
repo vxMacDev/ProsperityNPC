@@ -100,8 +100,10 @@ class OwnerAwayDebitRecheckTest {
         }
         public Receipt recordDebit(Handle h, Observation o) {
             assertEquals("worker", thread); calls.add("ack-debit-" + h.eventId());
-            journal.put(h.eventId(), State.CREDIT_READY); onDebitAck.run();
-            return receipt(h, State.CREDIT_READY);
+            // As the real journal: a debit refused before its money call is a decline.
+            State next = o.refusedBeforeCall() != null ? State.DECLINED : State.CREDIT_READY;
+            journal.put(h.eventId(), next); onDebitAck.run();
+            return receipt(h, next);
         }
         public Start beginCredit(Handle h) {
             assertEquals("worker", thread); calls.add("intent-credit-" + h.eventId());
@@ -110,8 +112,9 @@ class OwnerAwayDebitRecheckTest {
         }
         public Receipt recordCredit(Handle h, Observation o) {
             assertEquals("worker", thread); calls.add("ack-credit-" + h.eventId());
-            journal.put(h.eventId(), State.PAID);
-            return receipt(h, State.PAID);
+            State next = o.refusedBeforeCall() != null ? State.AMBIGUOUS : State.PAID;
+            journal.put(h.eventId(), next);
+            return receipt(h, next);
         }
 
         /** The transfer tail of requestCore and payRent: the lease's authorize carries the away DEBIT gate. */
@@ -192,7 +195,7 @@ class OwnerAwayDebitRecheckTest {
 
     // (c) Utility / auto-care: reload lands inside the beginDebit worker hop.
 
-    @Test void utilityDebitIsRefusedWhenOwnerBecameAwayDuringTheHop() {
+    @Test void utilityDebitIsDeclinedWhenOwnerBecameAwayDuringTheHop() {
         Rig rig = new Rig(1);
         Property p = home(1);
         BooleanSupplier held = rig.utilityHeld(p, false, 0, false); // manual utility bill
@@ -200,11 +203,35 @@ class OwnerAwayDebitRecheckTest {
         rig.onDebitIntent = () -> rig.reloadOnMain(7);
         var result = rig.pay(1, held);
         rig.drain();
-        assertTrue(result.isCompletedExceptionally(), "fails closed into recovery");
-        assertEquals(Map.of(1L, State.DEBIT_INTENT), rig.journal, "the intent is kept for review, never erased");
+        // The refusal in authorize is journaled before any money call: a decline, not a recovery hold.
+        assertFalse(result.join(), "declined, not paid");
+        assertEquals(Map.of(1L, State.DECLINED), rig.journal, "the intent is declined, never erased");
         assertTrue(rig.calls.contains("authorize-DEBIT-1"));
         assertTrue(rig.calls.stream().noneMatch(c -> c.startsWith("money-")), rig.calls.toString());
-        assertEquals(Set.of(1L), rig.leases, "recovery retains the lease");
+        assertTrue(rig.leases.isEmpty(), "a proved decline releases the lease");
+        assertTrue(rig.calls.contains("release-1"));
+    }
+
+    @Test void declinedUtilityDebitLeavesTheDispatcherOpenForASameDayRetry() {
+        Rig rig = new Rig(1);
+        var dispatcher = new JournaledTransfer(rig, (receipt, leg) -> {
+            rig.calls.add("money-" + leg + "-" + receipt.handle().eventId());
+            return new Observation(true, true, 1.0, 10.0, leg == Leg.DEBIT ? 9.0 : 11.0, false);
+        }, rig.worker, rig.main);
+        boolean[] away = {true};
+        var lease = new JournaledTransfer.Lease() {
+            public void authorize(Receipt r, Leg leg) { UtilityPaymentRuntime.requireAwayDebitGate(leg, () -> away[0]); }
+            public void releaseVerified(Receipt r) { rig.calls.add("release-" + r.handle().eventId()); }
+        };
+        var first = dispatcher.submit(Rig.handle(1), lease).toCompletableFuture();
+        rig.drain();
+        assertEquals(State.DECLINED, first.join().state());
+        away[0] = false;
+        var second = dispatcher.submit(Rig.handle(2), lease).toCompletableFuture();
+        rig.drain();
+        assertEquals(State.PAID, second.join().state(), "the same dispatcher accepts the next request");
+        assertEquals(List.of("money-DEBIT-2", "money-CREDIT-2"),
+                rig.calls.stream().filter(c -> c.startsWith("money-")).toList());
     }
 
     @Test void recurringAutoCareRepairIsRefusedToo() {
@@ -212,7 +239,8 @@ class OwnerAwayDebitRecheckTest {
         var result = rig.pay(1, rig.utilityHeld(home(1), true, 42, false));
         rig.vacationDays.set(7); // reload before the queued beginDebit runs
         rig.drain();
-        assertTrue(result.isCompletedExceptionally());
+        assertFalse(result.join());
+        assertEquals(Map.of(1L, State.DECLINED), rig.journal);
         assertTrue(rig.calls.stream().noneMatch(c -> c.startsWith("money-")), rig.calls.toString());
     }
 
@@ -284,7 +312,7 @@ class OwnerAwayDebitRecheckTest {
             if (leg == Leg.DEBIT && ++providerChecks[0] == 2) UtilityPaymentRuntime.requireAwayDebitGate(leg, held);
             return economy;
         }, () -> true);
-        out[0] = observer.execute(ACCOUNT_ID, ACCOUNT, 500, leg);
+        out[0] = observer.execute(ACCOUNT_ID, ACCOUNT, ACCOUNT, 500, leg);
         return moves;
     }
 
@@ -296,6 +324,7 @@ class OwnerAwayDebitRecheckTest {
         assertEquals(0, observe(Leg.DEBIT, rig, held, out)[0], "no withdraw once the home is held");
         assertTrue(out[0].threw());
         assertFalse(out[0].responsePresent(), "no provider response: nothing moved");
+        assertEquals(Refusal.PRECHECK_REFUSED, out[0].refusedBeforeCall(), "refused before the call, so a decline");
         // Credit is never refused by owner-away.
         Rig credit = new Rig();
         assertEquals(1, observe(Leg.CREDIT, credit, credit.payoutHeld(home(1)), out)[0]);
@@ -320,13 +349,16 @@ class OwnerAwayDebitRecheckTest {
         assertTrue(rig.leases.isEmpty(), "the held row's lease is released, nothing was dispatched");
     }
 
-    @Test void rentReloadInsideTheIntentHopFailsClosedWithoutMovingMoney() {
+    @Test void rentReloadInsideTheIntentHopDeclinesWithoutMovingMoney() {
         Rig rig = new Rig(1, 2);
         rig.onDebitIntent = () -> rig.reloadOnMain(7);
         var result = rig.rentBatch(List.of(1L, 2L), id -> rig.payoutHeld(home(id)));
         rig.drain();
-        assertTrue(result.isCompletedExceptionally());
-        assertEquals(Map.of(1L, State.DEBIT_INTENT), rig.journal);
+        // Row 1 is refused in authorize and declined; row 2 is held before dispatch. The batch is not held.
+        assertEquals(0, result.join());
+        assertEquals(Map.of(1L, State.DECLINED), rig.journal);
+        assertEquals(List.of(2L), rig.heldRows);
+        assertTrue(rig.leases.isEmpty());
         assertTrue(rig.calls.stream().noneMatch(c -> c.startsWith("money-")), rig.calls.toString());
     }
 
@@ -355,7 +387,7 @@ class OwnerAwayDebitRecheckTest {
 
     @Test void runtimeWiresTheRecheckBeforeEveryDebitAndNeverBeforeCredit() throws Exception {
         String code = Files.readString(Path.of("src/main/java/com/prosperitysmp/npc/economy/UtilityPaymentRuntime.java"));
-        assertEquals(6, count(code, "requireAwayDebitGate("), "definition, three utility call sites, two in finalDebitChecks");
+        assertEquals(5, count(code, "requireAwayDebitGate("), "definition, two utility call sites, two in finalDebitChecks");
 
         // Utility / repair / purchase / auto-care: the admission predicate, reread before submit, in authorize and at the withdraw.
         String core = section(code, "com.prosperitysmp.npc.property.AutoCareRepository.Claim recurring, Consumer<Boolean> finished) {",
@@ -364,20 +396,26 @@ class OwnerAwayDebitRecheckTest {
         int supplier = core.indexOf("BooleanSupplier awayHeld = () -> awayHeldNow(plugin.getConfig().get(AWAY_DEBIT_RECHECK),\n"
                 + "                () -> awayBlocks(plugin.ownerAway().holds(property), recurring != null, incidentId, target != null));");
         int terminal = core.indexOf("if (prepared.terminal() != null) return CompletableFuture.completedFuture(prepared.terminal());");
-        int beforeSubmit = core.indexOf("requireAwayDebitGate(TransferProof.Leg.DEBIT, awayHeld);");
         int provider = core.indexOf("if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) requireAwayDebitGate(leg, awayHeld);");
-        int binding = core.indexOf("throw new IllegalStateException(\"Utility transfer binding failed\");");
+        int binding = core.indexOf("throw new JournaledTransfer.BindingFailed(\"Utility transfer binding failed\");");
         int authorize = core.indexOf("requireAwayDebitGate(leg, awayHeld);", binding);
         int submit = core.indexOf("return transfer.submit(handle,");
-        assertTrue(admission > 0 && supplier > admission && terminal > supplier && beforeSubmit > terminal
-                && provider > beforeSubmit && submit > provider && binding > submit && authorize > binding,
-                admission + " " + supplier + " " + terminal + " " + beforeSubmit + " " + provider + " " + submit + " " + binding + " " + authorize);
+        assertTrue(admission > 0 && supplier > admission && terminal > supplier
+                && provider > terminal && submit > provider && binding > submit && authorize > binding,
+                admission + " " + supplier + " " + terminal + " " + provider + " " + submit + " " + binding + " " + authorize);
+        // Between prepare and submit there is no authority or owner-away check: a refusal there would keep the
+        // prepared row with no journal decision. Both run in authorize instead, where a refusal is a decline.
+        String preSubmit = core.substring(terminal, core.indexOf("var transfer = new JournaledTransfer(", terminal));
+        assertFalse(preSubmit.contains("requireAwayDebitGate(TransferProof.Leg.DEBIT, awayHeld);"), preSubmit);
+        assertFalse(preSubmit.contains("validate("), preSubmit);
+        assertTrue(preSubmit.contains("throw new IllegalStateException(\"Payment preparation binding failed\");"),
+                "the pure binding check stays a recovery hold");
 
         // Rent and appreciation payouts: clean pre-dispatch hold before the floor check, then both DEBIT gates.
         String rent = section(code, "Runnable floorDeferred, BooleanSupplier debitGate) {", "private CompletableFuture<Integer> payAppreciation(");
         int read = rent.indexOf("BooleanSupplier awayHeld = () -> payoutAwayHeld(property);");
-        int hold = rent.indexOf("if (awayHeld.getAsBoolean()) {");
-        int floor = rent.indexOf("if(!floorAllows(");
+        int hold = rent.indexOf("if (away == null || away) {");
+        int floor = rent.indexOf("if(available.isEmpty() || !floorAllows(");
         assertTrue(read > 0 && hold > read && floor > hold);
         String held = rent.substring(hold, floor);
         assertTrue(held.contains("lease.releaseReconciled(); rentLeases.remove(property.propertyId());"));
@@ -391,7 +429,7 @@ class OwnerAwayDebitRecheckTest {
         assertTrue(checks > 0 && providerFloor > checks && providerGates > rent.indexOf("validate(", providerFloor));
         int rentAuthorize = rent.indexOf("public void authorize(TransferJournal.Receipt receipt, TransferProof.Leg leg) {");
         int authorizeChecks = rent.indexOf("finalDebitChecks(leg, () -> {", rentAuthorize);
-        assertTrue(rentAuthorize > 0 && authorizeChecks > rent.indexOf("throw new IllegalStateException(\"Rent transfer binding failed\");", rentAuthorize)
+        assertTrue(rentAuthorize > 0 && authorizeChecks > rent.indexOf("throw new JournaledTransfer.BindingFailed(\"Rent transfer binding failed\");", rentAuthorize)
                 && rent.indexOf("}, debitGate, awayHeld);", authorizeChecks) > rent.indexOf("requireFloor(", authorizeChecks));
         String helper = code.substring(code.indexOf("static void finalDebitChecks("), code.indexOf("private boolean payoutAwayHeld("));
         assertTrue(helper.lastIndexOf("requireAwayDebitGate(leg, awayHeld);") > helper.indexOf("debitOnlyChecks.run();"));

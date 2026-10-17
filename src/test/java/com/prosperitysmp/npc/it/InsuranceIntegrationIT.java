@@ -65,6 +65,8 @@ class InsuranceIntegrationIT {
                     execute(sql);
             }
         }
+        // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
+        try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
     }
     @AfterAll static void stop() throws Exception {
         try { if (database != null) database.close(); } finally { if (maria != null) maria.stop(); }

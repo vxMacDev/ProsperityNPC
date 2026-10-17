@@ -2,6 +2,7 @@ package com.prosperitysmp.npc.commerce;
 
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.Uuids;
+import com.prosperitysmp.npc.economy.RefundClaims;
 import com.prosperitysmp.npc.economy.TransferProof;
 import com.prosperitysmp.npc.economy.TransferProof.Leg;
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
@@ -48,11 +49,16 @@ public final class CommerceOrderRepository {
               AND BINARY i.payload_sha256=BINARY SHA2(i.payload_bytes,256))
             """;
     public enum State { RESERVED, DEBIT_INTENT, CREDIT_READY, CREDIT_INTENT, FUNDED, DECLINED, AMBIGUOUS, CANCELLED, COMPENSATED }
-    public enum PaymentDecision { VERIFIED_PAID, VERIFIED_NO_MOVEMENT, VERIFIED_REFUNDED_DEBIT }
-    /** Trusted offline adjudication, not authorization to issue a refund. Case bytes must document independent verification. */
+    public enum PaymentDecision { VERIFIED_PAID, VERIFIED_NO_MOVEMENT, VERIFIED_REFUNDED_DEBIT, VERIFIED_LEGACY_REFUSAL }
+    /**
+     * Trusted offline adjudication, not authorization to issue a refund. Case bytes must document independent verification.
+     * refundEvidenceSha256 is the SHA-256 of the refund-observed.json a refund decision was recorded in; one such
+     * file resolves one payment. Other decisions have no refund and leave it null.
+     */
     public record PaymentResolution(UUID resolutionId, String operatorRef, String caseRef, String notes,
                                     String requestSha256, PaymentDecision decision, CustodyBytes caseEvidence,
-                                    Long refundBeforeBits, Long refundAfterBits, Instant resolvedAt) {
+                                    Long refundBeforeBits, Long refundAfterBits, String refundEvidenceSha256,
+                                    Instant resolvedAt) {
         public PaymentResolution {
             Objects.requireNonNull(resolutionId);
             Objects.requireNonNull(decision);
@@ -63,9 +69,10 @@ public final class CommerceOrderRepository {
             if (notes == null || notes.isBlank() || notes.length() > 2048)
                 throw new IllegalArgumentException("Recovery notes exceed bounds");
             boolean refund = decision == PaymentDecision.VERIFIED_REFUNDED_DEBIT;
-            if (refund != (refundBeforeBits != null && refundAfterBits != null)
-                    || (!refund && (refundBeforeBits != null || refundAfterBits != null)))
+            if (refund != (refundBeforeBits != null && refundAfterBits != null && refundEvidenceSha256 != null)
+                    || (!refund && (refundBeforeBits != null || refundAfterBits != null || refundEvidenceSha256 != null)))
                 throw new IllegalArgumentException("Refund evidence does not match decision");
+            if (refund) ItemDeliveryEvidence.requireHash(refundEvidenceSha256);
             resolvedAt = time(resolvedAt);
         }
     }
@@ -96,7 +103,7 @@ public final class CommerceOrderRepository {
                     || (handle != null && (!handle.orderId().equals(order.orderId()) || !handle.payerId().equals(order.playerId())))
                     || ((state == State.CREDIT_INTENT || state == State.FUNDED) && !creditStarted)
                     || ((state == State.RESERVED || state == State.CANCELLED || state == State.DEBIT_INTENT
-                         || state == State.CREDIT_READY || state == State.DECLINED || state == State.COMPENSATED) && creditStarted)
+                         || state == State.CREDIT_READY || state == State.DECLINED) && creditStarted)
                     || (state == State.FUNDED && (fundedAt == null || outputReadyAt == null
                          || fundedAt.isBefore(order.issuedAt()) || !outputReadyAt.equals(fundedAt.plusSeconds(order.outputDelaySeconds()))))
                     || (state != State.FUNDED && (fundedAt != null || outputReadyAt != null || custodyNonce != null))
@@ -272,15 +279,80 @@ public final class CommerceOrderRepository {
                 throw new IllegalArgumentException("Funding precedes issuance");
             insertObservation(c, handle.orderId(), leg, evidence);
             if (receipt.state() == State.AMBIGUOUS) return receipt;
+            boolean refused = evidence.refusedBeforeCall() != null;
             if (leg == Leg.DEBIT) return switch (TransferProof.evaluate(receipt.order().costCents(), leg, evidence)) {
                 case CONFIRMED -> transition(c, receipt, State.CREDIT_READY, handle, false, null, null);
-                case NO_MOVEMENT -> transition(c, receipt, State.DECLINED, handle, false, null, "DEBIT_DECLINED");
+                case NO_MOVEMENT -> transition(c, receipt, State.DECLINED, handle, false, null,
+                        refused ? "DEBIT_REFUSED_BEFORE_CALL" : "DEBIT_DECLINED");
                 case AMBIGUOUS -> transition(c, receipt, State.AMBIGUOUS, handle, false, null, "DEBIT_UNCERTAIN");
             };
+            // A credit refused before its call leaves the debit to be refunded by staff; it is never retried.
             return TransferProof.evaluateTransfer(receipt.order().costCents(), debit, evidence) == TransferProof.TransferOutcome.PAID
                     ? transition(c, receipt, State.FUNDED, handle, true, now, "TRANSFER_CONFIRMED")
-                    : transition(c, receipt, State.AMBIGUOUS, handle, true, null, "CREDIT_UNCERTAIN");
+                    : transition(c, receipt, State.AMBIGUOUS, handle, true, null,
+                            refused ? "CREDIT_REFUSED_BEFORE_CALL" : "CREDIT_UNCERTAIN");
         });
+    }
+
+    /** One order that holds the runtimes, as stored. Read-only; nothing here is a decision. */
+    public record Held(UUID orderId, UUID playerId, State state, long cents, boolean creditStarted,
+                       Observation debit, Observation credit, String createdAt) {
+        public com.prosperitysmp.npc.economy.HeldClass heldClass() {
+            return com.prosperitysmp.npc.economy.HeldClass.of(state == State.AMBIGUOUS, cents, creditStarted, debit, credit);
+        }
+    }
+
+    /** Every order the startup hold counts, up to limit. Reads only. */
+    public List<Held> held(int limit) throws SQLException {
+        List<Held> result = new ArrayList<>();
+        try (Connection c = database.getConnection()) {
+            c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            c.setReadOnly(true);
+            c.setAutoCommit(false);
+            try (PreparedStatement ps = prepare(c, """
+                    SELECT * FROM npc_commerce_orders WHERE state IN ('DEBIT_INTENT','CREDIT_READY','CREDIT_INTENT','AMBIGUOUS')
+                    ORDER BY order_id LIMIT ?
+                    """)) {
+                ps.setInt(1, Math.clamp(limit, 0, 100_000));
+                List<Receipt> receipts = new ArrayList<>();
+                List<String> created = new ArrayList<>();
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) { receipts.add(receipt(rs)); created.add(rs.getString("created_at")); }
+                }
+                for (int i = 0; i < receipts.size(); i++) {
+                    Receipt r = receipts.get(i);
+                    UUID order = r.order().orderId();
+                    result.add(new Held(order, r.order().playerId(), r.state(), r.order().costCents(), r.creditStarted(),
+                            observation(c, order, Leg.DEBIT, false).orElse(null),
+                            observation(c, order, Leg.CREDIT, false).orElse(null), created.get(i)));
+                }
+            } finally {
+                c.rollback();
+            }
+        }
+        return result;
+    }
+
+    /** When the order was written (UTC, as the column prints it), whatever its state now. Reads only. */
+    public Optional<String> createdAt(UUID player, UUID order) throws SQLException {
+        Objects.requireNonNull(player);
+        Objects.requireNonNull(order);
+        try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c,
+                "SELECT created_at FROM npc_commerce_orders WHERE player_id=? AND order_id=?")) {
+            id(ps, 1, player);
+            id(ps, 2, order);
+            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(rs.getString(1)) : Optional.empty(); }
+        }
+    }
+
+    /** Orders the startup hold sees. The classify total must equal it. */
+    public long heldCount() throws SQLException {
+        try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c, """
+                SELECT COUNT(*) FROM npc_commerce_orders WHERE state IN ('DEBIT_INTENT','CREDIT_READY','CREDIT_INTENT','AMBIGUOUS')
+                """); ResultSet rs = ps.executeQuery()) {
+            rs.next();
+            return rs.getLong(1);
+        }
     }
 
     public Receipt cancel(CommerceOrder expected) throws SQLException {
@@ -554,13 +626,35 @@ public final class CommerceOrderRepository {
      * Exact replay returns the current receipt without changing the original resolution or funding time.
      */
     public Receipt reconcilePayment(CommerceOrder expected, Handle handle, PaymentResolution resolution) throws SQLException {
+        return reconcilePayment(expected, handle, resolution, false, true);
+    }
+
+    /**
+     * As above. legacyProvenanceVerified says the caller has already proved, from the install record and the jar
+     * bytes, that an older build whose gate ran before the money call wrote this row. Only then may a leg stored
+     * the old way (a throw with no response and an unchanged balance) count as refused. With apply false every
+     * check and write runs and is then rolled back, so a dry run tests exactly what an applied run would do.
+     */
+    public Receipt reconcilePayment(CommerceOrder expected, Handle handle, PaymentResolution resolution,
+                                    boolean legacyProvenanceVerified, boolean apply) throws SQLException {
+        return reconcilePayment(expected, handle, resolution, legacyProvenanceVerified, apply, false);
+    }
+
+    /**
+     * As above. distinctRefund is staff asserting that a refund decision's refund is a second, separate refund for
+     * this order; see {@link RefundClaims#claim}. It applies only to a refund.
+     */
+    public Receipt reconcilePayment(CommerceOrder expected, Handle handle, PaymentResolution resolution,
+                                    boolean legacyProvenanceVerified, boolean apply, boolean distinctRefund) throws SQLException {
         Objects.requireNonNull(expected);
         Objects.requireNonNull(handle);
         Objects.requireNonNull(resolution);
+        if (distinctRefund && resolution.decision() != PaymentDecision.VERIFIED_REFUNDED_DEBIT)
+            throw new IllegalArgumentException("A distinct refund applies only to a refund decision");
         if (!expected.requestSha256().equals(resolution.requestSha256()))
             throw new IllegalArgumentException("Recovery request hash conflicts");
-        ensure("INSERT INTO npc_item_custody_players(player_id) VALUES(?)", ps -> id(ps, 1, expected.playerId()));
-        return transaction(c -> {
+        // The custody guard row is written inside this transaction, so a dry run leaves no trace of it either.
+        return transaction(apply, c -> {
             lockPlayer(c, expected.playerId());
             Receipt receipt = required(c, expected.playerId(), expected.orderId());
             orderBinding(receipt, expected);
@@ -574,6 +668,7 @@ public final class CommerceOrderRepository {
             }
             if (receipt.state() != State.AMBIGUOUS || resolution.resolvedAt().isBefore(expected.issuedAt()))
                 throw new SQLException("Recovery requires an unresolved held order");
+            ensure(c, "INSERT INTO npc_item_custody_players(player_id) VALUES(?)", ps -> id(ps, 1, expected.playerId()));
             lockCustodyPlayer(c, expected.playerId());
             if (hasCustody(c, expected.orderId())) throw new SQLException("Recovery cannot alter item custody");
             Observation debit = observation(c, expected.orderId(), Leg.DEBIT).orElse(null);
@@ -591,14 +686,30 @@ public final class CommerceOrderRepository {
                         throw new SQLException("Recovery lacks exact no-movement proof");
                 }
                 case VERIFIED_REFUNDED_DEBIT -> {
-                    if (receipt.creditStarted() || credit != null)
-                        throw new SQLException("Refund recovery cannot follow reserve credit intent");
-                    verifiedRefundedDebit(expected.costCents(), debit, resolution);
+                    // The reserve credit either never started, or it stopped before its money call.
+                    boolean creditClear = !receipt.creditStarted()
+                            ? credit == null
+                            : credit != null && (credit.refusedBeforeCall() != null || (legacyProvenanceVerified
+                                    && TransferProof.legacyGateRefused(expected.costCents(), Leg.CREDIT, credit)));
+                    if (!creditClear) throw new SQLException("Refund recovery cannot follow reserve credit intent");
+                    if (!TransferProof.refundRestoresDebit(expected.costCents(), debit,
+                            resolution.refundBeforeBits(), resolution.refundAfterBits()))
+                        throw new SQLException("Existing external refund does not exactly restore observed debit");
+                    // Shared with the transfer journal: one refund closes one held payment in either table.
+                    RefundClaims.claim(c, RefundClaims.Source.COMMERCE, expected.orderId(), resolution.resolutionId(),
+                            handle.payerId(), resolution.refundBeforeBits(), resolution.refundAfterBits(),
+                            Double.doubleToRawLongBits(debit.afterDollars()), resolution.refundEvidenceSha256(), distinctRefund);
+                }
+                case VERIFIED_LEGACY_REFUSAL -> {
+                    if (!legacyProvenanceVerified || receipt.creditStarted() || credit != null
+                            || !TransferProof.legacyGateRefused(expected.costCents(), Leg.DEBIT, debit))
+                        throw new SQLException("Recovery lacks a verified legacy refusal");
                 }
             }
             insertResolution(c, receipt, resolution);
             State terminal = resolvedState(resolution.decision());
-            return transition(c, receipt, terminal, handle, terminal == State.FUNDED,
+            boolean creditStarted = terminal == State.FUNDED || (terminal == State.COMPENSATED && receipt.creditStarted());
+            return transition(c, receipt, terminal, handle, creditStarted,
                     terminal == State.FUNDED ? resolution.resolvedAt() : null, resolution.decision().name());
         });
     }
@@ -606,7 +717,7 @@ public final class CommerceOrderRepository {
     private static State resolvedState(PaymentDecision decision) {
         return switch (decision) {
             case VERIFIED_PAID -> State.FUNDED;
-            case VERIFIED_NO_MOVEMENT -> State.DECLINED;
+            case VERIFIED_NO_MOVEMENT, VERIFIED_LEGACY_REFUSAL -> State.DECLINED;
             case VERIFIED_REFUNDED_DEBIT -> State.COMPENSATED;
         };
     }
@@ -638,22 +749,6 @@ public final class CommerceOrderRepository {
                 return rs.next();
             }
         }
-    }
-    private static void verifiedRefundedDebit(long cents, Observation debit, PaymentResolution resolution) throws SQLException {
-        if (debit == null || !debit.responsePresent() || !debit.responseSuccess() || debit.threw()
-                || TransferProof.toCents(debit.reportedDollars()).orElse(-1) != cents
-                || !Objects.equals(bits(debit.afterDollars()), resolution.refundBeforeBits())
-                || !Objects.equals(bits(debit.beforeDollars()), resolution.refundAfterBits()))
-            throw new SQLException("Existing external refund does not exactly restore observed debit");
-        Double before = debit.beforeDollars(), after = debit.afterDollars();
-        if (before == null || after == null || !Double.isFinite(before) || !Double.isFinite(after)
-                || TransferProof.toCents(before).isEmpty() || TransferProof.toCents(Math.abs(after)).isEmpty())
-            throw new SQLException("Refund recovery lacks exact account observations");
-        long beforeCents = TransferProof.toCents(before).orElseThrow();
-        long afterCents = TransferProof.toCents(Math.abs(after)).orElseThrow() * (after < 0 ? -1 : 1);
-        try {
-            if (Math.subtractExact(beforeCents, afterCents) != cents) throw new SQLException("Refund debit amount conflicts");
-        } catch (ArithmeticException invalid) { throw new SQLException("Refund debit amount exceeds bounds", invalid); }
     }
     private static boolean existingResolution(Connection c, Receipt receipt, PaymentResolution resolution) throws SQLException {
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_commerce_payment_resolutions WHERE order_id=? FOR UPDATE")) {
@@ -838,16 +933,23 @@ public final class CommerceOrderRepository {
             id(ps, 1, order);
             ps.setString(2, leg.name());
             try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? Optional.of(new Observation(rs.getBoolean("response_present"), rs.getBoolean("response_success"),
-                        value(rs, "reported_bits"), value(rs, "before_bits"), value(rs, "after_bits"), rs.getBoolean("threw")))
-                        : Optional.empty();
+                if (!rs.next()) return Optional.empty();
+                String refused = rs.getString("refused_before_call");
+                try {
+                    return Optional.of(new Observation(rs.getBoolean("response_present"), rs.getBoolean("response_success"),
+                            value(rs, "reported_bits"), value(rs, "before_bits"), value(rs, "after_bits"), rs.getBoolean("threw"),
+                            refused == null ? null : TransferProof.Refusal.valueOf(refused), rs.getString("refusal_cause")));
+                } catch (IllegalArgumentException malformed) {
+                    throw new SQLException("Invalid commerce money evidence", malformed);
+                }
             }
         }
     }
     private static void insertObservation(Connection c, UUID order, Leg leg, Observation observation) throws SQLException {
         try (PreparedStatement ps = prepare(c, """
-                INSERT INTO npc_commerce_money_evidence(order_id,leg,response_present,response_success,reported_bits,before_bits,after_bits,threw)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO npc_commerce_money_evidence(order_id,leg,response_present,response_success,reported_bits,before_bits,after_bits,threw,
+                  refused_before_call,refusal_cause)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
                 """)) {
             id(ps, 1, order);
             ps.setString(2, leg.name());
@@ -857,6 +959,8 @@ public final class CommerceOrderRepository {
             number(ps, 6, bits(observation.beforeDollars()));
             number(ps, 7, bits(observation.afterDollars()));
             ps.setBoolean(8, observation.threw());
+            ps.setString(9, observation.refusedBeforeCall() == null ? null : observation.refusedBeforeCall().name());
+            ps.setString(10, observation.refusalCause());
             one(ps.executeUpdate());
         }
     }
@@ -947,7 +1051,11 @@ public final class CommerceOrderRepository {
     }
     @FunctionalInterface private interface Parameters { void set(PreparedStatement ps) throws SQLException; }
     private void ensure(String sql, Parameters parameters) throws SQLException {
-        try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c, sql)) {
+        try (Connection c = database.getConnection()) { ensure(c, sql, parameters); }
+    }
+    /** The same insert on the caller's connection, inside its transaction. A row that already exists is fine. */
+    private static void ensure(Connection c, String sql, Parameters parameters) throws SQLException {
+        try (PreparedStatement ps = prepare(c, sql)) {
             parameters.set(ps);
             try {
                 one(ps.executeUpdate());
@@ -960,7 +1068,8 @@ public final class CommerceOrderRepository {
         return a.responsePresent() == b.responsePresent() && a.responseSuccess() == b.responseSuccess() && a.threw() == b.threw()
                 && Objects.equals(bits(a.reportedDollars()), bits(b.reportedDollars()))
                 && Objects.equals(bits(a.beforeDollars()), bits(b.beforeDollars()))
-                && Objects.equals(bits(a.afterDollars()), bits(b.afterDollars()));
+                && Objects.equals(bits(a.afterDollars()), bits(b.afterDollars()))
+                && a.refusedBeforeCall() == b.refusedBeforeCall() && Objects.equals(a.refusalCause(), b.refusalCause());
     }
     private static Long bits(Double value) { return value == null ? null : Double.doubleToRawLongBits(value); }
     private static Double value(ResultSet rs, String name) throws SQLException {
@@ -1018,12 +1127,17 @@ public final class CommerceOrderRepository {
     }
     @FunctionalInterface private interface Work<T> { T run(Connection c) throws SQLException; }
     private <T>T transaction(Work<T> work) throws SQLException {
+        return transaction(true, work);
+    }
+    /** commit false runs the same work and rolls it back: an offline dry run. */
+    private <T>T transaction(boolean commit, Work<T> work) throws SQLException {
         try (Connection c = database.getConnection()) {
             c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
             c.setAutoCommit(false);
             try {
                 T result = work.run(c);
-                c.commit();
+                if (commit) c.commit();
+                else c.rollback();
                 return result;
             }
             catch (SQLException | RuntimeException error) {

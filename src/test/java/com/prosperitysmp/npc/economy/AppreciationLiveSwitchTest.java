@@ -67,8 +67,10 @@ class AppreciationLiveSwitchTest {
         }
         public Receipt recordDebit(Handle h, Observation o) {
             assertEquals("worker", thread); calls.add("ack-debit-" + h.eventId());
-            journal.put(h.eventId(), State.CREDIT_READY); onDebitAck.run();
-            return receipt(h, State.CREDIT_READY);
+            // As the real journal: a debit refused before its money call is a decline.
+            State next = o.refusedBeforeCall() != null ? State.DECLINED : State.CREDIT_READY;
+            journal.put(h.eventId(), next); onDebitAck.run();
+            return receipt(h, next);
         }
         public Start beginCredit(Handle h) {
             assertEquals("worker", thread); calls.add("intent-credit-" + h.eventId());
@@ -77,8 +79,9 @@ class AppreciationLiveSwitchTest {
         }
         public Receipt recordCredit(Handle h, Observation o) {
             assertEquals("worker", thread); calls.add("ack-credit-" + h.eventId());
-            journal.put(h.eventId(), State.PAID);
-            return receipt(h, State.PAID);
+            State next = o.refusedBeforeCall() != null ? State.AMBIGUOUS : State.PAID;
+            journal.put(h.eventId(), next);
+            return receipt(h, next);
         }
 
         /** The tail of payRent: one dispatcher per row, the lease's DEBIT gate, the same terminal-state rule. */
@@ -204,17 +207,19 @@ class AppreciationLiveSwitchTest {
 
     // Defence in depth: reload lands inside the beginDebit worker hop, after the pre-dispatch check.
 
-    @Test void switchedOffInsideTheIntentHopFailsClosedWithoutMovingMoney() {
+    @Test void switchedOffInsideTheIntentHopDeclinesWithoutMovingMoney() {
         Rig rig = new Rig(1, 2);
         rig.onDebitIntent = () -> rig.reloadOnMain(false);
         var result = rig.appreciation(List.of(1L, 2L));
         rig.drain();
-        assertTrue(result.isCompletedExceptionally(), "batch goes to recovery, never silently on");
-        assertEquals(Map.of(1L, State.DEBIT_INTENT), rig.journal, "the intent is kept for review, not erased");
+        // The gate refuses in authorize, before the money call: the intent is declined, never erased, and the batch
+        // is not held. Row 2 then sees the switch off and is never dispatched.
+        assertEquals(0, result.join());
+        assertEquals(Map.of(1L, State.DECLINED), rig.journal);
         assertTrue(rig.calls.contains("authorize-DEBIT-1"));
         assertTrue(rig.calls.stream().noneMatch(c -> c.startsWith("money-")), rig.calls.toString());
-        assertEquals(Set.of(1L, 2L), rig.leases, "recovery retains every unreleased lease");
-        assertFalse(rig.journal.containsKey(2L));
+        assertTrue(rig.leases.isEmpty(), "a proved decline releases its lease");
+        assertEquals(List.of(2L), rig.skipped);
     }
 
     // (d) Rent is not gated by the appreciation switch.
@@ -262,8 +267,8 @@ class AppreciationLiveSwitchTest {
         rig.onPaid = () -> rig.reloadOnMain(false);
         var result = rig.ungated(List.of(1L, 2L), id -> rig.pay(id, rig.live));
         rig.drain();
-        assertTrue(result.isCompletedExceptionally());
-        assertEquals(State.DEBIT_INTENT, rig.journal.get(2L), "fails closed, but (b) requires no journal row");
+        assertEquals(1, result.join());
+        assertEquals(State.DECLINED, rig.journal.get(2L), "no money moves, but (b) requires no journal row at all");
         assertTrue(rig.calls.stream().noneMatch(c -> c.equals("money-DEBIT-2")));
     }
 

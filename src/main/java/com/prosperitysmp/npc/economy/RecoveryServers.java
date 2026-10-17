@@ -30,32 +30,45 @@ public final class RecoveryServers {
 
     /** Returns the allowlisted server root for {@code service}; refuses unlisted services and unsafe custody. */
     public static String rootFor(String service) throws Exception {
-        Path directory = FILE.getParent();
+        return rootFor(readRootOwned(FILE, MAX_BYTES, "Recovery allowlist"), service);
+    }
+
+    /**
+     * Reads {@code file} only when it is a private (0600 or 0400) root-owned regular file of at most {@code max} bytes,
+     * in a root-owned directory that only root can write, with no symlink on the way. {@code label} names the file in
+     * each refusal.
+     */
+    static byte[] readRootOwned(Path file, int max, String label) throws Exception {
+        Path directory = file.getParent();
         if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS) || !directory.equals(directory.toRealPath())
                 || !Files.getOwner(directory, LinkOption.NOFOLLOW_LINKS).getName().equals("root")
                 || Files.getPosixFilePermissions(directory, LinkOption.NOFOLLOW_LINKS).stream()
                     .anyMatch(p -> p == PosixFilePermission.GROUP_WRITE || p == PosixFilePermission.OTHERS_WRITE))
-            throw new IllegalArgumentException("Recovery allowlist directory must be root-owned and writable only by root: " + directory);
-        if (!Files.isRegularFile(FILE, LinkOption.NOFOLLOW_LINKS) || !FILE.equals(FILE.toRealPath())
-                || !Files.getOwner(FILE, LinkOption.NOFOLLOW_LINKS).getName().equals("root") || Files.size(FILE) > MAX_BYTES
-                || Files.getPosixFilePermissions(FILE, LinkOption.NOFOLLOW_LINKS).stream()
+            throw new IllegalArgumentException(label + " directory must be root-owned and writable only by root: " + directory);
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || !file.equals(file.toRealPath())
+                || !Files.getOwner(file, LinkOption.NOFOLLOW_LINKS).getName().equals("root") || Files.size(file) > max
+                || Files.getPosixFilePermissions(file, LinkOption.NOFOLLOW_LINKS).stream()
                     .anyMatch(p -> p != PosixFilePermission.OWNER_READ && p != PosixFilePermission.OWNER_WRITE))
-            throw new IllegalArgumentException("Recovery allowlist must be a private root-owned regular file: " + FILE);
+            throw new IllegalArgumentException(label + " must be a private root-owned regular file: " + file);
         byte[] bytes;
-        try (var stream = Files.newInputStream(FILE, LinkOption.NOFOLLOW_LINKS)) { bytes = stream.readNBytes(MAX_BYTES + 1); }
-        if (bytes.length > MAX_BYTES) throw new IllegalArgumentException("Recovery allowlist size changed");
-        return rootFor(bytes, service);
+        try (var stream = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) { bytes = stream.readNBytes(max + 1); }
+        if (bytes.length > max) throw new IllegalArgumentException(label + " size changed");
+        return bytes;
+    }
+
+    /** Decodes strict UTF-8; {@code label} names the file in the refusal. */
+    static String utf8(byte[] bytes, String label) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
+        } catch (CharacterCodingException invalid) {
+            throw new IllegalArgumentException(label + " must be UTF-8");
+        }
     }
 
     static String rootFor(byte[] bytes, String service) {
         if (service == null || !service.matches(SERVICE)) throw new IllegalArgumentException("Unsupported service");
-        String text;
-        try {
-            text = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
-        } catch (CharacterCodingException invalid) {
-            throw new IllegalArgumentException("Recovery allowlist must be UTF-8");
-        }
+        String text = utf8(bytes, "Recovery allowlist");
         String root = null;
         Set<String> services = new HashSet<>();
         Set<String> roots = new HashSet<>();
@@ -78,7 +91,8 @@ public final class RecoveryServers {
         return root;
     }
 
-    private static boolean validRoot(String root) {
+    /** An absolute path with no empty, "." or ".." part and no whitespace or control characters. */
+    static boolean validRoot(String root) {
         return root.matches("(/[^/\\s\\p{Z}\\p{Cntrl}]+)+")
                 && Arrays.stream(root.split("/")).noneMatch(part -> part.equals(".") || part.equals(".."));
     }

@@ -43,7 +43,7 @@ commands:
     permission: prosperitynpc.use
   npcnav:
     description: Build, validate, and publish district navigation graphs.
-    usage: /npcnav <scanhere|scanbox|taghere|corridor|validate|publish|info|list>
+    usage: /npcnav <scanhere|scanbox|palette|taghere|copytags|corridor|validate|audit|revalidate|publish|restore|info|list>
     permission: prosperitynpc.admin
 permissions:
   prosperitynpc.admin:

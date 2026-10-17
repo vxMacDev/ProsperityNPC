@@ -12,8 +12,10 @@ import java.util.Set;
  * point, so a draft must pass validation before an admin may publish it. This
  * checks graph <em>integrity</em> (no dangling edges, self-loops, or non-positive
  * costs), <em>reachability</em> (orphans, disconnected districts), and required
- * semantic tags. It does not check per-block walkability, which the scanner
- * enforces while building nodes.
+ * semantic tags, and the street rules (no tag on a road, only straight steps on one, no turn on one).
+ * It does not check per-block walkability, which the scanner enforces while building nodes:
+ * {@code /npcnav revalidate} compares a published graph with the world, and
+ * {@code /npcnav audit} proves the routes obey the sidewalk rules.
  */
 public final class NavGraphValidator {
 
@@ -68,10 +70,58 @@ public final class NavGraphValidator {
             touched.add(e.to());
         }
 
+        int unknown = 0;
         for (NavGraph.Node n : graph.nodes()) {
             if (!touched.contains(n.id())) {
                 issues.add(new Issue(Severity.WARN, "ORPHAN", "node " + n.id() + " has no edges (unreachable)"));
             }
+            if (n.surface() == NavSurface.UNKNOWN) {
+                unknown++;
+            }
+            if (n.surface().isStreet() && !n.tags().isEmpty()) {
+                issues.add(new Issue(Severity.ERROR, "STREET_TAG",
+                        "node " + n.id() + " is on a " + n.surface().name().toLowerCase(java.util.Locale.ROOT)
+                                + " and cannot be a stop"));
+            }
+        }
+        for (NavGraph.Edge e : graph.edges()) {
+            NavGraph.Node from = graph.node(e.from());
+            NavGraph.Node to = graph.node(e.to());
+            if (from == null || to == null || !(from.surface().isStreet() || to.surface().isStreet())) {
+                continue;
+            }
+            // Residents step onto, along and off a road one block at a time in a straight line.
+            int dx = Math.abs(from.x() - to.x());
+            int dz = Math.abs(from.z() - to.z());
+            if (dx + dz != 1) {
+                issues.add(new Issue(Severity.ERROR, "STREET_SHAPE",
+                        "edge " + e.from() + "->" + e.to() + " touches a road but is not a straight step"));
+            }
+        }
+        // Every step off a road cell, onto the road or along it must run the same way. One that joins
+        // neighbours on both axes (curb included) is a turn on the road.
+        Map<Long, boolean[]> streetAxes = new HashMap<>();
+        for (NavGraph.Edge e : graph.edges()) {
+            NavGraph.Node from = graph.node(e.from());
+            NavGraph.Node to = graph.node(e.to());
+            if (from == null || to == null || !(from.surface().isStreet() || to.surface().isStreet())
+                    || Math.abs(from.x() - to.x()) + Math.abs(from.z() - to.z()) != 1) {
+                continue;
+            }
+            int axis = from.x() != to.x() ? 0 : 1;
+            if (from.surface().isStreet()) {
+                streetAxes.computeIfAbsent(from.id(), k -> new boolean[2])[axis] = true;
+            }
+            if (to.surface().isStreet()) {
+                streetAxes.computeIfAbsent(to.id(), k -> new boolean[2])[axis] = true;
+            }
+        }
+        streetAxes.entrySet().stream().filter(entry -> entry.getValue()[0] && entry.getValue()[1])
+                .map(Map.Entry::getKey).sorted().forEach(id -> issues.add(new Issue(Severity.ERROR, "STREET_TURN",
+                        "node " + id + " is on a road and joins road cells on both axes, so a path could turn on it")));
+        if (unknown > 0) {
+            issues.add(new Issue(Severity.WARN, "UNKNOWN_SURFACE",
+                    unknown + " nodes have no surface class (scanned without a classified palette)"));
         }
 
         int components = weakComponents(graph);
