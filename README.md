@@ -238,7 +238,7 @@ property:
 | AdvancedRegionMarket 3.5.5, patched | `arm` | Built in, the default | Paid |
 | WorldGuard regions | `worldguard-listed` | Built in. Reads region owners only. Not yet checked against a real WorldGuard server. | Held |
 | GriefPrevention 16.18.7 | `griefprevention` | Code and tests only. Not checked on a real server. No jar. | |
-| Realty 2.0.0 | `realty` | Code and model tests only. Not checked on a real server. No jar. | Held |
+| Realty 2.0.0 | `realty` | Adapter jar attached to the pre-release. Booted once on a local test server. No real players. Unverified. | Held |
 | Residence, Lands, PlotSquared | | Not included yet | |
 
 - **ARM.** Needs the patched build from [arm-compat/](arm-compat/README.md) and
@@ -247,10 +247,11 @@ property:
 - **WorldGuard.** Each home region needs exactly one owner, as a player UUID. If WorldGuard cannot be
   read, nothing is paid.
 - **Realty.** The adapter pays the title holder of a plot, or the tenant of a rented unit. Rented subregions
-  work in the model tests. A vacant unit has no payer. Realty has no guard that can stop an owner change,
-  so rent is held by default. It needs Realty 2.0.x. The Realty and WorldGuard calls have never been compiled,
-  and the WorldGuard calls use reflection, so their names are unchecked until a lab run. The vendor pin is
-  not recorded yet.
+  are supported. A vacant unit has no payer. Realty has no guard that can stop an owner change,
+  so rent is held by default. It needs Realty 2.0.x, WorldGuard, an economy and Realty's own MySQL or
+  MariaDB database. Put the adapter jar from the pre-release in `plugins/` and set
+  `property.backend: realty`. It is compiled against the Realty 2.0.0 API jars and was booted once on a
+  local test server. Enrolling a home, real players, real payouts and load were not checked.
 - Each home remembers which home plugin enrolled it. If you change `property.backend`, homes enrolled
   under the old one stay out of payments and moves until you set it back. The owner desk only shows
   homes enrolled under the home plugin you have set.

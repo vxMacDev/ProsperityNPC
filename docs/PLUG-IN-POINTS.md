@@ -180,11 +180,11 @@ in that moment, rent could go to the old owner. Each backend protects against th
 | ARM | `arm` | Built in, default | Write hook | Paid |
 | WorldGuard regions | `worldguard-listed` | Built in, unverified against real WorldGuard | None | Held |
 | GriefPrevention | `griefprevention` | Source plus model tests, limited lab recordings on 16.18.7, no jar | Veto without RealEstate, none with it | Paid after the startup check without RealEstate. Held with it. |
-| Realty | `realty` | Source plus model tests, no lab run, no jar | None | Held |
+| Realty | `realty` | Adapter jar attached to the pre-release, booted once on a local test server, unverified | None | Held |
 | Residence, Lands, PlotSquared | | Not included | | |
 
 An adapter is a separate plugin jar that registers a home backend. Install it next to ProsperityNPC and
-the home plugin, then set `property.backend` to its id. No vendor adapter jar ships in this beta.
+the home plugin, then set `property.backend` to its id. The Realty adapter jar is attached to the pre-release. No other vendor adapter jar ships.
 [COMPATIBILITY.md](COMPATIBILITY.md) has the tested versions and [ADAPTERS.md](ADAPTERS.md) explains how
 adapters are written.
 
@@ -226,11 +226,11 @@ this tree until its vendor checksum pin is recorded. This is what the source doe
 
 #### Realty (`realty`)
 
-The adapter source is in `adapters/realty/`. It has model tests only and has never run against a real
-Realty server. No jar ships in this beta, and no jar can be built from this tree until its vendor
-checksum pin is recorded. The Realty and WorldGuard calls in `src/vendor` have never been compiled, and
-the Maven coordinates and the repository are not checked yet. The WorldGuard calls use reflection, so a compile does not check them. Their class and method names are unchecked until a lab run. It needs Realty 2.0.x. This is what the
-source does:
+The adapter source is in `adapters/realty/`, and its jar is attached to the pre-release. It is compiled
+against the Realty 2.0.0 API jars with the vendor pin recorded, and it passes `verifyPinnedVendorApis`
+and `verifyAdapterJar`. It was booted once on a local test server, which checked owner reads, the 14
+event bindings and the held list. Enrolling a home, real players, real payouts and load were not checked.
+The WorldGuard calls use reflection, so a compile does not check them. It needs Realty 2.0.x. This is what the adapter does:
 
 - Who pays and is paid: the title holder of a freehold, or the tenant of a rented lease. A vacant unit,
   an unsold plot, a landlord and an authority are never paid. A landlord or authority can be a player,

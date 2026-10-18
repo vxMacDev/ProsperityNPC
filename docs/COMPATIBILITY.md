@@ -10,6 +10,7 @@ This page lists the plugins ProsperityNPC works with, and how well each one is t
 | Built in | Part of the ProsperityNPC jar. |
 | Built in, untested | Part of the jar, but not tested against a real copy of that plugin. |
 | Source and model tests only | Adapter source is in this repository, with tests against a model of the plugin. No jar ships. |
+| Adapter jar, unverified | A separate adapter jar is attached to the pre-release. It was booted once on a local test server with no real players. |
 | Not included | Nothing ships for this plugin. A developer can write a piece with the [developer API](PLUG-IN-POINTS.md#developer-api). |
 
 `/npcadmin diagnose` shows each piece's id, the plugin that registered it, its API version and its
@@ -66,7 +67,7 @@ find it, fund it another way, for example with a plugin or script that sets the 
 | AdvancedRegionMarket, patched | 3.5.5 with the hook from `arm-compat/` | Built in, default | `arm` | Write hook | Paid |
 | WorldGuard | | Built in, unverified against real WorldGuard | `worldguard-listed` | None | Held |
 | GriefPrevention | 16.18.7 | Source plus model tests, limited lab recordings on 16.18.7, no jar | `griefprevention` | Veto, or none with RealEstate | Paid after the startup check. Held with RealEstate. |
-| Realty | 2.0.0 | Compiled against Realty 2.0.0 and booted once on a local test server, no real players, no jar shipped | `realty` | None | Held |
+| Realty | 2.0.0 | Adapter jar, unverified. Compiled against Realty 2.0.0 and booted once on a local test server, no real players | `realty` | None | Held |
 | Residence | | Not included | | | |
 | Lands | | Not included | | | |
 | PlotSquared | | Not included | | | |
@@ -76,7 +77,7 @@ find it, fund it another way, for example with a plugin or script that sets the 
 default. Owners can still pay their bills and buy upgrades. The
 [home backend section](PLUG-IN-POINTS.md#home-backend) explains each guard.
 
-No vendor adapter jar ships in this beta. The adapter API is described in [ADAPTERS.md](ADAPTERS.md).
+The Realty adapter jar is attached to the pre-release. No other vendor adapter jar ships. The adapter API is described in [ADAPTERS.md](ADAPTERS.md).
 
 ### Notes per plugin
 
@@ -137,6 +138,9 @@ No vendor adapter jar ships in this beta. The adapter API is described in [ADAPT
   - `/npcrealty held` lists held plots and `/npcrealty clear <world> <region>` releases one. Both need
     `prosperitynpc.admin`.
   - No Realty code is shipped with the adapter.
+  - To install it, put ProsperityNPC-Realty-0.1.0+api1.jar (78 KB) from the pre-release in `plugins/` next to
+    ProsperityNPC and Realty 2.0.0, and set `property.backend: realty`. Realty needs WorldGuard, an
+    economy, and its own MySQL or MariaDB database.
   - What the lab run checked:
     - The adapter loads after Realty and registers. ProsperityNPC binds it at startup, and
       `/npcadmin diagnose` shows `guard none installed; identity strong; payouts held`.
@@ -160,7 +164,8 @@ No vendor adapter jar ships in this beta. The adapter API is described in [ADAPT
     default settings. The lab used `connectionTimeZone=SERVER` in Realty's database URL. Your server
     should still leave `connectionTimeZone` out, as above. Realty 2.0.0 also failed to enable with only
     Vault and no Treasury, with a missing Treasury class. The lab added an empty stand-in for that one
-    class. This comes from the Realty build and not from the adapter.
+    class. This comes from the Realty build and not from the adapter. Servers that run Hibernia Treasury
+    are unaffected.
 - **Residence, Lands, PlotSquared.** No adapter source exists for these in this beta.
 
 ### Hibernia Treasury and Realty
@@ -175,8 +180,8 @@ covered in its own entry on this page, because it ran once in the lab.
     payout is held for staff.
   - Another plugin changing the same balance during a payment also holds that payment for staff.
 - **Realty.** Realty writes the owner into the WorldGuard region on every sale and rental. So
-  `property.backend: worldguard-listed` still sees top-level Realty homes. The `realty` adapter source covers
-  subregions and rented plots. It has no jar in this beta.
+  `property.backend: worldguard-listed` still sees top-level Realty homes. The `realty` adapter covers
+  subregions and rented plots. Its jar is attached to the pre-release.
   - With `worldguard-listed`, subregions do not work.
   - Payouts are held by default, because a Realty sale does not wait for a payment to finish.
 - **AreaShop.** No adapter ships. A developer can write one with the API.

@@ -10,7 +10,7 @@ the plugin.
 - MariaDB 11.4.5.
 - EssentialsX 2.22.0 through Vault, as the money source.
 - GriefPrevention 16.18.7 with a private test build of the GriefPrevention adapter, as the home backend.
-  That build is not the same as a released adapter, and no adapter jar ships in this beta.
+  That build is not the same as a released adapter, and no GriefPrevention adapter jar ships in this beta.
 - No players connected. Owners and players were synthetic test profiles.
 
 Each recording names the database schema it ran on. The earlier ones ran before later migrations

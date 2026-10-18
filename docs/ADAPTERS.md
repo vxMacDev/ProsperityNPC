@@ -132,12 +132,12 @@ the main thread and must not wait on a database.
 
 ## What this beta includes
 
-No vendor adapter jar ships in this beta.
+One vendor adapter jar is attached to the pre-release: Realty. GriefPrevention has no jar.
 
 | Adapter | Status in this beta |
 | --- | --- |
 | GriefPrevention | Source plus model tests in `adapters/griefprevention`, with limited lab recordings on GriefPrevention 16.18.7. Labelled `unverified`. Its vendor pin is empty, so packaging stops at the pin check. |
-| Realty | Source plus model tests in `adapters/realty`, compiled against the Realty 2.0.0 API jars with the vendor pin recorded. The package builds and passes `verifyPinnedVendorApis` and `verifyAdapterJar`, but no jar ships in this beta. It was booted once on a local Paper 26.1.2 test server with WorldGuard, FastAsyncWorldEdit, Vault and a Realty 2.0.0 plugin built from source. Owner reads, event bindings and the held list were checked there. Enrolling a home, real players and load were not. Labelled `unverified`. |
+| Realty | Source plus model tests in `adapters/realty`, compiled against the Realty 2.0.0 API jars with the vendor pin recorded. The package builds and passes `verifyPinnedVendorApis` and `verifyAdapterJar`, and the jar (ProsperityNPC-Realty-0.1.0+api1.jar) is attached to the pre-release. It contains no Realty code. It was booted once on a local Paper 26.1.2 test server with WorldGuard, FastAsyncWorldEdit, Vault and a Realty 2.0.0 plugin built from source. Owner reads, event bindings and the held list were checked there. Enrolling a home, real players and load were not. Labelled `unverified`. |
 | Residence, Lands, PlotSquared | Not included. This tree has no adapter for them. |
 
 No vendor adapter should be presented as verified support on the strength of its label or model

@@ -140,15 +140,15 @@ $45 per owner, $15 per home and $6 per tenant each day.
 |---|---|---|
 | AdvancedRegionMarket | `arm` | The patched ARM from `arm-compat/`, and `integration.arm-coordination: true` |
 | Plain WorldGuard regions | `worldguard-listed` | Each home region has exactly one WorldGuard owner. Not yet checked against real WorldGuard. |
-| Realty | `realty` | The Realty adapter plugin. Source and model tests only, no jar in this beta. |
-| Another home plugin | the id its adapter registers | An adapter plugin for it. None ships in this beta. |
+| Realty | `realty` | The Realty adapter jar from the pre-release, in `plugins/` next to Realty 2.0.0. Realty needs WorldGuard, an economy and its own MySQL or MariaDB database. Unverified. |
+| Another home plugin | the id its adapter registers | An adapter plugin for it. None ships for other plugins in this beta. |
 
 `integration.arm-coordination` and the patched ARM are needed only for `arm`. Other backends do not use
 them.
 
 GriefPrevention has adapter source and model tests in this repository, but no jar in this beta.
-Realty is the same: adapter source and model tests, no jar. It pays the title holder of a plot or the tenant
-of a rented unit, and it needs Realty 2.0.x. Its Realty and WorldGuard calls have never been compiled. The WorldGuard calls use reflection, so a compile does not check them. Their class and method names are unchecked until a lab run.
+Realty has an adapter jar attached to the pre-release. It pays the title holder of a plot or the tenant
+of a rented unit, and it needs Realty 2.0.x. It was booted once on a local test server. Enrolling a home, real players and real payouts were not checked.
 Residence, Lands and PlotSquared are not included. [COMPATIBILITY.md](COMPATIBILITY.md) has the details.
 
 Some home plugins cannot stop an owner change while a payment is running. With those, rent payouts are

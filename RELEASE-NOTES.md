@@ -6,14 +6,17 @@ This is a beta. Test it on a copy of your server before you use it on a live one
 
 ### What is new
 
-- A Realty 2.0.0 adapter is in the source tree (`property.backend: realty`). It uses Realty plots and
+- A Realty 2.0.0 adapter (`property.backend: realty`) is new. It uses Realty plots and
   rented subregions as homes. The title holder of a plot, or the tenant of a rented unit, is the payer. A
   vacant unit has no payer. Rent is held by default, because Realty can change a holder with no event that
   can stop it.
 - The adapter is compiled against the Realty 2.0.0 API jars, and its vendor pin is recorded. It was booted
   once on a local Paper 26.1.2 test server with WorldGuard, FastAsyncWorldEdit, Vault and a Realty 2.0.0
-  plugin built from source. Owner reads, the 14 event bindings and the held list were checked there. No jar
-  ships in this beta.
+  plugin built from source. Owner reads, the 14 event bindings and the held list were checked there.
+- The adapter jar, ProsperityNPC-Realty-0.1.0+api1.jar, is attached to this pre-release next to the plugin
+  jar. Put it in `plugins/` next to ProsperityNPC and Realty 2.0.0, and set `property.backend: realty`.
+  Realty needs WorldGuard, an economy, and its own MySQL or MariaDB database. The jar is labelled
+  `unverified`.
 - About 6,700 new automated tests.
 
 ### What was fixed
