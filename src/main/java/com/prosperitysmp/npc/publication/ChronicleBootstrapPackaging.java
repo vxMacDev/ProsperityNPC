@@ -7,6 +7,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -26,9 +27,8 @@ public final class ChronicleBootstrapPackaging {
         Manifest manifest = new Manifest();
         manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
         manifest.getMainAttributes().putValue("Premain-Class", CLASS.replace('/', '.'));
-        try (JarFile source = new JarFile(input.toFile());
-             var raw = Files.newOutputStream(output, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-             JarOutputStream target = new JarOutputStream(raw, manifest)) {
+        var classes = new LinkedHashMap<String, byte[]>();
+        try (JarFile source = new JarFile(input.toFile())) {
             var entries = source.stream().filter(entry -> entry.getName().equals(CLASS + ".class")
                     || entry.getName().startsWith(CLASS + "$") && entry.getName().endsWith(".class"))
                     .sorted(Comparator.comparing(JarEntry::getName)).toList();
@@ -38,10 +38,17 @@ public final class ChronicleBootstrapPackaging {
                 byte[] bytes;
                 try (var stream = source.getInputStream(entry)) { bytes = stream.readNBytes(262145); }
                 if (bytes.length < 1 || bytes.length > 262144) throw new IllegalArgumentException("Bootstrap class exceeds bound");
-                JarEntry copy = new JarEntry(entry.getName());
+                classes.put(entry.getName(), bytes);
+            }
+        }
+        // Nothing is created until every class has passed, so a refusal leaves no file to block a retry.
+        try (var raw = Files.newOutputStream(output, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+             JarOutputStream target = new JarOutputStream(raw, manifest)) {
+            for (var entry : classes.entrySet()) {
+                JarEntry copy = new JarEntry(entry.getKey());
                 copy.setTime(0);
                 target.putNextEntry(copy);
-                target.write(bytes);
+                target.write(entry.getValue());
                 target.closeEntry();
             }
         }

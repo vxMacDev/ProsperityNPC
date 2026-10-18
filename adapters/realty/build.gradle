@@ -1,0 +1,30 @@
+// Realty adapter (property.backend: realty). Unverified. Built only with -Padapters.
+version = '0.1.0'
+
+// Realty 2.0.0 API jars, compileOnly and never bundled. Realty, WorldGuard and WorldEdit come from the server.
+ext.vendorApis = [
+    'io.github.md5sha256:realty-paper-api:2.0.0',
+    'io.github.md5sha256:realty-backend-api:2.0.0',
+]
+ext.vendorRepository = {
+    repositories {
+        exclusiveContent {
+            forRepository { maven { url = 'https://maven.minecraftcitiesnetwork.com/releases' } }
+            filter { includeGroup 'io.github.md5sha256' }
+        }
+    }
+}
+// sha256 of each vendor API jar. See docs/ADAPTERS.md: a pin is recorded from two independent downloads.
+// Recorded from two independent downloads and the publisher's checksum file (2026-10-18).
+ext.pinnedVendorApis = [
+    'realty-paper-api-2.0.0.jar': '356ae833d0c8c021fffe87bedcba8127adc0cd2da89662d0448649b33247e10b',
+    'realty-backend-api-2.0.0.jar': '0be0d35265a0decc0610d223b1755c40987da4adf0824f4a4493bc5fc1cc7867',
+]
+
+apply from: rootProject.file('gradle/vendor-adapter.gradle')
+
+tasks.named('jar') {
+    archiveBaseName = 'ProsperityNPC-Realty'
+    archiveVersion = "${project.version}+api1"
+    archiveClassifier = ''
+}

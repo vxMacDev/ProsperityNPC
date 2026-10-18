@@ -3,7 +3,10 @@ package com.prosperitysmp.npc.economy;
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
 import com.prosperitysmp.npc.economy.TransferProof.Refusal;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -282,5 +285,14 @@ class LegacyProvenanceTest {
         assertEquals(HeldClass.U_UNPROVABLE, HeldClass.of(true, 1000, true, legacyDebit, legacyCredit), "credit after an unmoved debit");
         assertEquals(HeldClass.U_UNPROVABLE, HeldClass.of(true, 1000, false,
                 new Observation(false, false, null, 100.0, 100.0, true), null), "the old gate would have passed");
+    }
+
+    @Test
+    void namesInListsAFoldersFileNamesSorted(@TempDir Path dir) throws Exception {
+        Files.createFile(dir.resolve("b.md"));
+        Files.createFile(dir.resolve("A.md"));
+        Files.createDirectory(dir.resolve("c"));
+        assertEquals(List.of("A.md", "b.md", "c"), LegacyProvenance.namesIn(dir));
+        assertEquals(List.of(), LegacyProvenance.namesIn(Files.createDirectory(dir.resolve("empty"))));
     }
 }

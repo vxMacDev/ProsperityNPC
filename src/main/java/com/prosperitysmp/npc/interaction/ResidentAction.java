@@ -39,13 +39,13 @@ public record ResidentAction(Kind kind, String definitionId, UUID taskId, UUID r
                     || !order.residentId().equals(recipientId)) throw new IllegalArgumentException("Unbound commerce quote");
         } else if (order != null) throw new IllegalArgumentException("Unexpected commerce quote");
         else if (kind == Kind.VISIT) {
-            if (!Set.of("market", "leisure").contains(definitionId) || taskId != null)
+            if (definitionId == null || !Set.of("market", "leisure").contains(definitionId) || taskId != null)
                 throw new IllegalArgumentException("Invalid public-stop action");
         } else if (kind == Kind.ACCEPT || kind == Kind.TRAIN || kind == Kind.CONTRACT_ACCEPT) {
             if (definitionId == null || !definitionId.matches("[a-z0-9_-]{1,48}") || taskId != null)
                 throw new IllegalArgumentException("Invalid offer action");
         } else if (kind == Kind.PARTNER || kind == Kind.PARTNER_CONFIRM) {
-            if (!Set.of("partner-start", "partner-renew").contains(definitionId) || (kind == Kind.PARTNER) != (taskId == null))
+            if (definitionId == null || !Set.of("partner-start", "partner-renew").contains(definitionId) || (kind == Kind.PARTNER) != (taskId == null))
                 throw new IllegalArgumentException("Invalid partnership action");
         } else if (kind == Kind.CONTRACT_BACK) {
             if (definitionId != null || taskId != null) throw new IllegalArgumentException("Invalid back action");

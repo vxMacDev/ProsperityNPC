@@ -57,7 +57,7 @@ public final class StrictYaml {
     public static Object load(String text) {
         if (text == null) throw new Refused("The file is empty.");
         if (text.startsWith("﻿")) throw new Refused("The file starts with a byte-order mark; save it as plain UTF-8.");
-        if (text.length() > DEFAULT_MAX_BYTES) throw new Refused("The file is too big.");
+        if (text.getBytes(StandardCharsets.UTF_8).length > DEFAULT_MAX_BYTES) throw new Refused("The file is too big.");
         try {
             for (Event event : new Yaml(new SafeConstructor(options())).parse(new StringReader(text))) {
                 if (event instanceof AliasEvent) throw new Refused("The file uses a YAML alias; aliases are not allowed.");
@@ -122,7 +122,8 @@ public final class StrictYaml {
             if (attributes.size() > maxBytes) throw new Refused("The file is bigger than nav.import.max-bytes (" + maxBytes + ").");
             byte[] bytes;
             try (InputStream input = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
-                bytes = input.readNBytes((int) Math.min(Integer.MAX_VALUE - 8, maxBytes + 1));
+                int readLimit = maxBytes < Integer.MAX_VALUE - 8 ? (int) (maxBytes + 1) : Integer.MAX_VALUE - 8;
+                bytes = input.readNBytes(readLimit);
             }
             if (bytes.length > maxBytes) throw new Refused("The file is bigger than nav.import.max-bytes (" + maxBytes + ").");
             return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)

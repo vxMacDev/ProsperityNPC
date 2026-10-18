@@ -43,5 +43,5 @@ jobs:
       - name: Build and test
         run: sh gradlew build --no-daemon
 
-      - name: GriefPrevention adapter tests
-        run: sh gradlew :adapter-griefprevention:test -Padapters --no-daemon
+      - name: Adapter tests
+        run: sh gradlew :adapter-griefprevention:test :adapter-realty:test -Padapters --no-daemon

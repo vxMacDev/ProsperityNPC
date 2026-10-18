@@ -180,6 +180,7 @@ in that moment, rent could go to the old owner. Each backend protects against th
 | ARM | `arm` | Built in, default | Write hook | Paid |
 | WorldGuard regions | `worldguard-listed` | Built in, unverified against real WorldGuard | None | Held |
 | GriefPrevention | `griefprevention` | Source plus model tests, limited lab recordings on 16.18.7, no jar | Veto without RealEstate, none with it | Paid after the startup check without RealEstate. Held with it. |
+| Realty | `realty` | Source plus model tests, no lab run, no jar | None | Held |
 | Residence, Lands, PlotSquared | | Not included | | |
 
 An adapter is a separate plugin jar that registers a home backend. Install it next to ProsperityNPC and
@@ -222,6 +223,31 @@ this tree until its vendor checksum pin is recorded. This is what the source doe
 - GriefPrevention tells the person who ran a cancelled transfer that it worked. The server log says the
   transfer was held because an ownership operation was in progress.
 - Before every payout, the plugin reads the claim owner again.
+
+#### Realty (`realty`)
+
+The adapter source is in `adapters/realty/`. It has model tests only and has never run against a real
+Realty server. No jar ships in this beta, and no jar can be built from this tree until its vendor
+checksum pin is recorded. The Realty and WorldGuard calls in `src/vendor` have never been compiled, and
+the Maven coordinates and the repository are not checked yet. The WorldGuard calls use reflection, so a compile does not check them. Their class and method names are unchecked until a lab run. It needs Realty 2.0.x. This is what the
+source does:
+
+- Who pays and is paid: the title holder of a freehold, or the tenant of a rented lease. A vacant unit,
+  an unsold plot, a landlord and an authority are never paid. A landlord or authority can be a player,
+  an account or a permission group. The adapter never reads them.
+- Region id: the WorldGuard region id, up to 128 characters.
+- Subregions work. The tenant of a rented subregion is the payer for it. A plot is not paid while a
+  registered subregion inside it is rented or sold. The unit has to be a WorldGuard child of the freehold.
+- A vacant unit has no payer until someone rents it.
+- The guard is none. Realty fires no event at all for `unset titleholder` and `unset tenant`. A lease
+  sweep changes the database before it fires its event. Other plugins can call Realty's API directly.
+  None of these can be stopped, so a veto would promise more than it keeps.
+- The plot's WorldGuard owner list must hold exactly the payer, with no names and no groups. If it does
+  not, the plot has no payer.
+- Realty keeps its data in a database. The adapter reads a snapshot, and every Realty event marks the
+  plot stale until it is read again.
+- Payouts are held by default. With `reread-before-payout`, a change made only in Realty's database can
+  pay the old owner until the next refresh.
 
 ### Config keys
 
@@ -953,3 +979,4 @@ that links the API must be under a GPL-compatible license.
 | 0.2.0-dev.65 | Bills, taxes and meters, API 1.1 |
 | 0.2.0-dev.66 | Staff waypoints and route files |
 | 0.2.0-dev.67 | `worldguard-listed`, the GriefPrevention adapter source, `property.when-unguarded`, API 1.2 |
+| 0.2.0-dev.68 | The Realty adapter source. No API change |

@@ -122,7 +122,7 @@ public final class StaffAlerts {
 
     /** True when at least 90 percent of a positive cap is used. */
     public static boolean capNear(long spentCents, long capCents) {
-        return capCents > 0 && spentCents >= 0 && spentCents >= Math.ceilDiv(Math.multiplyExact(capCents, 9L), 10L);
+        return capCents > 0 && spentCents >= 0 && spentCents >= capCents - capCents / 10;
     }
 
     private static String oneLine(String text) {

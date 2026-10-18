@@ -1,5 +1,52 @@
 # Release notes
 
+## 0.2.0-dev.68 (BETA)
+
+This is a beta. Test it on a copy of your server before you use it on a live one.
+
+### What is new
+
+- A Realty 2.0.0 adapter is in the source tree (`property.backend: realty`). It uses Realty plots and
+  rented subregions as homes. The title holder of a plot, or the tenant of a rented unit, is the payer. A
+  vacant unit has no payer. Rent is held by default, because Realty can change a holder with no event that
+  can stop it.
+- The adapter is compiled against the Realty 2.0.0 API jars, and its vendor pin is recorded. It was booted
+  once on a local Paper 26.1.2 test server with WorldGuard, FastAsyncWorldEdit, Vault and a Realty 2.0.0
+  plugin built from source. Owner reads, the 14 event bindings and the held list were checked there. No jar
+  ships in this beta.
+- About 6,700 new automated tests.
+
+### What was fixed
+
+- A bill policy that rounds half up can now be saved. Before, it could not be stored.
+- The database password no longer shows if the database settings are written to a log.
+- A funding ratio that is not a number is now refused at startup, like one outside 0 to 1.
+- Very large numbers no longer wrap or throw in a few places:
+  - Splitting a cap between requests whose total is huge.
+  - The funded amount for a huge seed.
+  - The staff alert that warns when a cap is nearly reached, for the largest caps.
+  - Formatting the most negative amount of money, and negative cents on a bill.
+  - A training grant with a time past the range that can be stored. It is now refused with a plain error.
+- The size limit on a YAML file now counts bytes, so a file with many multi-byte characters can no longer
+  slip past it. A very large limit no longer makes an import file read as empty.
+- A refused bootstrap packaging no longer leaves a half-made jar behind.
+- A visit or partner action with no definition id is refused with a clear error instead of a crash.
+
+### How it was tested
+
+- The new tests run on the plugin code and the Realty adapter's model. The fixes above each have a test.
+- One test stays switched off. It checks that every migration file is registered once. An old duplicate
+  of migration V26 is still in the tree and two tests refer to it by name, so it stays until they move.
+- I started this jar once on a local test server for the Realty run. It stayed in standby, and nothing
+  else in it was exercised there.
+
+### Not tested yet
+
+- Everything listed under "Not tested yet" for 0.2.0-dev.67 still applies.
+- The Realty adapter has not seen a real player, a home enrolled with `/npcproperty enroll`, a real
+  payout, or more than three plots. The lab database used a time zone setting that your server should
+  not use. See docs/COMPATIBILITY.md.
+
 ## 0.2.0-dev.67 (BETA)
 
 This is a beta. Test it on a copy of your server before you use it on a live one.

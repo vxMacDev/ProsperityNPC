@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.prosperitysmp'
-version = '0.2.0-dev.67'
+version = '0.2.0-dev.68'
 
 // -PnpcBuildDir=<path> moves build output, and with it the integration-test temp folder, to another drive when this
 // one is short of space. Use a fast disk: the MariaDB integration tests time out on spinning drives.
@@ -182,7 +182,7 @@ tasks.named('jar') {
 def forbiddenPluginPackages = ['net/milkbowl/', 'com/prosperitysmp/npc/adapter/', 'me/angeschossen/',
         'com/incredibleplugins/', 'me/ryanhamshire/', 'com/plotsquared/', 'com/intellectualsites/', 'com/bekvon/',
         'net/Zrips/', 'com/sk89q/', 'net/alex9849/', 'net/citizensnpcs/', 'org/geysermc/', 'org/bukkit/',
-        'io/papermc/', 'org/mariadb/', 'com/zaxxer/', 'com/google/', 'net/kyori/']
+        'io/papermc/', 'org/mariadb/', 'com/zaxxer/', 'com/google/', 'net/kyori/', 'io/github/md5sha256/']
 
 // What is wrong with a plugin jar; empty when it passes the gate.
 def pluginJarProblems = { File jarFile ->
@@ -206,13 +206,14 @@ tasks.register('testPluginJarGate') {
         file.parentFile.mkdirs()
         new java.util.zip.ZipOutputStream(new FileOutputStream(file)).withCloseable { zip ->
             ['plugin.yml', 'com/prosperitysmp/npc/adapter/example/NullBackend.class',
-             'me/ryanhamshire/GriefPrevention/GriefPrevention.class', 'net/milkbowl/vault/economy/Economy.class'].each {
+             'me/ryanhamshire/GriefPrevention/GriefPrevention.class', 'net/milkbowl/vault/economy/Economy.class',
+             'io/github/md5sha256/realty/api/RealtyBackend.class'].each {
                 zip.putNextEntry(new java.util.zip.ZipEntry(it))
                 zip.closeEntry()
             }
         }
         def problems = pluginJarProblems(file)
-        if (problems.size() != 5) throw new GradleException("The plugin jar gate missed a bad jar: ${problems}")
+        if (problems.size() != 6) throw new GradleException("The plugin jar gate missed a bad jar: ${problems}")
     }
 }
 

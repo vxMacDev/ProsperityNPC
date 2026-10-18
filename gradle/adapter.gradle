@@ -31,7 +31,7 @@ tasks.named('jar') {
 // adapters compile against. The vendor plugin and the server provide them.
 ext.forbiddenAdapterPackages = ['com/prosperitysmp/npc/api/', 'net/milkbowl/', 'me/angeschossen/', 'com/incredibleplugins/',
         'me/ryanhamshire/', 'com/plotsquared/', 'com/intellectualsites/', 'com/bekvon/', 'net/Zrips/', 'com/sk89q/',
-        'com/google/', 'net/kyori/']
+        'com/google/', 'net/kyori/', 'io/github/md5sha256/']
 
 // What is wrong with an adapter jar; empty when it passes the gate.
 ext.adapterJarProblems = { File jarFile ->
@@ -71,9 +71,11 @@ tasks.register('testAdapterJarGate') {
             zip.closeEntry()
             zip.putNextEntry(new java.util.zip.ZipEntry('me/angeschossen/lands/api/LandsIntegration.class'))
             zip.closeEntry()
+            zip.putNextEntry(new java.util.zip.ZipEntry('io/github/md5sha256/realty/api/RealtyBackend.class'))
+            zip.closeEntry()
         }
         def problems = adapterJarProblems(file)
-        if (problems.size() != 4) throw new GradleException("The adapter jar gate missed a bad jar: ${problems}")
+        if (problems.size() != 5) throw new GradleException("The adapter jar gate missed a bad jar: ${problems}")
     }
 }
 

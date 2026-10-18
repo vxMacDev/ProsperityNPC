@@ -14,7 +14,11 @@ public final class Funding {
     /** funded = seed + floor(successful_sinks * ratio). All cents; ratio typically 0.90. */
     public static long fundedCashCents(long seedCents, long successfulSinksCents, double ratio) {
         long fromSinks = (long) Math.floor(Math.max(0L, successfulSinksCents) * ratio);
-        return Math.max(0L, seedCents) + fromSinks;
+        try {
+            return Math.addExact(Math.max(0L, seedCents), fromSinks);
+        } catch (ArithmeticException tooBig) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /** available = max(0, funded - successful_payouts). */

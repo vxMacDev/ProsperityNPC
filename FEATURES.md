@@ -451,6 +451,12 @@ Common requirements, used below:
   After `/npcadmin reload` changes `money.source` or `property.backend`, `/npcadmin diagnose` says a restart
   is required. This release also brings configurable owner prices (see Owner prices, migrations V47 to
   V56). Migrations V41 to V56 run on upgrade; back up the database first.
+- **dev.68.** A Realty 2.0.0 adapter in the source tree (`property.backend: realty`): Realty plots and
+  rented subregions as homes. The title holder of a plot, or the tenant of a rented unit, is the payer;
+  a vacant unit has no payer, and rent is held by default. Source and model tests only: not compiled
+  against Realty, not run on a server, no jar. No schema change. This release also fixes a half-up bill
+  policy that could not be saved, hides the database password in logged settings, and refuses a funding ratio
+  that is not a number at startup.
 - **Accounting bridge.** NPC money shows as its own sources; payments wait for its acknowledgement.
 
 ## Chronicle and publication

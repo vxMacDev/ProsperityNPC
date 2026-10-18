@@ -71,7 +71,7 @@ public final class EconomyLimits {
         requireNonNegative("centralbank-floor-cents", centralBankFloorCents);
         requireNonNegative("property-seed-cents", propertySeedCents);
         requireNonNegative("rollout-seed-pool-cents", rolloutSeedPoolCents);
-        if (lifetimeSinkFundingRatio < 0.0 || lifetimeSinkFundingRatio > 1.0) {
+        if (!(lifetimeSinkFundingRatio >= 0.0 && lifetimeSinkFundingRatio <= 1.0)) {
             throw new IllegalStateException(
                     "lifetime-sink-funding-ratio must be within [0,1], got " + lifetimeSinkFundingRatio);
         }

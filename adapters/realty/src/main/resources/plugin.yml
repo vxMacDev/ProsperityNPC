@@ -1,0 +1,13 @@
+name: ProsperityNPC-Realty
+version: '${version}'
+main: com.prosperitysmp.npc.adapter.realty.RealtyAdapterPlugin
+api-version: "26.1"
+authors: [ProsperitySMP]
+description: Lets ProsperityNPC use Realty plots as homes (property.backend realty). Unverified.
+# The adapter API lives inside ProsperityNPC, so ProsperityNPC must load first.
+depend: [ProsperityNPC, Realty]
+commands:
+  npcrealty:
+    description: List or release held Realty plots
+    usage: /npcrealty <held|clear <world> <region>>
+    permission: prosperitynpc.admin

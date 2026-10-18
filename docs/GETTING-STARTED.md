@@ -26,7 +26,7 @@ The pieces you can swap (money, home plugin, bills, routes) are described in
 
 ## Status
 
-ProsperityNPC 0.2.0-dev.67 is a beta. It has not been tested with real Java or Bedrock players or under
+ProsperityNPC 0.2.0-dev.68 is a beta. It has not been tested with real Java or Bedrock players or under
 a full player load yet. [RELEASE-NOTES.md](../RELEASE-NOTES.md) lists what was tested and what was not.
 Test it on a copy of your server first.
 
@@ -140,12 +140,15 @@ $45 per owner, $15 per home and $6 per tenant each day.
 |---|---|---|
 | AdvancedRegionMarket | `arm` | The patched ARM from `arm-compat/`, and `integration.arm-coordination: true` |
 | Plain WorldGuard regions | `worldguard-listed` | Each home region has exactly one WorldGuard owner. Not yet checked against real WorldGuard. |
+| Realty | `realty` | The Realty adapter plugin. Source and model tests only, no jar in this beta. |
 | Another home plugin | the id its adapter registers | An adapter plugin for it. None ships in this beta. |
 
 `integration.arm-coordination` and the patched ARM are needed only for `arm`. Other backends do not use
 them.
 
 GriefPrevention has adapter source and model tests in this repository, but no jar in this beta.
+Realty is the same: adapter source and model tests, no jar. It pays the title holder of a plot or the tenant
+of a rented unit, and it needs Realty 2.0.x. Its Realty and WorldGuard calls have never been compiled. The WorldGuard calls use reflection, so a compile does not check them. Their class and method names are unchecked until a lab run.
 Residence, Lands and PlotSquared are not included. [COMPATIBILITY.md](COMPATIBILITY.md) has the details.
 
 Some home plugins cannot stop an owner change while a payment is running. With those, rent payouts are

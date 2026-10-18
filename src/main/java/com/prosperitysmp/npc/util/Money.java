@@ -10,8 +10,8 @@ public final class Money {
 
     /** Formats cents as {@code $D.CC} (handles negatives). */
     public static String format(long cents) {
-        long abs = Math.abs(cents);
-        String s = String.format(Locale.ROOT, "$%d.%02d", abs / 100, abs % 100);
+        // Divide first: Math.abs(Long.MIN_VALUE) is still negative.
+        String s = String.format(Locale.ROOT, "$%d.%02d", Math.abs(cents / 100), Math.abs(cents % 100));
         return cents < 0 ? "-" + s : s;
     }
 
