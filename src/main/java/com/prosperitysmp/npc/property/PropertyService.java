@@ -2,7 +2,9 @@ package com.prosperitysmp.npc.property;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
 import com.prosperitysmp.npc.alert.StaffAlerts;
-import com.prosperitysmp.npc.arm.ArmAdapter;
+import com.prosperitysmp.npc.api.OwnershipToken;
+import com.prosperitysmp.npc.api.PropertyBackend;
+import com.prosperitysmp.npc.arm.ArmRegionView;
 import com.prosperitysmp.npc.arm.OwnershipFence;
 import com.prosperitysmp.npc.clock.EconomyClock;
 import com.prosperitysmp.npc.economy.RentReservationRepository;
@@ -34,7 +36,7 @@ import java.util.logging.Level;
 /** Bounded async SQL reconciliation, NOT atomic ARM admission authorization. */
 public final class PropertyService {
     public record ReconcileResult(int checked, int changed, int skipped, int missing) {}
-    private final ArmAdapter arm;
+    private final PropertyBackend arm;
     private final PropertyRepository repo;
     private final Map<UUID, Property> cache = new ConcurrentHashMap<>();
     private final Set<UUID> missingRegions = ConcurrentHashMap.newKeySet();
@@ -55,10 +57,10 @@ public final class PropertyService {
     // Main thread only. The guard is on but ARM coordination is off; logged once per service.
     private boolean unguardedFallbackLogged;
     private final ConcurrentLinkedQueue<Runnable> admissionReplies = new ConcurrentLinkedQueue<>();
-    public PropertyService(ProsperityNpcPlugin plugin, ArmAdapter arm, PropertyRepository repo) {
+    public PropertyService(ProsperityNpcPlugin plugin, PropertyBackend arm, PropertyRepository repo) {
         this(plugin, arm, repo, System::nanoTime);
     }
-    public PropertyService(ProsperityNpcPlugin plugin, ArmAdapter arm, PropertyRepository repo,
+    public PropertyService(ProsperityNpcPlugin plugin, PropertyBackend arm, PropertyRepository repo,
                            LongSupplier monotonicClock) {
         this.plugin = plugin;
         this.arm = arm;
@@ -143,17 +145,18 @@ public final class PropertyService {
     private OwnershipReconcilePump.Observation capture(Property p) {
         main();
         World world = Bukkit.getWorld(p.worldUuid());
-        if (world == null || !arm.isAvailable())
+        if (world == null || !arm.available())
             return new OwnershipReconcilePump.Observation(OwnershipReconcilePump.Presence.UNAVAILABLE, null);
         return arm.findRegion(world.getName(), p.regionId())
-                .filter(v -> v.matches(p.worldUuid(), p.regionId()))
-                .map(v -> new OwnershipReconcilePump.Observation(OwnershipReconcilePump.Presence.PRESENT, v.ownerUuid()))
+                .filter(v -> ArmRegionView.sameRegion(v, p.worldUuid(), p.regionId()))
+                .map(v -> new OwnershipReconcilePump.Observation(OwnershipReconcilePump.Presence.PRESENT, v.ownerUuid().orElse(null)))
                 // ARM currently conflates absent regions with read failures.
                 .orElseGet(() -> new OwnershipReconcilePump.Observation(OwnershipReconcilePump.Presence.UNAVAILABLE, null));
     }
     /** Startup/legacy explicit load still performs synchronous SQL, not used by the pump. */
     public void loadCache() throws SQLException {
         main();
+        cacheLoaded = false;
         invalidateReconciliation();
         visibility.clear();
         List<Property> rows = repo.listEnrolled();
@@ -165,8 +168,33 @@ public final class PropertyService {
             missingRegions.add(p.propertyId());
         }
         refreshRequested = true;
+        cacheLoaded = true;
+    }
+    // Main thread only. The last loadCache finished; false when it threw, so the cache may be empty or stale.
+    private boolean cacheLoaded;
+    /** Whether the enrolled homes loaded at startup. The startup ownership pass fails closed when they did not. */
+    public boolean cacheLoaded() {
+        main();
+        return cacheLoaded;
     }
     public Collection<Property> getEnrolled() { return List.copyOf(cache.values()); }
+    /**
+     * Main thread. The startup ownership pass for a backend other than ARM: observe() every enrolled home once and
+     * return how many could not be read. Payouts stay held until a pass returns 0. Moves no money, writes nothing.
+     */
+    public int startupOwnershipPass() {
+        main();
+        int unreadable = 0;
+        for (Property p : cache.values()) {
+            com.prosperitysmp.npc.api.Presence seen;
+            try { seen = arm.observe(p.worldUuid(), p.regionId()); }
+            catch (RuntimeException | LinkageError failure) { seen = com.prosperitysmp.npc.api.Presence.UNREADABLE; }
+            if (seen == com.prosperitysmp.npc.api.Presence.UNREADABLE) unreadable++;
+            else if (seen == com.prosperitysmp.npc.api.Presence.MISSING) missingRegions.add(p.propertyId());
+        }
+        if (unreadable == 0) refreshRequested = true;
+        return unreadable;
+    }
     public int enrolledCount() { return cache.size(); }
     /** Includes pending, unavailable and unverified ownership. */
     public int missingCount() { return missingRegions.size(); }
@@ -205,15 +233,48 @@ public final class PropertyService {
         missingRegions.add(property.propertyId());
         refreshRequested = true;
     }
+    /** What a finished enrollment reports: enrolled, or the reply for staff when it was not. */
+    public record EnrollResult(boolean enrolled, String reply) {
+        static EnrollResult refused(String reply) { return new EnrollResult(false, Objects.requireNonNull(reply)); }
+    }
+
+    /** The reply when an enrollment may or may not have committed. Staff must not retry. */
+    public static final String ENROLL_RECOVERY_REPLY = "Enrollment held for recovery. Do not retry; contact staff.";
+
+    /**
+     * Why this region can not be enrolled under the configured backend, or null when it has no row. The cache
+     * leaves out paused homes and homes enrolled under another backend, so this reads SQL. Worker thread.
+     */
+    public static String enrollmentRefusal(PropertyRepository repo, UUID world, String region) {
+        try {
+            var existing = repo.findByWorldRegion(world, region, repo.backendId());
+            if (existing.isEmpty()) return null;
+            return existing.get().enabled() ? "That region is already enrolled."
+                    : "That region is enrolled but paused; use /npcproperty resume.";
+        } catch (PropertyRepository.EnrolledUnderOtherBackend elsewhere) {
+            return elsewhere.getMessage();
+        } catch (SQLException | RuntimeException failure) {
+            return "Property lookup unavailable; nothing enrolled.";
+        }
+    }
+
+    /**
+     * True only when the insert certainly did not commit: the database refused the row outright (a duplicate
+     * region or id). The enrollment transaction is rolled back before the error is thrown.
+     */
+    public static boolean certainlyNotCommitted(Throwable failure) {
+        return failure instanceof java.sql.SQLIntegrityConstraintViolationException;
+    }
+
     /** Bounded enrollment with a lifetime seed allowance, never an immediate cash grant. */
-    public boolean enrollCoordinated(Property property, ArmAdapter.OwnerRead owner,
-            Supplier<ArmAdapter.OwnerRead> refreshOwner, Consumer<Boolean> done) {
+    public boolean enrollCoordinated(Property property, OwnershipToken owner,
+            Supplier<OwnershipToken> refreshOwner, Consumer<EnrollResult> done) {
         main();
         long seed = plugin.getConfig().getLong("economy.property-seed-cents", 5000);
         long seedPool = plugin.getConfig().getLong("economy.rollout-seed-pool-cents", 50000);
         if (seed < 0 || seed > 5000 || seedPool < 0 || seedPool > 50000) return false;
         var fence = plugin.ownershipFence();
-        if (fence == null || admissionPending || cache.size() >= 512
+        if (fence == null || !plugin.propertyGuard().ready() || admissionPending || cache.size() >= 512
                 || findByWorldRegion(property.worldUuid(), property.regionId()).isPresent()) return false;
         if (!property.worldUuid().equals(owner.worldId()) || !property.regionId().equals(owner.regionId())
                 || !Objects.equals(property.ownerUuid(), owner.ownerId())) return false;
@@ -226,18 +287,32 @@ public final class PropertyService {
         admissionPending = true;
         try {
             worker.execute(() -> {
+                // A paused row, or a row enrolled under another backend, is not in the cache: check SQL first so a
+                // known refusal never reaches the insert.
+                String refusal = enrollmentRefusal(repo, property.worldUuid(), property.regionId());
                 boolean acknowledged = false;
-                try {
-                    repo.insertEnrollmentWithSeedPool(property, seed, seedPool);
-                    acknowledged = true;
-                } catch (SQLException | RuntimeException failure) {
-                    // Retain the lease on uncertain commit; never blindly retry with a new UUID.
+                if (refusal == null) {
+                    try {
+                        repo.insertEnrollmentWithSeedPool(property, seed, seedPool);
+                        acknowledged = true;
+                    } catch (SQLException | RuntimeException failure) {
+                        // A refused row did not commit. Otherwise retain the lease on uncertain commit; never
+                        // blindly retry with a new UUID.
+                        if (certainlyNotCommitted(failure)) refusal = "The database refused this enrollment; nothing was enrolled.";
+                    }
                 }
                 boolean committed = acknowledged;
+                String refused = refusal;
                 admissionReplies.add(() -> {
+                    if (refused != null) {
+                        lease.releaseReconciled();
+                        admissionPending = false;
+                        done.accept(EnrollResult.refused(refused));
+                        return;
+                    }
                     if (!committed) {
                         plugin.getLogger().severe("Enrollment requires recovery: property " + property.propertyId());
-                        done.accept(false);
+                        done.accept(EnrollResult.refused(ENROLL_RECOVERY_REPLY));
                         return;
                     }
                     try {
@@ -250,10 +325,10 @@ public final class PropertyService {
                         admissionPending = false;
                     } catch (RuntimeException failure) {
                         plugin.getLogger().severe("Committed enrollment authority requires recovery: property " + property.propertyId());
-                        done.accept(false);
+                        done.accept(EnrollResult.refused(ENROLL_RECOVERY_REPLY));
                         return;
                     }
-                    done.accept(true);
+                    done.accept(new EnrollResult(true, "Enrolled " + property.regionId() + "."));
                 });
             });
             return true;
@@ -267,12 +342,20 @@ public final class PropertyService {
     public boolean resumeCoordinated(UUID world, String region, BooleanSupplier authorized,
                                      Consumer<String> done) {
         main();
-        if (admissionPending || cache.size() >= 512 || plugin.ownershipFence() == null || !authorized.getAsBoolean()) return false;
+        if (admissionPending || cache.size() >= 512 || plugin.ownershipFence() == null || !plugin.propertyGuard().ready()
+                || !authorized.getAsBoolean()) return false;
         admissionPending = true;
         try {
             worker.execute(() -> {
                 Property paused;
-                try { paused = repo.findByWorldRegion(world, region).orElse(null); }
+                try { paused = repo.findByWorldRegion(world, region, repo.backendId()).orElse(null); }
+                catch (PropertyRepository.EnrolledUnderOtherBackend elsewhere) {
+                    admissionReplies.add(() -> {
+                        admissionPending = false;
+                        done.accept(elsewhere.getMessage());
+                    });
+                    return;
+                }
                 catch (SQLException | RuntimeException failure) {
                     admissionReplies.add(() -> {
                         admissionPending = false;
@@ -288,11 +371,11 @@ public final class PropertyService {
                     }
                     var liveWorld = Bukkit.getWorld(world);
                     var view = liveWorld == null ? null : arm.findRegion(liveWorld.getName(), region).orElse(null);
-                    var owner = view == null || view.ownerUuid() == null ? null
-                            : arm.ownerReadRegion(world, region, view.ownerUuid()).orElse(null);
+                    var owner = view == null || view.ownerUuid().isEmpty() ? null
+                            : arm.ownerReadRegion(world, region, view.ownerUuid().get()).orElse(null);
                     if (owner == null) {
                         admissionPending = false;
-                        done.accept("Current sole ARM owner unavailable; resume refused.");
+                        done.accept("Current sole " + arm.displayName() + " owner unavailable; resume refused.");
                         return;
                     }
                     final OwnershipFence.Lease lease;
@@ -366,13 +449,13 @@ public final class PropertyService {
         main();
         var property = findByWorldRegion(world, region).orElse(null);
         if (admissionPending || property == null || !property.enabled() || !actor.equals(property.ownerUuid())
-                || plugin.ownershipFence() == null || pump.writing(property.propertyId())
+                || plugin.ownershipFence() == null || !plugin.propertyGuard().ready() || pump.writing(property.propertyId())
                 || !authorized.getAsBoolean() || cents <= 0
                 || cents < (long) property.referenceRentCents()*50/100
                 || cents > (long) property.referenceRentCents()*150/100) return false;
         int delay = rentChangeDelayDays(plugin.getConfig().get(RENT_CHANGE_DELAY));
         if (delay < 0) return false;
-        var owner = plugin.armAdapter().ownerReadRegion(world, region, actor).orElse(null);
+        var owner = plugin.propertyBackend().ownerReadRegion(world, region, actor).orElse(null);
         if (owner == null) return false;
         final LocalDate today = economyToday();
         final OwnershipFence.Lease lease;
@@ -683,10 +766,11 @@ public final class PropertyService {
                                        Consumer<String> done) {
         main();
         var p = findByWorldRegion(world, region);
-        if (admissionPending || p.isEmpty() || plugin.ownershipFence() == null || !authorized.getAsBoolean()) return false;
+        if (admissionPending || p.isEmpty() || plugin.ownershipFence() == null || !plugin.propertyGuard().ready()
+                || !authorized.getAsBoolean()) return false;
         var property = p.get();
         if(pump.writing(property.propertyId()))return false; // The ownership check is writing this home: busy.
-        var owner = plugin.armAdapter().ownerReadRegion(world, region, property.ownerUuid()).orElse(null);
+        var owner = plugin.propertyBackend().ownerReadRegion(world, region, property.ownerUuid()).orElse(null);
         if (owner == null) return false;
         final OwnershipFence.Lease lease;
         try {
@@ -741,7 +825,11 @@ public final class PropertyService {
         return r.failed() > 0 || r.missing() > 0 || r.skipped() > 0 || r.deferred() > 0;
     }
     public static String reconcileIncompleteText(OwnershipReconcilePump.Result r) {
-        return "ARM reconcile incomplete: verified=" + r.checked() + " skipped=" + r.skipped() + " missing=" + r.missing()
+        return reconcileIncompleteText("ARM", r);
+    }
+    /** The scheduled warning named for the backend in use; ARM's reads exactly as before. */
+    public static String reconcileIncompleteText(String backendName, OwnershipReconcilePump.Result r) {
+        return backendName + " reconcile incomplete: verified=" + r.checked() + " skipped=" + r.skipped() + " missing=" + r.missing()
                 + " unverified=" + r.failed() + (r.deferred() > 0 ? " waiting-on-busy-home=" + r.deferred() : "");
     }
     /** A finished pass counts as a reconcile unless every home it reached was busy (it only deferred). */

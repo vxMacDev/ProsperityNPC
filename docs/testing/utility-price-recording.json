@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "subject": "configured-utility-tariff-and-read-only-receipts",
+  "paymentCoreSha256": "8e900fce10be3883b1c14f9a5abec568d23b4f9f2f7599a4affd81a132984cf1",
+  "receiptCoreSha256": "80015e36cc44bb670ddeb6c6c6c1a4eba85ba2de90da41c1347f3ca79831c692",
+  "environment": {
+    "paper": "26.1.2",
+    "java": 25,
+    "database": "MariaDB11.4.5",
+    "schemaBefore": 51,
+    "schemaAfter": 53,
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "zone": "UTC",
+    "resetHour": 4,
+    "settlementTime": "23:59",
+    "vacationFeatureDays": 0
+  },
+  "method": "Synthetic CraftPlayer/in-memory transport, public commands, manual inventory events, actual normal120-second scheduler and installed native property/economy plugins. No forced cycle, clock change, connected client or whole-server load claim.",
+  "checks": [
+    {"case": "invalid-zero-base-startup", "pluginDisabledBeforeDatabaseInitialization": true, "schema51AndAll89CountsUnchanged": true},
+    {"case": "valid-startup", "migration52Statements": 3, "migration53Statements": 2, "other88TableCountsUnchanged": true, "tariffColumnsAndReplacementChecksPresent": true},
+    {"case": "public-maximum-refusal", "configuredCents": 1777, "maximumCents": 1776, "walletsAndAll89CountsUnchanged": true},
+    {"case": "owner-desk", "displayedMaximumCents": 1777},
+    {"case": "normal-scheduled-budget-refusal", "ceilingCents": 1500, "controlsAndAuthorityReady": true, "cycleAdvancedAndWorkerDrained": true, "walletFundingAndAll89CountsUnchanged": true},
+    {"case": "normal-scheduled-payment", "ceilingCents": 3000, "paidCents": 1777, "utilityState": "PAID", "claimState": "SPENT", "configuredClaimCents": 1777, "nativeTwoLegProof": true},
+    {"case": "retired-view-replay", "controlsEnabled": true, "noExtraMoneyOrRows": true},
+    {"case": "same-payment-core-full-restart", "loadedBaseBeforeCents": 1777, "loadedBaseAfterCents": 2399, "savedBillAndClaimCents": 1777, "rawAndNormalizedMoneyAndAll89CountsUnchanged": true},
+    {"case": "changed-and-invalid-reload", "activeBaseCents": 2399, "changedFileBaseCents": 2999, "invalidFileBaseCents": 0, "pendingAndRejectedNoticesShown": true, "activeBaseUnchanged": true},
+    {"case": "receipt-gap-red-control", "generalCommandInitiallyReturnedNoMatch": true, "sourceHadNoUtilityReceiptReader": true, "actualPaymentWasAlreadyProved": true},
+    {"case": "receipt-fix-upgrade", "noReseedOrNewPayment": true, "bothMoneyControlsOff": true, "publicReceiptShowsSaved1777": true, "all89CountsAndRawMoneyUnchanged": true},
+    {"case": "cold-start-desk", "systemEnabledWithoutReload": true, "currentTariffCents": 2399, "savedMaximumCents": 1777, "lifecycleCodeUnchanged": true}
+  ],
+  "savedBill": {
+    "baseCents": 1777,
+    "tenantCents": 0,
+    "upgradeLevelCents": 0,
+    "capacity": 2,
+    "occupiedTenants": 0,
+    "installedUpgradeLevels": 0,
+    "economyDay": "2026-10-18",
+    "periodStart": "2026-10-18T04:00:00Z",
+    "dueAt": "2026-10-19T04:00:00Z"
+  },
+  "money": {
+    "beforeCents": [100000, 100000],
+    "afterCents": [98223, 101777],
+    "totalCents": 200000,
+    "rawAfterDollars": [982.2299999999999, 1017.77],
+    "proof": "Existing TransferProof cent conversion and actual native debit/credit observations; raw binary noise retained.",
+    "fundingCents": {"seed": 5000, "cashSinks": 1777, "cashPayouts": 0, "unfunded": 0}
+  },
+  "buildChecks": {
+    "paymentCoreDefaultFullCases": 4497,
+    "paymentCoreFailures": 0,
+    "paymentCoreErrors": 0,
+    "paymentCoreSkipsIncludedInTotal": 20,
+    "receiptFixFocusedCases": 168,
+    "receiptFixFailuresErrorsSkips": 0,
+    "bothPackagingChecksPassed": true,
+    "note": "The default full result belongs to the payment core. The later receipt core has focused and native acceptance; no new unfiltered full result is claimed."
+  },
+  "cleanup": {
+    "nativeWalletsExactlyZero": true,
+    "publicConsentOffAndPropertyPaused": true,
+    "nativeClaimsAndPlayersRemoved": true,
+    "fixtureTablesProvedArchivedAndRemoved": 10,
+    "schema53BaselineTableCountsRestored": 89,
+    "identifiedNewFilesArchived": 19,
+    "originalCoreConfigLocaleIdentityIndexesAndCacheRestoredExactly": true,
+    "syntheticResidualAfterSuccessfulWithdrawalDollars": 9.999999999999999e-14,
+    "residualMethod": "Known synthetic account only, within existing noise tolerance, cleared using inspected native provider API; exact zero checked. No product rounding change.",
+    "retained": "Forward schema53, GP claim sequence and ordinary world changes. No bitwise database/world restoration claim."
+  },
+  "notVerified": ["Connected Java/Bedrock clients", "Realistic concurrent-player or daily-churn load", "Full populated daily cycle", "Extended utility failure/recovery lifecycle", "Public vendor pin/package acceptance or other property backends"],
+  "observerCorrections": ["Initial general-receipt assumption exposed a real missing lookup, which was fixed and retested without another payment.", "Initial unavailable-desk diagnosis was premature: SYSTEM was off. Cold SYSTEM-on/no-reload control passed; lifecycle code was unchanged."]
+}

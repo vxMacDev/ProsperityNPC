@@ -83,7 +83,7 @@ class OwnerDeskRepositoryIT {
         for (String migration : List.of("V1__initial_schema.sql", "V2__resident_identity.sql",
                 "V3__purchase_receipts.sql", "V4__transfer_journal.sql", "V5__resident_route_tags.sql",
                 "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V8__eviction_tenancies.sql",
-                "V23__property_insurance.sql")) {
+                "V23__property_insurance.sql", "V45__property_backend.sql")) {
             try (InputStream in = OwnerDeskRepositoryIT.class.getResourceAsStream("/db/migration/" + migration)) {
                 assertNotNull(in, migration);
                 for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8)))
@@ -165,6 +165,12 @@ class OwnerDeskRepositoryIT {
             assertThrows(SQLException.class,
                     () -> new OwnerDeskRepository(disconnected).read(WORLD, REGION, owner, END));
         }
+    }
+
+    @Test void billsOffNeedsNoInvoiceTablesOrInvoiceReadPermission() throws SQLException {
+        assertTrue(desk.read(WORLD, REGION, owner, END).orElseThrow().bills().isEmpty());
+        assertTrue(desk.read(WORLD, REGION, owner, END, false).orElseThrow().bills().isEmpty());
+        assertThrows(SQLException.class, () -> desk.read(WORLD, REGION, owner, END, true));
     }
 
     @Test

@@ -1,0 +1,33 @@
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+}
+
+// The adapter API: interfaces and small final classes only. It ships inside the ProsperityNPC jar, so an
+// adapter compiles against it (compileOnly) and must never bundle it.
+dependencies {
+    compileOnly 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
+
+    // The contract suites adapters run against their own pieces.
+    testFixturesCompileOnly 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
+    testFixturesApi platform('org.junit:junit-bom:5.11.4')
+    testFixturesApi 'org.junit.jupiter:junit-jupiter'
+    testFixturesApi 'org.junit.platform:junit-platform-launcher'
+
+    // The API's own unit tests. They run in the normal build, so the API is checked on its own as well as through
+    // the core's tests and the example adapter.
+    testImplementation 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:all,-classfile,-processing'
+}

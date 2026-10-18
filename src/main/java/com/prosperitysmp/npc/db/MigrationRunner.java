@@ -73,7 +73,23 @@ public final class MigrationRunner {
             new Migration(37, "partnership_handin_terms", "db/migration/V37__partnership_handin_terms.sql"),
             new Migration(38, "item_return_staff_decision", "db/migration/V38__item_return_staff_decision.sql"),
             new Migration(39, "nav_surface", "db/migration/V39__nav_surface.sql"),
-            new Migration(40, "money_evidence", "db/migration/V40__money_evidence.sql"));
+            new Migration(40, "money_evidence", "db/migration/V40__money_evidence.sql"),
+            new Migration(41, "charge_catalogue", "db/migration/V41__charge_catalogue.sql"),
+            new Migration(42, "charge_invoices", "db/migration/V42__charge_invoices.sql"),
+            new Migration(43, "meter_baselines", "db/migration/V43__meter_baselines.sql"),
+            new Migration(44, "nav_graph_sources", "db/migration/V44__nav_graph_sources.sql"),
+            new Migration(45, "property_backend", "db/migration/V45__property_backend.sql"),
+            new Migration(46, "charge_policy_history", "db/migration/V46__charge_policy_history.sql"),
+            new Migration(47, "purchase_prices", "db/migration/V47__purchase_prices.sql"),
+            new Migration(48, "auto_care_prices", "db/migration/V48__auto_care_prices.sql"),
+            new Migration(49, "upgrade_cost_width", "db/migration/V49__upgrade_cost_width.sql"),
+            new Migration(50, "eviction_price", "db/migration/V50__eviction_price.sql"),
+            new Migration(51, "insurance_prices", "db/migration/V51__insurance_prices.sql"),
+            new Migration(52, "utility_prices", "db/migration/V52__utility_prices.sql"),
+            new Migration(53, "auto_care_utility_prices", "db/migration/V53__auto_care_utility_prices.sql"),
+            new Migration(54, "repair_prices", "db/migration/V54__repair_prices.sql"),
+            new Migration(55, "item_repair_prices", "db/migration/V55__item_repair_prices.sql"),
+            new Migration(56, "auto_care_repair_prices", "db/migration/V56__auto_care_repair_prices.sql"));
 
     private final ProsperityNpcPlugin plugin;
     private final Database database;

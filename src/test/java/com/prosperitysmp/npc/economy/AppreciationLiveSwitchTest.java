@@ -283,15 +283,16 @@ class AppreciationLiveSwitchTest {
         assertTrue(code.contains("row -> payRent(row, sha, limits, day, pinned, authorized, () -> { }, stillOn)"));
         assertTrue(code.contains("return gatedSequence(rows, stillOn,"));
         assertEquals(1, count(code, "gatedSequence(rows,"), "only appreciation uses gatedSequence; rent keeps its plain loop");
+        assertTrue(code.contains("BooleanSupplier payoutGate = () -> debitGate.getAsBoolean() && plugin.propertyGuard().payoutsAllowed();"));
         // Lease authorize and Vault observer: both through finalDebitChecks, which reads the gate before the
         // DEBIT-only checks (fail fast) and again after them, as the last read before the withdraw.
         int authorize = code.indexOf("public void authorize(TransferJournal.Receipt receipt, TransferProof.Leg leg) {",
                 code.indexOf("Runnable floorDeferred, BooleanSupplier debitGate)"));
         int authorizeChecks = code.indexOf("finalDebitChecks(leg, () -> {", authorize);
         assertTrue(authorize > 0 && authorizeChecks > authorize
-                && code.indexOf("}, debitGate, awayHeld);", authorizeChecks) > code.indexOf("requireFloor(", authorizeChecks));
+                && code.indexOf("}, payoutGate, awayHeld);", authorizeChecks) > code.indexOf("requireFloor(", authorizeChecks));
         int provider = code.indexOf("if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) finalDebitChecks(leg, () -> {");
-        assertTrue(provider > 0 && code.indexOf("}, debitGate, awayHeld);", provider) > code.indexOf("requireFloor(", provider));
+        assertTrue(provider > 0 && code.indexOf("}, payoutGate, awayHeld);", provider) > code.indexOf("requireFloor(", provider));
         String helper = code.substring(code.indexOf("static void finalDebitChecks("), code.indexOf("private boolean payoutAwayHeld("));
         int run = helper.indexOf("debitOnlyChecks.run();");
         assertTrue(helper.indexOf("requireDebitGate(leg, debitGate);") < run && helper.lastIndexOf("requireDebitGate(leg, debitGate);") > run);

@@ -69,11 +69,11 @@ public final class TenantsCommand implements TabExecutor {
             send(player, NamedTextColor.RED, "Enter the resident's full UUID and a positive maximum payment.");
             return;
         }
-        if (plugin.utilityPayments() == null || plugin.armAdapter() == null || plugin.propertyService() == null) {
+        if (plugin.utilityPayments() == null || plugin.propertyBackend() == null || plugin.propertyService() == null) {
             send(player, NamedTextColor.RED, "Property payments are unavailable.");
             return;
         }
-        var authority = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
+        var authority = plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
         var property = authority == null ? Optional.<Property>empty()
                 : plugin.propertyService().findByWorldRegion(authority.worldId(), authority.regionId());
         if (property.isEmpty() || !property.get().enabled() || !player.getUniqueId().equals(property.get().ownerUuid())) {
@@ -84,7 +84,7 @@ public final class TenantsCommand implements TabExecutor {
                 maximum, () -> player.isOnline() && !player.isDead()
                         && plugin.getServer().getPlayer(player.getUniqueId()) == player
                         && player.hasPermission("prosperitynpc.use")
-                        && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                        && plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId())
                             .filter(authority::sameIncarnation).isPresent(),
                 message -> {
                     if (player.isOnline()) send(player, NamedTextColor.GRAY, message);

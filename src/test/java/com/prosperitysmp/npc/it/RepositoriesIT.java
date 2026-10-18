@@ -71,7 +71,7 @@ class RepositoriesIT {
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), "prosperity_npc",
                 "root", "", 4, 10_000L));
 
-        String schema = readResource("/db/migration/V1__initial_schema.sql");
+        String schema = readResource("/db/migration/V1__initial_schema.sql") + "\n" + readResource("/db/migration/V45__property_backend.sql");
         try (Connection c = database.getConnection(); Statement st = c.createStatement()) {
             for (String stmt : MigrationRunner.splitStatements(schema)) {
                 st.execute(stmt);

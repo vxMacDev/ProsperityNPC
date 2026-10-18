@@ -1,7 +1,8 @@
 package com.prosperitysmp.npc.command;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
-import com.prosperitysmp.npc.arm.ArmAdapter;
+import com.prosperitysmp.npc.api.PropertyBackend;
+import com.prosperitysmp.npc.api.RegionView;
 import com.prosperitysmp.npc.arm.ArmRegionView;
 import com.prosperitysmp.npc.property.OwnershipReconcilePump;
 import com.prosperitysmp.npc.property.Property;
@@ -51,8 +52,14 @@ public final class NpcPropertyCommand implements TabExecutor {
             case "list" -> doList(sender);
             case "info" -> doInfo(sender, args);
             case "reconcile" -> doReconcile(sender);
-            case "armdump" -> send(sender, NamedTextColor.YELLOW,
-                    plugin.armAdapter() == null ? "no arm adapter" : plugin.armAdapter().debugDump());
+            case "armdump" -> {
+                // Another backend prints its own staff lines; ARM keeps its dump.
+                var backend = plugin.propertyBackend();
+                if (backend != null && !com.prosperitysmp.npc.arm.ArmAdapter.ID.equals(plugin.propertyBackendId()))
+                    for (String line : backend.describe()) send(sender, NamedTextColor.YELLOW, line);
+                else send(sender, NamedTextColor.YELLOW,
+                        plugin.armAdapter() == null ? "no arm adapter" : plugin.armAdapter().debugDump());
+            }
             default -> send(sender, NamedTextColor.RED,
                     "Usage: /npcproperty <enroll|pause|resume|unenroll|list|info|reconcile|armdump>");
         }
@@ -70,8 +77,8 @@ public final class NpcPropertyCommand implements TabExecutor {
         String market = args[3].toLowerCase(Locale.ROOT);
         String clazz = args[4].toLowerCase(Locale.ROOT);
 
-        ArmAdapter arm = plugin.armAdapter();
-        if (arm == null || !arm.isAvailable()) {
+        PropertyBackend arm = plugin.propertyBackend();
+        if (arm == null || !arm.available()) {
             send(sender, NamedTextColor.RED, "AdvancedRegionMarket is not available.");
             return;
         }
@@ -104,20 +111,23 @@ public final class NpcPropertyCommand implements TabExecutor {
             send(sender, NamedTextColor.RED, "daily-rent must be a positive dollar amount (e.g. 3 or 2.50).");
             return;
         }
-        Optional<ArmRegionView> viewOpt = arm.findRegion(worldName, regionId);
+        Optional<RegionView> viewOpt = arm.findRegion(worldName, regionId);
         if (viewOpt.isEmpty()) {
-            send(sender, NamedTextColor.RED, "No ARM region '" + regionId + "' in world '" + worldName + "'.");
+            send(sender, NamedTextColor.RED, "No " + arm.displayName() + " region '" + regionId + "' in world '" + worldName + "'.");
             return;
         }
-        ArmRegionView view = viewOpt.get();
-        if (!view.matches(world.getUID(), regionId)) {
-            send(sender, NamedTextColor.RED, "ARM returned a different region or world; enrollment refused.");
+        RegionView view = viewOpt.get();
+        if (!ArmRegionView.sameRegion(view, world.getUID(), regionId)) {
+            send(sender, NamedTextColor.RED, arm.displayName() + " returned a different region or world; enrollment refused.");
             return;
         }
         regionId = view.regionId();
-        if (!view.isSell()) {
-            send(sender, NamedTextColor.RED, "Region '" + regionId + "' is a " + view.sellType()
-                    + " region; only SELL regions can be enrolled.");
+        // ARM enrolls SELL regions only; another backend reports kind "owned" for a home with one paying owner.
+        boolean otherBackend = !com.prosperitysmp.npc.arm.ArmAdapter.ID.equals(plugin.propertyBackendId());
+        if (!"sell".equals(view.kind()) && !(otherBackend && "owned".equals(view.kind()))) {
+            send(sender, NamedTextColor.RED, "Region '" + regionId + "' is a " + view.market()
+                    + (otherBackend ? " region; only " + arm.displayName() + " homes with one paying owner can be enrolled."
+                    : " region; only SELL regions can be enrolled."));
             return;
         }
         try {
@@ -127,23 +137,23 @@ public final class NpcPropertyCommand implements TabExecutor {
             }
             Property property = new Property(
                     UUID.randomUUID(), world.getUID(), regionId, market, clazz, capacity,
-                    (int) rentCents, (int) rentCents, view.ownerUuid(), 0, 80, true);
+                    (int) rentCents, (int) rentCents, view.ownerUuid().orElse(null), 0, 80, true);
             if (!(sender instanceof Player player)) {
                 send(sender, NamedTextColor.RED, "Stand inside the owned plot to enroll it.");
                 return;
             }
             Location location = player.getLocation().clone();
-            var owner = arm.ownerReadAt(location, view.ownerUuid()).orElse(null);
+            UUID viewOwner = view.ownerUuid().orElse(null);
+            var owner = arm.ownerReadAt(location, viewOwner).orElse(null);
             if (owner == null || !owner.regionId().equals(regionId) || !owner.worldId().equals(world.getUID())) {
                 send(sender, NamedTextColor.RED,
                         "Stand inside that plot; it must have one UUID owner and no inherited ownership.");
                 return;
             }
             boolean queued = plugin.propertyService().enrollCoordinated(property, owner,
-                    () -> arm.ownerReadAt(location, view.ownerUuid()).orElse(null), ok -> {
-                        if (player.isOnline()) send(player, ok ? NamedTextColor.GREEN : NamedTextColor.RED,
-                                ok ? "Enrolled " + property.regionId() + "."
-                                        : "Enrollment held for recovery. Do not retry; contact staff.");
+                    () -> arm.ownerReadAt(location, viewOwner).orElse(null), result -> {
+                        if (player.isOnline()) send(player, result.enrolled() ? NamedTextColor.GREEN : NamedTextColor.RED,
+                                result.reply());
                     });
             send(sender, queued ? NamedTextColor.YELLOW : NamedTextColor.RED,
                     queued ? "Enrolling property..." : "Enrollment unavailable or busy; ownership coordination must be ready.");
@@ -234,11 +244,17 @@ public final class NpcPropertyCommand implements TabExecutor {
         requestReconcile(plugin, sender);
     }
 
+    /** The property backend's name for staff text: "ARM" for arm, so ARM's text is unchanged. */
+    static String backendName(ProsperityNpcPlugin plugin) {
+        var backend = plugin.propertyBackend();
+        return backend == null ? "ARM" : backend.displayName();
+    }
+
     static void requestReconcile(ProsperityNpcPlugin plugin, CommandSender sender) {
         if (!canStart(sender, Bukkit::getPlayer)) return;
         var accepted = plugin.propertyService().requestReconcile(r -> {
             if (!plugin.isEnabled()) return;
-            String outcome = "ARM reconcile " + (r.cancelled() ? "cancelled" : "completed")
+            String outcome = backendName(plugin) + " reconcile " + (r.cancelled() ? "cancelled" : "completed")
                     + ": verified " + r.checked() + ", verified owner-changes " + r.changed()
                     + ", skipped " + r.skipped() + ", missing " + r.missing()
                     + ", unverified/failed " + r.failed()
@@ -251,7 +267,7 @@ public final class NpcPropertyCommand implements TabExecutor {
                 send(sender, NamedTextColor.YELLOW, outcome);
             }
         });
-        String receipt = "ARM reconcile request: " + accepted + ".";
+        String receipt = backendName(plugin) + " reconcile request: " + accepted + ".";
         if (sender instanceof RemoteConsoleCommandSender
                 && accepted == OwnershipReconcilePump.Acceptance.ACCEPTED)
             receipt += " Completion will be recorded in the server log.";

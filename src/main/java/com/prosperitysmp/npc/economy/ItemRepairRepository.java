@@ -74,6 +74,8 @@ public final class ItemRepairRepository {
                           UUID heldReturn, String heldReturnState) { }
     private record Key(UUID collectionId, UUID playerId) { }
 
+    public record OpenIncident(IncidentType type, long cashCents) { }
+
     private final Database database;
 
     public ItemRepairRepository(Database database) { this.database = Objects.requireNonNull(database); }
@@ -149,17 +151,26 @@ public final class ItemRepairRepository {
 
     /** Read-only: the type of an open, unprevented incident at this home, for the typed command. */
     public Optional<IncidentType> openIncidentType(UUID propertyId, long incidentId) throws SQLException {
+        return openIncident(propertyId, incidentId).map(OpenIncident::type);
+    }
+
+    public Optional<OpenIncident> openIncident(UUID propertyId, long incidentId) throws SQLException {
         Objects.requireNonNull(propertyId);
         if (incidentId <= 0) return Optional.empty();
         try (Connection c = database.getConnection(); PreparedStatement ps = prepare(c, """
-                SELECT incident_type FROM npc_incidents WHERE property_id=? AND incident_id=?
+                SELECT * FROM npc_incidents WHERE property_id=? AND incident_id=?
                 AND resolved_at IS NULL AND prevented=FALSE
                 """)) {
             id(ps, 1, propertyId);
             ps.setLong(2, incidentId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return Optional.empty();
-                try { return Optional.of(IncidentType.valueOf(rs.getString(1))); }
+                try {
+                    IncidentType type = IncidentType.valueOf(rs.getString("incident_type"));
+                    long cash = RepairQuote.storedCents(type, rs.getLong("cash_repair_cents"),
+                            configuredPrice(rs, "configured_repair_cents"));
+                    return Optional.of(new OpenIncident(type, cash));
+                }
                 catch (IllegalArgumentException | NullPointerException invalid) { return Optional.empty(); }
             }
         }
@@ -535,11 +546,14 @@ public final class ItemRepairRepository {
     }
 
     private static void insert(Connection c, ItemRepairQuote q, UUID runId) throws SQLException {
+        Long price = q.repair().configuredPriceCents();
+        String priceColumn = price == null ? "" : ",configured_item_repair_cents";
+        String priceValue = price == null ? "" : ",?";
         try (PreparedStatement ps = prepare(c, """
                 INSERT INTO npc_item_repair_collections(collection_id,player_id,property_id,incident_id,ownership_epoch,
                   incident_type,repair_snapshot_sha256,quote_day,cash_cents,value_ratio_bps,required_value_cents,
-                  recipe_value_cents,price_version,quote_sha256,state,run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'INTENT',?)
-                """)) {
+                  recipe_value_cents,price_version,quote_sha256,state,run_id%s) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'INTENT',?%s)
+                """.formatted(priceColumn, priceValue))) {
             id(ps, 1, q.collectionId());
             id(ps, 2, q.playerId());
             id(ps, 3, q.propertyId());
@@ -555,6 +569,7 @@ public final class ItemRepairRepository {
             ps.setString(13, q.priceVersion());
             ps.setString(14, q.quoteSha256());
             id(ps, 15, runId);
+            if (price != null) ps.setLong(16, price);
             one(ps.executeUpdate());
         }
         for (int i = 0; i < q.lines().size(); i++) {
@@ -668,6 +683,7 @@ public final class ItemRepairRepository {
         int epoch, ratio;
         String type, snapshot, day, version, hash, state, outcome;
         long cash, required, value;
+        Long price;
         Instant created, updated;
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_item_repair_collections WHERE collection_id=?" + suffix)) {
             id(ps, 1, collectionId);
@@ -687,6 +703,7 @@ public final class ItemRepairRepository {
                 state = rs.getString("state");
                 outcome = rs.getString("outcome_code");
                 cash = rs.getLong("cash_cents");
+                price = configuredPrice(rs, "configured_item_repair_cents");
                 required = rs.getLong("required_value_cents");
                 value = rs.getLong("recipe_value_cents");
                 created = time(rs, "created_at");
@@ -720,8 +737,10 @@ public final class ItemRepairRepository {
             }
         }
         try {
+            IncidentType incidentType = IncidentType.valueOf(type);
+            RepairQuote.storedCents(incidentType, cash, price);
             var quote = new ItemRepairQuote(collectionId, property, player, epoch, LocalDate.parse(day),
-                    new RepairQuote(incident, IncidentType.valueOf(type), snapshot), cash, ratio, required, value, version, lines, plan);
+                    new RepairQuote(incident, incidentType, snapshot, price), cash, ratio, required, value, version, lines, plan);
             if (!quote.quoteSha256().equals(hash)) throw new SQLException("Item repair quote hash mismatch");
             return Optional.of(new Stored(quote, State.valueOf(state), run, outcome, created, updated));
         } catch (IllegalArgumentException | NullPointerException | DateTimeException | ArithmeticException invalid) {
@@ -763,6 +782,17 @@ public final class ItemRepairRepository {
 
     private static void runBinding(Stored stored, UUID runId) throws SQLException {
         if (!runId.equals(stored.runId())) throw new SQLException("Item repair run conflicts");
+    }
+
+    private static Long configuredPrice(ResultSet rs, String column) throws SQLException {
+        var columns = rs.getMetaData();
+        for (int i = 1; i <= columns.getColumnCount(); i++) {
+            if (!column.equals(columns.getColumnLabel(i))) continue;
+            var price = rs.getBigDecimal(i);
+            try { return price == null ? null : price.longValueExact(); }
+            catch (ArithmeticException invalid) { throw new SQLException("Invalid stored repair price", invalid); }
+        }
+        return null;
     }
 
     private static String code(String value) {

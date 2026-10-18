@@ -41,10 +41,12 @@ class OwnershipReconciliationIT {
             maria.createDB(schema);
             database = new Database();
             database.connect(new DatabaseSettings("localhost", cfg.getPort(), schema, "root", "", 6, 10_000L));
-            try (InputStream in = OwnershipReconciliationIT.class.getResourceAsStream("/db/migration/V1__initial_schema.sql")) {
-                assertNotNull(in);
-                for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8)))
-                    execute(sql);
+            for (String path : List.of("/db/migration/V1__initial_schema.sql", "/db/migration/V45__property_backend.sql")) {
+                try (InputStream in = OwnershipReconciliationIT.class.getResourceAsStream(path)) {
+                    assertNotNull(in);
+                    for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8)))
+                        execute(sql);
+                }
             }
         } catch (Exception | AssertionError failure) {
             try { shutdown(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }

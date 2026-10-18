@@ -15,6 +15,9 @@ import com.prosperitysmp.npc.resident.ResidentCatalogue;
 import com.prosperitysmp.npc.resident.ResidentRepository;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -44,7 +47,8 @@ class AccountingProjectionCommerceIT {
         String schema="npc_projection_"+UUID.randomUUID().toString().replace("-",""); mariaDb.createDB(schema);
         database=new Database(); database.connect(new DatabaseSettings("localhost",cfg.getPort(),schema,"root","",6,10_000L));
         for(String name:List.of("V1__initial_schema.sql","V2__resident_identity.sql","V3__purchase_receipts.sql",
-                "V4__transfer_journal.sql","V17__transfer_resolutions.sql","V21__item_custody.sql","V22__commerce_orders.sql")) {
+                "V4__transfer_journal.sql","V17__transfer_resolutions.sql","V21__item_custody.sql","V22__commerce_orders.sql",
+                "V41__charge_catalogue.sql","V45__property_backend.sql")) {
             try(InputStream input=AccountingProjectionCommerceIT.class.getResourceAsStream("/db/migration/"+name)) {
                 assertNotNull(input);
                 for(String sql:MigrationRunner.splitStatements(new String(input.readAllBytes(),StandardCharsets.UTF_8))) execute(sql);
@@ -83,7 +87,8 @@ class AccountingProjectionCommerceIT {
         assertEquals(1000,total(snapshot,"2026-09-23","xfer-from-public","npc-merchant-goods"));
         assertEquals(1000,total(snapshot,"2026-09-29","xfer-to-public",EventSource.RENT.key()));
         for(var group:snapshot.groups()) {
-            assertEquals(EventSource.values().length+2,group.sources().size());
+            assertEquals(9,group.sources().size());
+            assertTrue(group.sources().stream().noneMatch(s -> s.source().equals(EventSource.BILLS.key())));
             if(group.category().equals("xfer-to-public")) {
                 assertEquals(0,total(snapshot,group.day(),group.category(),"npc-worker-wages"));
                 assertEquals(0,total(snapshot,group.day(),group.category(),"npc-merchant-goods"));
@@ -125,6 +130,65 @@ class AccountingProjectionCommerceIT {
         assertEquals(1,count("npc_economy_events")); assertEquals(1,count("npc_commerce_orders"));
     }
 
+    @Test void sevenDaysOfEverySourceKeepTheSameAccountingText() throws Exception {
+        for (int day = 0; day < 7; day++) {
+            Instant at = FROM.plusSeconds(day * 86_400L + 43_200);
+            for (EventSource source : List.of(EventSource.RENT, EventSource.APPRECIATION, EventSource.UTILITY,
+                    EventSource.UPGRADE, EventSource.REPAIR, EventSource.INSURANCE, EventSource.EVICTION)) {
+                paidProperty(source, 1_000 + day * 100L + source.ordinal(), at);
+            }
+            paid(Source.WORKER_OUTPUT, 800 + day * 10L, at);
+            paid(Source.MERCHANT_GOODS, 900 + day * 10L, at);
+        }
+        var snapshot = read(reserve);
+        assertEquals(49, snapshot.receipts().size());
+        assertEquals(14, snapshot.commerceReceipts().size());
+        assertEquals(14, snapshot.getGroups().size());
+        StringBuilder text = new StringBuilder();
+        for (var group : snapshot.getGroups()) {
+            assertEquals(9, group.getSources().size());
+            for (var source : group.getSources()) {
+                assertFalse(source.getSource().contains("::"));
+                text.append(group.getDay()).append('|').append(group.getCategory()).append('|')
+                        .append(source.getSource()).append('|').append(source.getCents()).append('\n');
+            }
+        }
+        String resource = "golden/golden-accounting-v1.txt";
+        String recordDir = System.getenv("NPC_GOLDEN_RECORD_DIR");
+        if (recordDir != null && !recordDir.isBlank()) {
+            Path output = Path.of(recordDir).resolve(resource);
+            Files.createDirectories(output.getParent());
+            Files.writeString(output, text, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+            return;
+        }
+        try (InputStream input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            assertNotNull(input, "missing golden file " + resource);
+            assertEquals(new String(input.readAllBytes(), StandardCharsets.UTF_8), text.toString());
+        }
+    }
+
+    @Test void billsAppearOnlyAfterAnEventAndCountOnceInThePublicOutflow() throws Exception {
+        var before = read(reserve);
+        for (var group : before.groups()) {
+            assertEquals(9, group.sources().size());
+            assertTrue(group.sources().stream().noneMatch(s -> s.source().equals(EventSource.BILLS.key())));
+        }
+        long event = paidProperty(EventSource.BILLS, 625, AT);
+        var after = read(reserve);
+        assertEquals(List.of(event), after.receipts().stream().map(AccountingProjection.Item::eventId).toList());
+        long total = 0;
+        for (var group : after.groups()) {
+            assertEquals(10, group.sources().size());
+            var bills = group.sources().stream().filter(s -> s.source().equals(EventSource.BILLS.key())).toList();
+            assertEquals(1, bills.size());
+            long expected = group.day().equals("2026-09-29") && group.category().equals("xfer-from-public") ? 625 : 0;
+            assertEquals(expected, bills.getFirst().cents());
+            total += bills.getFirst().cents();
+        }
+        assertEquals(625, total);
+        assertEquals(after.groups(), read(reserve).groups());
+    }
+
     private AccountingProjection.Snapshot read(UUID expectedReserve) throws SQLException {
         try(Connection c=database.getConnection()) {
             c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ); c.setAutoCommit(false);
@@ -147,15 +211,18 @@ class AccountingProjectionCommerceIT {
     }
     private static CommerceOrderRepository.Budgets budgets() { return new CommerceOrderRepository.Budgets(64,512,128,1_000_000); }
     private long paidProperty() throws SQLException {
+        return paidProperty(EventSource.RENT, 1000, AT);
+    }
+    private long paidProperty(EventSource source, long cents, Instant at) throws SQLException {
         UUID property=UUID.randomUUID(),owner=UUID.randomUUID();
         new PropertyRepository(database).insertEnrollment(new Property(property,UUID.randomUUID(),"projection-"+property,"downtown","room",
                 2,1000,1000,owner,0,80,true),50_000);
-        long event=new EconomyEventRepository(database).insertPending(EconomyEvent.pending("projection|"+UUID.randomUUID(),1000,EventSource.RENT,
-                property,owner,0,owner,"2026-09-29"));
+        long event=new EconomyEventRepository(database).insertPending(EconomyEvent.pending("projection|"+UUID.randomUUID(),cents,source,
+                property,owner,0,owner,at.atZone(ZONE).toLocalDate().toString()));
         var handle=new TransferJournal.Handle(UUID.randomUUID(),event,run,"a".repeat(64));
-        transfers.beginDebit(handle); transfers.recordDebit(handle,debit(1000)); transfers.beginCredit(handle); transfers.recordCredit(handle,credit(1000));
+        transfers.beginDebit(handle); transfers.recordDebit(handle,debit(cents)); transfers.beginCredit(handle); transfers.recordCredit(handle,credit(cents));
         try(Connection c=database.getConnection(); var ps=c.prepareStatement("UPDATE npc_economy_events SET finalized_at=? WHERE event_id=?")) {
-            ps.setQueryTimeout(5); ps.setObject(1,LocalDateTime.ofInstant(AT,ZoneOffset.UTC)); ps.setLong(2,event); assertEquals(1,ps.executeUpdate());
+            ps.setQueryTimeout(5); ps.setObject(1,LocalDateTime.ofInstant(at,ZoneOffset.UTC)); ps.setLong(2,event); assertEquals(1,ps.executeUpdate());
         }
         return event;
     }

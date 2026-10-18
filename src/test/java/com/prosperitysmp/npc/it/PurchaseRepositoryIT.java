@@ -15,6 +15,8 @@ import com.prosperitysmp.npc.economy.PurchaseRepository.Receipt;
 import com.prosperitysmp.npc.economy.PurchaseRepository.State;
 import com.prosperitysmp.npc.economy.PurchaseRequest;
 import com.prosperitysmp.npc.economy.PurchaseRequest.Kind;
+import com.prosperitysmp.npc.economy.PurchasePrices;
+import com.prosperitysmp.npc.economy.TransferDispatchFixture;
 import com.prosperitysmp.npc.economy.TransferJournal;
 import com.prosperitysmp.npc.economy.TransferJournal.Handle;
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
@@ -49,6 +51,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -96,6 +99,7 @@ class PurchaseRepositoryIT {
         database = new Database();
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), schemaName, "root", "", 6, 10_000L));
         applyResource("/db/migration/V1__initial_schema.sql");
+        applyResource("/db/migration/V45__property_backend.sql");
         applyResource("/db/migration/V2__resident_identity.sql");
         applyResource(V3);
         applyResource("/db/migration/V4__transfer_journal.sql");
@@ -103,6 +107,9 @@ class PurchaseRepositoryIT {
         applyResource("/db/migration/V8__eviction_tenancies.sql");
         applyResource("/db/migration/V15__tenancy_departures.sql");
         applyResource("/db/migration/V17__transfer_resolutions.sql");
+        applyResource("/db/migration/V47__purchase_prices.sql");
+        applyResource("/db/migration/V49__upgrade_cost_width.sql");
+        applyResource("/db/migration/V50__eviction_price.sql");
         // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
         try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
     }
@@ -1184,6 +1191,258 @@ class PurchaseRepositoryIT {
         assertEquals(0,upgrades.facilitiesLevel(property));
     }
 
+    @ParameterizedTest
+    @ValueSource(longs = {750_000_000L, 800_000_000L})
+    void configuredUpgradeAuditAccumulatesBeyondIntegerRangeWithoutRepeatingMoney(long price) throws Exception {
+        assertEquals(price, com.prosperitysmp.npc.economy.TransferProof.toCents(price / 100.0).orElseThrow());
+        var prices = new PurchasePrices(1000, Map.of(
+                UpgradeType.ADVERTISING, List.of(price, price, price),
+                UpgradeType.FACILITIES, PurchasePrices.DEFAULT.upgrades().get(UpgradeType.FACILITIES)));
+        var priced = new PurchaseRepository(database, RESERVE, Clock.systemUTC(), ZoneId.of("America/Chicago"), 4,
+                () -> false, prices);
+        var balances = new java.util.HashMap<UUID, Double>(Map.of(owner, 100_000_000.0, RESERVE, 100_000_000.0));
+        var calls = new ArrayList<String>();
+        var vault = new TransferDispatchFixture.Vault(journal, balances, ignored -> false, calls, (leg, observation) -> { });
+        for (int level = 1; level <= 3; level++) {
+            var quote = priced.quotePrice(new PurchaseRequest(UUID.randomUUID(), property, owner, 0,
+                    Kind.UPGRADE, UpgradeType.ADVERTISING, level, null, DAY));
+            var waiting = priced.enqueue(quote);
+            var handle = new Handle(UUID.randomUUID(), waiting.eventId(), UUID.randomUUID(), "a".repeat(64));
+            assertEquals(TransferJournal.State.PAID, vault.submit(handle).toCompletableFuture().join().state());
+            var beforeReplay = List.copyOf(calls);
+            var applied = priced.complete(waiting.eventId()).orElseThrow();
+            assertEquals(State.APPLIED, applied.state());
+            assertEquals(applied, purchases.complete(waiting.eventId()).orElseThrow());
+            assertEquals(quote, purchases.findByRequest(quote.requestId()).orElseThrow().request());
+            assertEquals(beforeReplay, calls);
+            assertEquals(level, upgrades.advertisingLevel(property));
+            assertEquals(price * level, upgradeCost(UpgradeType.ADVERTISING));
+            assertArrayEquals(new long[]{SEED, price * level, 0}, properties.fundingOf(property));
+        }
+        assertEquals(100_000_000.0 - 3 * price / 100.0, balances.get(owner));
+        assertEquals(100_000_000.0 + 3 * price / 100.0, balances.get(RESERVE));
+        assertEquals(3, count("npc_economy_events"));
+        assertEquals(3, count("npc_transfer_attempts"));
+    }
+
+    private PurchaseRepository evictionsAt(long cents) {
+        return new PurchaseRepository(database, RESERVE, Clock.systemUTC(), ZoneId.of("America/Chicago"), 4,
+                () -> false, new PurchasePrices(1000, PurchasePrices.DEFAULT.upgrades(), cents));
+    }
+
+    @Test void evictionPriceComesFromTheLockedQuoteAndSurvivesChangedSettings() throws Exception {
+        var first = evictionsAt(2375);
+        var quote = first.quoteEviction(UUID.randomUUID(), property, owner, 0, tenant, DAY);
+        assertEquals(2375, quote.cents());
+        assertEquals(new EvictionQuote(0, 0), quote.eviction());
+        assertThrows(PurchaseRepository.MaximumExceededException.class, () -> first.enqueue(quote, 2374, 10000));
+        assertThrows(PurchaseRepository.InsufficientFundsException.class, () -> first.enqueue(quote, 2375, 2374));
+        assertEquals(0, count("npc_economy_events"));
+        assertThrows(PurchaseRepository.TargetUnavailableException.class, () -> first.enqueue(quote.withPriceCents(1000)));
+        var receipt = first.enqueue(quote, 2375, 2375);
+        var changed = evictionsAt(3000);
+        assertEquals(3000, changed.quoteEviction(UUID.randomUUID(), property, owner, 0, tenant, DAY).cents());
+        assertEquals(receipt, changed.findByRequest(quote.requestId()).orElseThrow());
+        assertEquals(receipt, changed.enqueue(quote));
+        pay(receipt);
+        var applied = changed.complete(receipt.eventId()).orElseThrow();
+        assertEquals(State.APPLIED, applied.state());
+        assertEquals(quote, applied.request());
+        assertEquals(2375, applied.quotedCents());
+        assertEquals(applied, changed.complete(receipt.eventId()).orElseThrow());
+        assertEquals(applied, changed.enqueue(quote));
+        assertTrue(tenants.listByProperty(property).isEmpty());
+        assertArrayEquals(new long[]{SEED, 2375, 0}, properties.fundingOf(property));
+        assertEquals(1, count("npc_economy_events"));
+        assertEquals(1, count("npc_purchase_intents"));
+        assertEquals(1, count("npc_transfer_attempts"));
+        assertEquals(1, count("npc_tenancy_departures"));
+    }
+
+    @Test void configuredEvictionDoesNotRemoveAChangedTenancyAfterPayment() throws Exception {
+        var priced = evictionsAt(2375);
+        var quote = priced.quoteEviction(UUID.randomUUID(), property, owner, 0, tenant, DAY);
+        execute("UPDATE npc_tenants SET row_version=row_version+1 WHERE tenant_id=?", tenant);
+        assertThrows(SQLException.class, () -> priced.enqueue(quote));
+        assertEquals(0, count("npc_economy_events"));
+        var fresh = priced.quoteEviction(UUID.randomUUID(), property, owner, 0, tenant, DAY);
+        var receipt = priced.enqueue(fresh);
+        pay(receipt);
+        execute("UPDATE npc_tenants SET row_version=row_version+1 WHERE tenant_id=?", tenant);
+        assertEquals(State.REVIEW_REQUIRED, priced.complete(receipt.eventId()).orElseThrow().state());
+        assertEquals(List.of(tenant), tenants.listByProperty(property).stream().map(Tenant::tenantId).toList());
+        assertEquals(0, count("npc_tenancy_departures"));
+        assertEquals("PAID", eventState(receipt.eventId()));
+        assertArrayEquals(new long[]{SEED, 2375, 0}, properties.fundingOf(property));
+        assertEquals(State.REVIEW_REQUIRED, priced.complete(receipt.eventId()).orElseThrow().state());
+        assertArrayEquals(new long[]{SEED, 2375, 0}, properties.fundingOf(property));
+        assertEquals(1, count("npc_transfer_attempts"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void evictionPriceMigrationPreservesOldReceiptsAndRecoversEveryPartialRun(int cut) throws Exception {
+        var old = purchases.enqueue(request(Kind.EVICT));
+        execute("ALTER TABLE npc_purchase_intents DROP CONSTRAINT IF EXISTS ck_purchase_configured_price_v50");
+        applyResource("/db/migration/V47__purchase_prices.sql");
+        String path = "/db/migration/V50__eviction_price.sql";
+        var statements = MigrationRunner.splitStatements(resource(path));
+        assertEquals(2, statements.size());
+        var priced = evictionsAt(2375);
+        var quote = priced.quoteEviction(UUID.randomUUID(), property, owner, 0, tenant, DAY);
+        // A declined old attempt permits a fresh request for the same tenancy.
+        decline(old);
+        purchases.complete(old.eventId()).orElseThrow();
+        var prior = purchases.findByRequest(old.request().requestId()).orElseThrow();
+        try {
+            for (int i = 0; i < cut; i++) execute(statements.get(i));
+            if (cut < 2) assertThrows(SQLException.class, () -> priced.enqueue(quote));
+            assertEquals(prior, purchases.findByRequest(old.request().requestId()).orElseThrow());
+        } finally {
+            applyResource(path);
+        }
+        applyResource(path);
+        assertEquals(prior, purchases.findByRequest(old.request().requestId()).orElseThrow());
+        var current = priced.enqueue(quote);
+        assertEquals(2375, current.quotedCents());
+        assertThrows(SQLException.class, () -> execute(
+                "UPDATE npc_purchase_intents SET evict_tenancy_revision=NULL,evict_slot=NULL WHERE event_id=?", current.eventId()));
+        assertThrows(SQLException.class, () -> execute(
+                "UPDATE npc_purchase_intents SET configured_price_cents=1 WHERE event_id=?", current.eventId()));
+        assertEquals(current, priced.findByRequest(quote.requestId()).orElseThrow());
+    }
+
+    private PurchaseRepository purchasesAt(long maintenance, long advertising) {
+        var prices = new PurchasePrices(maintenance, Map.of(
+                UpgradeType.ADVERTISING, List.of(advertising, 25_000L, 50_000L),
+                UpgradeType.FACILITIES, PurchasePrices.DEFAULT.upgrades().get(UpgradeType.FACILITIES)));
+        return new PurchaseRepository(database, RESERVE, Clock.systemUTC(), ZoneId.of("America/Chicago"), 4,
+                () -> false, prices);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Kind.class, names = {"MAINTAIN", "UPGRADE"})
+    void configuredQuotesSurviveNewSettingsAndReconcileAtTheirAcceptedPrice(Kind kind) throws Exception {
+        var first = purchasesAt(1750, 13700);
+        var legacy = request(kind);
+        var quote = first.quotePrice(legacy);
+        long price = kind == Kind.MAINTAIN ? 1750 : 13700;
+        assertEquals(price, quote.cents());
+        assertNotEquals(legacy.eventKey(), quote.eventKey());
+        var receipt = first.enqueue(quote);
+        var changed = purchasesAt(2500, 18700);
+        assertNotEquals(price, changed.quotePrice(legacy).cents());
+        assertEquals(receipt, changed.findByRequest(quote.requestId()).orElseThrow());
+        assertEquals(receipt, changed.enqueue(quote));
+        var calls = new ArrayList<String>();
+        var handle = new Handle(UUID.randomUUID(), receipt.eventId(), UUID.randomUUID(), "a".repeat(64));
+        assertEquals(TransferJournal.State.PAID,
+                TransferDispatchFixture.dispatch(journal, handle, calls, 1000.0).toCompletableFuture().join().state());
+        var beforeCompletion = List.copyOf(calls);
+        var applied = changed.complete(receipt.eventId()).orElseThrow();
+        assertEquals(State.APPLIED, applied.state());
+        assertEquals(price, applied.quotedCents());
+        assertEquals(quote, applied.request());
+        assertEquals(applied, changed.complete(receipt.eventId()).orElseThrow());
+        assertEquals(beforeCompletion, calls);
+        assertEquals(kind == Kind.MAINTAIN ? 85 : 80, condition());
+        assertEquals(kind == Kind.UPGRADE ? 1 : 0, upgrades.advertisingLevel(property));
+        assertEquals(kind == Kind.UPGRADE ? price : 0, upgradeCost(UpgradeType.ADVERTISING));
+        assertArrayEquals(new long[]{SEED, price, 0}, properties.fundingOf(property));
+        assertEquals(1, count("npc_economy_events"));
+        assertEquals(1, count("npc_purchase_intents"));
+    }
+
+    @Test void staleOrInventedConfiguredPricesNeverCreateAPayment() throws Exception {
+        var priced = purchasesAt(1750, 13700);
+        var request = request(Kind.MAINTAIN);
+        assertThrows(PurchaseRepository.TargetUnavailableException.class, () -> priced.enqueue(request));
+        assertThrows(PurchaseRepository.TargetUnavailableException.class, () -> priced.enqueue(request.withPriceCents(1)));
+        assertEquals(0, count("npc_purchase_intents"));
+        assertEquals(0, count("npc_economy_events"));
+        var quoted = priced.quotePrice(request);
+        assertThrows(PurchaseRepository.MaximumExceededException.class, () -> priced.enqueue(quoted, 1749, 10000));
+        assertThrows(PurchaseRepository.InsufficientFundsException.class, () -> priced.enqueue(quoted, 1750, 1749));
+        assertEquals(0, count("npc_purchase_intents"));
+        assertEquals(State.WAITING, priced.enqueue(quoted, 1750, 1750).state());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Kind.class, names = {"MAINTAIN", "UPGRADE"})
+    void aConfiguredBenefitNeedsJournalProofNotJustAPaidLedgerLabel(Kind kind) throws Exception {
+        var priced = purchasesAt(1750, 13700);
+        var receipt = priced.enqueue(priced.quotePrice(request(kind)));
+        pay(receipt);
+        var held = priced.complete(receipt.eventId()).orElseThrow();
+        assertEquals(State.REVIEW_REQUIRED, held.state());
+        assertEquals("TRANSFER_PROOF_MISSING", held.outcome());
+        assertNoEffect();
+    }
+
+    @Test void changingTheStoredCustomPriceCannotGrantADifferentBenefit() throws Exception {
+        var priced = purchasesAt(1750, 13700);
+        var receipt = priced.enqueue(priced.quotePrice(request(Kind.UPGRADE)));
+        assertThrows(SQLException.class, () -> execute(
+                "UPDATE npc_purchase_intents SET configured_price_cents=1 WHERE event_id=?", receipt.eventId()));
+        pay(receipt);
+        execute("UPDATE npc_purchase_intents SET configured_price_cents=1,quoted_amount_cents=1 WHERE event_id=?", receipt.eventId());
+        execute("UPDATE npc_economy_events SET requested_amount_cents=1,paid_amount_cents=1 WHERE event_id=?", receipt.eventId());
+        assertEquals(State.REVIEW_REQUIRED, priced.complete(receipt.eventId()).orElseThrow().state());
+        assertNoEffect();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void priceMigrationReplaysAfterEveryPartialRunAndKeepsLegacyQuotes(int cut) throws Exception {
+        var receipt = purchases.enqueue(request(Kind.MAINTAIN));
+        execute("ALTER TABLE npc_purchase_intents DROP CONSTRAINT IF EXISTS ck_purchase_configured_price_v50");
+        execute("ALTER TABLE npc_purchase_intents DROP CONSTRAINT IF EXISTS ck_purchase_configured_price");
+        execute("ALTER TABLE npc_purchase_intents DROP COLUMN IF EXISTS configured_price_cents");
+        assertEquals(receipt, purchases.findByRequest(receipt.request().requestId()).orElseThrow());
+        String resource = "/db/migration/V47__purchase_prices.sql";
+        try (InputStream in = PurchaseRepositoryIT.class.getResourceAsStream(resource)) {
+            assertNotNull(in);
+            var statements = MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+            for (int i = 0; i < cut; i++) execute(statements.get(i));
+        } finally {
+            applyResource(resource);
+        }
+        applyResource(resource);
+        applyResource("/db/migration/V50__eviction_price.sql");
+        assertEquals(receipt, purchases.findByRequest(receipt.request().requestId()).orElseThrow());
+        assertEquals(0, count("npc_transfer_attempts"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1})
+    void upgradeAuditMigrationReplaysAndPreservesLegacyValues(int cut) throws Exception {
+        var receipt = purchases.enqueue(request(Kind.MAINTAIN));
+        upgrades.setLevel(property, "ADVERTISING", 1, Integer.MAX_VALUE);
+        String select = "SELECT CONCAT_WS('|',id,upgrade_type,level,purchase_cost_cents,installed_at) FROM npc_upgrades WHERE property_id=? AND upgrade_type='ADVERTISING'";
+        String legacy = scalar(select, property);
+        execute("ALTER TABLE npc_upgrades MODIFY COLUMN purchase_cost_cents INT NOT NULL DEFAULT 0");
+        String path = "/db/migration/V49__upgrade_cost_width.sql";
+        var statements = MigrationRunner.splitStatements(resource(path));
+        assertEquals(1, statements.size());
+        try {
+            for (int i = 0; i < cut; i++) execute(statements.get(i));
+            assertEquals(legacy, scalar(select, property));
+            assertEquals(receipt, purchases.findByRequest(receipt.request().requestId()).orElseThrow());
+        } finally {
+            applyResource(path);
+        }
+        applyResource(path);
+        assertEquals(legacy, scalar(select, property));
+        assertEquals("bigint", scalar("SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='npc_upgrades' AND COLUMN_NAME='purchase_cost_cents'"));
+        assertEquals("NO", scalar("SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='npc_upgrades' AND COLUMN_NAME='purchase_cost_cents'"));
+        execute("UPDATE npc_upgrades SET purchase_cost_cents=purchase_cost_cents+750000000 WHERE property_id=? AND upgrade_type='ADVERTISING'", property);
+        assertEquals((long) Integer.MAX_VALUE + 750_000_000L, upgradeCost(UpgradeType.ADVERTISING));
+        execute("INSERT INTO npc_upgrades(property_id,upgrade_type) VALUES(?,'FACILITIES')", property);
+        assertEquals(0, upgradeCost(UpgradeType.FACILITIES));
+        assertEquals(receipt, purchases.findByRequest(receipt.request().requestId()).orElseThrow());
+        assertEquals(0, count("npc_transfer_attempts"));
+    }
+
     private void enroll(UUID id) throws SQLException {
         properties.insertEnrollment(new Property(id, WORLD, "purchase-" + id, "downtown", "room",
                 2, 1_000, 1_000, owner, 0, 80, true), SEED);
@@ -1263,7 +1522,8 @@ class PurchaseRepositoryIT {
     }
 
     private static long count(String table) throws SQLException {
-        if (!List.of("npc_purchase_intents", "npc_economy_events", "npc_upgrades", "npc_transfer_resolutions").contains(table)) {
+        if (!List.of("npc_purchase_intents", "npc_economy_events", "npc_upgrades", "npc_transfer_resolutions",
+                "npc_transfer_attempts", "npc_tenancy_departures").contains(table)) {
             throw new IllegalArgumentException(table);
         }
         return Long.parseLong(scalar("SELECT COUNT(*) FROM " + table));

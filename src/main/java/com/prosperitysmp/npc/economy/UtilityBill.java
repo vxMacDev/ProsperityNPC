@@ -23,8 +23,8 @@ import java.util.UUID;
  */
 public record UtilityBill(UUID propertyId, UUID ownerId, int ownershipEpoch, long propertyRevision,
                           LocalDate day, int capacity, int occupiedTenants, int installedUpgradeLevels,
-                          Instant issuedAt, String zoneId, int resetHour) {
-    /** Frozen tariff and fingerprint format. New prices require a versioned receipt migration. */
+                          Instant issuedAt, String zoneId, int resetHour, UtilityPrices configuredPrices) {
+    /** Legacy receipts keep this exact tariff and fingerprint format. */
     public static final String POLICY_VERSION = "utility-bill-v1";
     private static final long V1_BASE_CENTS = 100L;
     private static final long V1_TENANT_CENTS = 75L;
@@ -32,7 +32,15 @@ public record UtilityBill(UUID propertyId, UUID ownerId, int ownershipEpoch, lon
     private static final Instant MIN_TIME = Instant.parse("0001-01-01T00:00:00Z");
     private static final Instant TIME_LIMIT = Instant.parse("+10000-01-01T00:00:00Z");
 
+    public UtilityBill(UUID propertyId, UUID ownerId, int ownershipEpoch, long propertyRevision,
+                       LocalDate day, int capacity, int occupiedTenants, int installedUpgradeLevels,
+                       Instant issuedAt, String zoneId, int resetHour) {
+        this(propertyId, ownerId, ownershipEpoch, propertyRevision, day, capacity, occupiedTenants,
+                installedUpgradeLevels, issuedAt, zoneId, resetHour, null);
+    }
+
     public UtilityBill {
+        if (UtilityPrices.DEFAULT.equals(configuredPrices)) configuredPrices = null;
         Objects.requireNonNull(propertyId, "propertyId");
         Objects.requireNonNull(ownerId, "ownerId");
         Objects.requireNonNull(day, "day");
@@ -45,6 +53,11 @@ public record UtilityBill(UUID propertyId, UUID ownerId, int ownershipEpoch, lon
         if (capacity < 1 || capacity > 4 || occupiedTenants < 0 || occupiedTenants > capacity
                 || installedUpgradeLevels < 0 || installedUpgradeLevels > 6)
             throw new IllegalArgumentException("Invalid utility capacity, occupancy or upgrade levels");
+        if (configuredPrices != null) {
+            long cents = configuredPrices.cents(occupiedTenants, installedUpgradeLevels);
+            if (TransferProof.toCents(cents / 100.0).orElse(-1) != cents)
+                throw new IllegalArgumentException("Utility bill cannot be paid in exact cents");
+        }
         if (issuedAt.isBefore(MIN_TIME) || !issuedAt.isBefore(TIME_LIMIT)
                 || issuedAt.getNano() % 1_000_000 != 0)
             throw new IllegalArgumentException("Utility issuance must be exact milliseconds in UTC years 1..9999");
@@ -68,8 +81,9 @@ public record UtilityBill(UUID propertyId, UUID ownerId, int ownershipEpoch, lon
             throw new IllegalArgumentException("Utility issuance must be within its economy day");
     }
 
-    /** Delegates only validated counts, while refusing to silently reprice v1 receipts. */
+    /** Current server settings never reprice an issued bill. */
     public long cents() {
+        if (configuredPrices != null) return configuredPrices.cents(occupiedTenants, installedUpgradeLevels);
         long cents = PropertyFormulas.dailyUtilitiesCents(occupiedTenants, installedUpgradeLevels);
         long v1Cents = V1_BASE_CENTS + V1_TENANT_CENTS * occupiedTenants
                 + V1_UPGRADE_LEVEL_CENTS * installedUpgradeLevels;
@@ -86,18 +100,31 @@ public record UtilityBill(UUID propertyId, UUID ownerId, int ownershipEpoch, lon
         return economyClock().startOf(day.plusDays(1));
     }
 
-    /** SHA-256 of UTF-8: policy version, all record components in declaration order, then cents. */
+    /** V1 hashes remain unchanged; V2 also binds the three accepted rates. */
     public String fingerprint() {
-        String payload = POLICY_VERSION + "|" + propertyId + "|" + ownerId + "|" + ownershipEpoch
+        String version = configuredPrices == null ? POLICY_VERSION : "utility-bill-v2";
+        String payload = version + "|" + propertyId + "|" + ownerId + "|" + ownershipEpoch
                 + "|" + propertyRevision + "|" + day + "|" + capacity + "|" + occupiedTenants
                 + "|" + installedUpgradeLevels + "|" + issuedAt.toEpochMilli() + "|" + zoneId
                 + "|" + resetHour + "|" + cents();
+        if (configuredPrices != null) payload += "|" + configuredPrices.baseCents()
+                + "|" + configuredPrices.tenantCents() + "|" + configuredPrices.upgradeLevelCents();
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(payload.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("Required SHA-256 unavailable", impossible);
         }
+    }
+
+    /** Premium relocation evidence stores the legacy record text. */
+    @Override
+    public String toString() {
+        return "UtilityBill[propertyId=" + propertyId + ", ownerId=" + ownerId + ", ownershipEpoch=" + ownershipEpoch
+                + ", propertyRevision=" + propertyRevision + ", day=" + day + ", capacity=" + capacity
+                + ", occupiedTenants=" + occupiedTenants + ", installedUpgradeLevels=" + installedUpgradeLevels
+                + ", issuedAt=" + issuedAt + ", zoneId=" + zoneId + ", resetHour=" + resetHour
+                + (configuredPrices == null ? "" : ", configuredPrices=" + configuredPrices) + "]";
     }
 
     private EconomyClock economyClock() {

@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "subject": "owner-maintenance-upgrade-prices",
+  "environment": {
+    "paper": "26.1.2",
+    "java": 25,
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "property": "GriefPrevention16.18.7 with private local QA adapter",
+    "coreSha256": "4b8d745b2805f42c937022b3f71794f59ec015303358001d5ffe21a88e487bb4",
+    "databaseSchema": 48
+  },
+  "method": "Synthetic CraftPlayer with in-memory transport; manually delivered inventory click events and public commands on a loopback-only offline server. Real plugin registrations, economy calls and MariaDB journal; not a connected client.",
+  "checks": [
+    {
+      "case": "maximum-refusal",
+      "maximumCents": 1749,
+      "costCents": 1750,
+      "newPaymentOrProviderRows": 0,
+      "allTableCountsUnchanged": 89,
+      "balanceMovementCents": 0
+    },
+    {
+      "case": "maintenance",
+      "displayedAndPaidCents": 1750,
+      "ownerBeforeCents": 100000,
+      "ownerAfterCents": 98250,
+      "reserveBeforeCents": 100000,
+      "reserveAfterCents": 101750,
+      "conditionBefore": 75,
+      "conditionAfter": 80,
+      "receipt": "APPLIED",
+      "journal": "PAID",
+      "bothObservationsConfirmed": true
+    },
+    {
+      "case": "upgrade",
+      "type": "FACILITIES",
+      "targetLevel": 1,
+      "displayedAndPaidCents": 18500,
+      "ownerAfterCents": 79750,
+      "reserveAfterCents": 120250,
+      "receipt": "APPLIED",
+      "journal": "PAID",
+      "bothObservationsConfirmed": true
+    },
+    {
+      "case": "stale-view-replays",
+      "actions": [
+        "maintenance",
+        "upgrade"
+      ],
+      "controlsEnabled": true,
+      "newRows": 0,
+      "balanceMovementCents": 0
+    },
+    {
+      "case": "restart",
+      "processes": [
+        "Paper",
+        "MariaDB"
+      ],
+      "newMaintenanceCents": 2500,
+      "newFirstFacilitiesCents": 19000,
+      "oldReceiptAmountsCents": [
+        1750,
+        18500
+      ],
+      "oldPublicReceiptsReadable": true,
+      "balancesAndTableCountsUnchanged": true
+    },
+    {
+      "case": "already-applied-after-restart",
+      "currentPriceCents": 2500,
+      "newRows": 0,
+      "balanceMovementCents": 0,
+      "globalRecoveryHold": false
+    }
+  ],
+  "funding": {
+    "seedCents": 5000,
+    "cashSinksCents": 20250,
+    "payoutsCents": 0,
+    "unfundedCents": 0
+  },
+  "cleanup": {
+    "all89TableCountsRestored": true,
+    "bothToyBalancesDrained": true,
+    "scope": "Sequences/world state/vendor identity indexes are not a bitwise restore."
+  },
+  "limits": [
+    "Real Java/Bedrock clients, native scheduled auto-care, provider-call interruption, full daily cycle and realistic player-load performance remain unproved.",
+    "This recording covers the stated small prices on schema48. A separate follow-up corrects cumulative upgrade audit totals beyond signed32-bit storage and invalid per-action precision; it is not proof of those boundaries.",
+    "The GP artifact is private test evidence; vendor dependency pin and release package acceptance remain separate."
+  ]
+}

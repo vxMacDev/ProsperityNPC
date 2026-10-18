@@ -1,10 +1,15 @@
 package com.prosperitysmp.npc.arm;
 
+import com.prosperitysmp.npc.api.OwnershipToken;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /** Main-thread cooperative exclusion; not protection against uninstrumented WG writers. */
 public final class OwnershipFence {
@@ -34,11 +39,23 @@ public final class OwnershipFence {
     }
 
     private final Map<Key, State> states = new HashMap<>();
+    // Thread-safe mirror of the keys that hold a lease right now, written on main. Read by isHeld from any thread.
+    private final Set<Key> held = ConcurrentHashMap.newKeySet();
+    // Keys an off-main event marked as changed; cleared by the main-thread hop that applies the change.
+    private final Set<Key> dirty = ConcurrentHashMap.newKeySet();
     private final BooleanSupplier mainThread;
+    private final Consumer<Runnable> mainHop;
     private boolean stopped;
 
+    /** For a fence that never receives off-main events (ARM). markDirty marks the key and never clears it. */
     public OwnershipFence(BooleanSupplier mainThread) {
+        this(mainThread, hop -> { throw new IllegalStateException("No main-thread scheduler for markDirty"); });
+    }
+
+    /** @param mainHop runs a task on the main thread later (the Bukkit scheduler); called from any thread */
+    public OwnershipFence(BooleanSupplier mainThread, Consumer<Runnable> mainHop) {
         this.mainThread = Objects.requireNonNull(mainThread);
+        this.mainHop = Objects.requireNonNull(mainHop);
     }
 
     /** ARM hook must wrap the entire synchronous operation with this callback in finally. */
@@ -62,8 +79,41 @@ public final class OwnershipFence {
         };
     }
 
+    /**
+     * Main thread. An owner change the backend could not block. Moves the region's generation on even while a
+     * lease holds it, so that lease's next validate fails. Never throws because of a lease; leaves writers and the
+     * lease alone. A region nobody holds has nothing to invalidate and is not tracked.
+     */
+    public void externalChange(UUID world, String region) {
+        check();
+        State state = states.get(new Key(world, region));
+        if (state != null) state.generation = Math.incrementExact(state.generation);
+    }
+
+    /**
+     * Any thread. Marks the region changed now (every validate on it fails while marked) and posts a main-thread
+     * hop that calls externalChange and clears the mark. If the hop cannot be posted the mark stays, which holds the
+     * region until a restart rather than letting a payment through.
+     */
+    public void markDirty(UUID world, String region) {
+        Key key = new Key(world, region);
+        dirty.add(key);
+        mainHop.accept(() -> {
+            try {
+                if (!stopped) externalChange(world, region);
+            } finally {
+                dirty.remove(key);
+            }
+        });
+    }
+
+    /** Any thread. A snapshot: true while a lease holds the region. An off-main caller can race an acquire; markDirty closes that. */
+    public boolean isHeld(UUID world, String region) {
+        return held.contains(new Key(world, region));
+    }
+
     /** Acquire only from a freshly captured strict OwnerRead after hook registration is verified. */
-    public Lease acquire(ArmAdapter.OwnerRead owner) {
+    public Lease acquire(OwnershipToken owner) {
         check();
         Objects.requireNonNull(owner);
         Key key = new Key(owner.worldId(), owner.regionId());
@@ -71,6 +121,7 @@ public final class OwnershipFence {
         if (state.writers != 0 || state.lease != null) throw new Busy();
         Lease lease = new Lease(key, state, owner);
         state.lease = lease;
+        held.add(key);
         return lease;
     }
 
@@ -87,6 +138,7 @@ public final class OwnershipFence {
         if (state.writers != 0 || state.lease != null) throw new Busy();
         Lease lease = new Lease(key, state, null);
         state.lease = lease;
+        held.add(key);
         return lease;
     }
 
@@ -99,20 +151,21 @@ public final class OwnershipFence {
     public final class Lease {
         private final Key key;
         private final State state;
-        private final ArmAdapter.OwnerRead owner;
+        private final OwnershipToken owner;
         private final long generation;
         private boolean released;
-        private Lease(Key key, State state, ArmAdapter.OwnerRead owner) {
+        private Lease(Key key, State state, OwnershipToken owner) {
             this.key = key;
             this.state = state;
             this.owner = owner;
             this.generation = state.generation;
         }
 
-        public void validate(ArmAdapter.OwnerRead current) {
+        public void validate(OwnershipToken current) {
             check();
             if (released || states.get(key) != state || state.lease != this || state.writers != 0
-                    || generation != state.generation || owner == null || !owner.sameIncarnation(current))
+                    || generation != state.generation || owner == null || dirty.contains(key)
+                    || !owner.sameIncarnation(current))
                 throw new IllegalStateException("Property authority changed");
         }
 
@@ -123,6 +176,7 @@ public final class OwnershipFence {
             if (state.lease != this || state.writers != 0) throw new IllegalStateException("Property lease mismatch");
             released = true;
             state.lease = null;
+            held.remove(key);
             states.remove(key, state);
         }
     }

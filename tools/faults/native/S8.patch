@@ -1,0 +1,11 @@
+--- a/src/main/java/com/prosperitysmp/npc/economy/AccountingProjection.java
++++ b/src/main/java/com/prosperitysmp/npc/economy/AccountingProjection.java
+@@ -193,7 +193,7 @@
+         }
+         if (done != null) {
+             inFlight = false;
+-            if (done.generation() == generation) {
++            if (true) {
+                 long next = acknowledgementAfterRefresh(current, acknowledged, done.snapshot(), sink.selfAcknowledges());
+                 current = done.snapshot();
+                 snapshotStarted = done.started();

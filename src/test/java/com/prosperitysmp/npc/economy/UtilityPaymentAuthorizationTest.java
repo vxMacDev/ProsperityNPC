@@ -1,5 +1,6 @@
 package com.prosperitysmp.npc.economy;
 
+import com.prosperitysmp.npc.economy.vault.VaultMoneySource;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.RegisteredServiceProvider;
@@ -55,34 +56,28 @@ class UtilityPaymentAuthorizationTest {
     @Test void theDebitRunsEveryCheck() {
         Provider pinned = new Provider();
         List<String> ran = new ArrayList<>();
-        UtilityPaymentRuntime.requireLegAuthority(Leg.DEBIT, () -> fail("the debit's own checks read the provider"),
-                pinned.registration, () -> ran.add("checks"));
+        UtilityPaymentRuntime.requireLegAuthority(Leg.DEBIT, VaultMoneySource.pinFor(pinned.registration, () -> fail("the debit's own checks read the provider")), () -> ran.add("checks"));
         assertEquals(List.of("checks"), ran);
-        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.DEBIT,
-                () -> pinned.registration, pinned.registration, () -> { throw new IllegalStateException("kill switch off"); }));
+        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.DEBIT, VaultMoneySource.pinFor(pinned.registration, () -> pinned.registration), () -> { throw new IllegalStateException("kill switch off"); }));
     }
 
     @Test void aSwitchTurnedOffAfterTheDebitNoLongerRefusesTheCredit() {
         Provider pinned = new Provider();
         // Every check a debit runs would now refuse: a kill switch, a reload, a lost permission, a sold home.
-        assertDoesNotThrow(() -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, () -> pinned.registration,
-                pinned.registration, () -> fail("the credit must not rerun the debit's checks")));
+        assertDoesNotThrow(() -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, VaultMoneySource.pinFor(pinned.registration, () -> pinned.registration), () -> fail("the credit must not rerun the debit's checks")));
     }
 
     @Test void aProviderChangeStillRefusesTheCredit() {
         Provider pinned = new Provider(), other = new Provider();
         assertEquals("Economy provider changed before the credit", assertThrows(IllegalStateException.class,
-                () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, () -> other.registration, pinned.registration,
+                () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, VaultMoneySource.pinFor(pinned.registration, () -> other.registration),
                         () -> { })).getMessage());
-        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, () -> null,
-                pinned.registration, () -> { }), "no provider registered");
+        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, VaultMoneySource.pinFor(pinned.registration, () -> null), () -> { }), "no provider registered");
         pinned.pluginOn.set(false);
-        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT,
-                () -> pinned.registration, pinned.registration, () -> { }), "economy plugin disabled");
+        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, VaultMoneySource.pinFor(pinned.registration, () -> pinned.registration), () -> { }), "economy plugin disabled");
         pinned.pluginOn.set(true);
         pinned.providerOn.set(false);
-        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT,
-                () -> pinned.registration, pinned.registration, () -> { }), "provider disabled");
+        assertThrows(IllegalStateException.class, () -> UtilityPaymentRuntime.requireLegAuthority(Leg.CREDIT, VaultMoneySource.pinFor(pinned.registration, () -> pinned.registration), () -> { }), "provider disabled");
     }
 
     /** A real JournaledTransfer with a fake journal; main and worker are queued separately, so a change can land between any two hops. */
@@ -119,7 +114,7 @@ class UtilityPaymentAuthorizationTest {
             }, worker, main);
             var result = transfer.submit(handle, new JournaledTransfer.Lease() {
                 public void authorize(Receipt r, Leg leg) {
-                    UtilityPaymentRuntime.requireLegAuthority(leg, registered::get, pinned.registration, () -> {
+                    UtilityPaymentRuntime.requireLegAuthority(leg, VaultMoneySource.pinFor(pinned.registration, registered::get), () -> {
                         if (!switchOn.get()) throw new IllegalStateException("Utility authority unavailable");
                     });
                 }
@@ -159,10 +154,10 @@ class UtilityPaymentAuthorizationTest {
                 .replace("\r\n", "\n");
         // Utility and rent: the observer's provider check and the lease authorize, two each.
         assertEquals(5, count(utility, "requireLegAuthority("), "definition, two utility and two rent call sites");
-        assertEquals(2, count(utility, "requireLegAuthority(leg, () -> registration(), registration,\n"
+        assertEquals(2, count(utility, "requireLegAuthority(leg, registration,\n"
                 + "                                        () -> validate(property, actor, authorized, registration, lease, day));"));
-        assertEquals(2, count(utility, "requireLegAuthority(leg, () -> registration(), pinned, () -> {\n"));
-        assertEquals(1, count(commerce, "UtilityPaymentRuntime.requireLegAuthority(leg, this::registration, pinned, () -> {\n"
+        assertEquals(2, count(utility, "requireLegAuthority(leg, pinned, () -> {\n"));
+        assertEquals(1, count(commerce, "UtilityPaymentRuntime.requireLegAuthority(leg, pinned, () -> {\n"
                 + "                provider(pinned, lease);"));
         // No authority check is chosen by leg anywhere else.
         assertFalse(utility.contains("actorAuthorization"));

@@ -1,0 +1,9 @@
+name: ProsperityNPC-FaultProbe
+version: '0.1'
+main: com.prosperitysmp.npc.checks.nativeprobe.AccountingFaultProbe
+api-version: '26.1.2'
+depend: [ProsperityNPC, Vault]
+commands:
+  npcfault:
+    description: Runs the disposable-server accounting check
+    usage: npcfault <status|accounting-race> <report-label>

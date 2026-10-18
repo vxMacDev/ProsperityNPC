@@ -86,7 +86,7 @@ class RentIsolationIT {
                     "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V8__eviction_tenancies.sql",
                     "V9__housing_registry.sql", "V10__housing_moves.sql", "V11__housing_history_order.sql",
                     "V12__incident_service_receipts.sql", "V13__utility_obligations.sql",
-                    "V16__rent_reservations.sql", "V17__transfer_resolutions.sql", "V33__payout_retirements.sql")) {
+                    "V16__rent_reservations.sql", "V17__transfer_resolutions.sql", "V33__payout_retirements.sql", "V45__property_backend.sql")) {
                 applyResource("/db/migration/" + file);
             }
             // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.

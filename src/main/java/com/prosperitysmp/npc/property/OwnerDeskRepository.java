@@ -5,7 +5,9 @@ import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.economy.AccountLinkRepository;
 import com.prosperitysmp.npc.economy.EventSource;
 import com.prosperitysmp.npc.economy.EventState;
-import com.prosperitysmp.npc.formulas.PropertyFormulas;
+import com.prosperitysmp.npc.economy.PurchasePrices;
+import com.prosperitysmp.npc.economy.UtilityBill;
+import com.prosperitysmp.npc.economy.UtilityRepository;
 import com.prosperitysmp.npc.formulas.UpgradeType;
 import com.prosperitysmp.npc.market.OwnerHousingView;
 import com.prosperitysmp.npc.town.PartnerPerks;
@@ -40,6 +42,7 @@ public final class OwnerDeskRepository {
     private static final int MAX_ISSUES = 16;
     private static final int MAX_EVENTS = 1024;
     private final Database database;
+    private final PurchasePrices prices;
     private final ServiceAssessmentRepository services;
     private final Clock clock;
     private final ZoneId zone;
@@ -51,6 +54,8 @@ public final class OwnerDeskRepository {
     private final LongSupplier linkedLimitCents;
     // town.partnerships, read live per snapshot. Off: no partnership table is read.
     private final Supplier<PartnerConfig> partners;
+    // The configured property backend (V45). Null: any backend's row is read (callers without a backend).
+    private volatile String backendId;
 
     /**
      * Live partnership settings for the desk line: enabled (town.enabled and town.partnerships.enabled), rankLive
@@ -62,7 +67,10 @@ public final class OwnerDeskRepository {
         public PartnerConfig { Objects.requireNonNull(configPerks); }
     }
 
-    public OwnerDeskRepository(Database database) {
+    public OwnerDeskRepository(Database database) { this(database, PurchasePrices.DEFAULT); }
+
+    public OwnerDeskRepository(Database database, PurchasePrices prices) {
+        this.prices = Objects.requireNonNull(prices);
         this.database = Objects.requireNonNull(database);
         pendingRent = () -> false;
         linkedEnabled = () -> false;
@@ -76,6 +84,10 @@ public final class OwnerDeskRepository {
 
     public OwnerDeskRepository(Database database, Clock clock, ZoneId zone, int resetHour) {
         this(database, clock, zone, resetHour, () -> false);
+    }
+
+    public OwnerDeskRepository(Database database, Clock clock, ZoneId zone, int resetHour, PurchasePrices prices) {
+        this(database, clock, zone, resetHour, () -> false, () -> false, () -> 0L, () -> PartnerConfig.OFF, prices);
     }
 
     public OwnerDeskRepository(Database database, Clock clock, ZoneId zone, int resetHour,
@@ -95,6 +107,13 @@ public final class OwnerDeskRepository {
                                BooleanSupplier pendingRent,
                                BooleanSupplier linkedEnabled, LongSupplier linkedLimitCents,
                                Supplier<PartnerConfig> partners) {
+        this(database, clock, zone, resetHour, pendingRent, linkedEnabled, linkedLimitCents, partners, PurchasePrices.DEFAULT);
+    }
+
+    public OwnerDeskRepository(Database database, Clock clock, ZoneId zone, int resetHour,
+                               BooleanSupplier pendingRent, BooleanSupplier linkedEnabled, LongSupplier linkedLimitCents,
+                               Supplier<PartnerConfig> partners, PurchasePrices prices) {
+        this.prices = Objects.requireNonNull(prices);
         this.partners = Objects.requireNonNull(partners);
         this.linkedEnabled = Objects.requireNonNull(linkedEnabled);
         this.linkedLimitCents = Objects.requireNonNull(linkedLimitCents);
@@ -106,9 +125,25 @@ public final class OwnerDeskRepository {
         services = new ServiceAssessmentRepository(database, clock, zone, resetHour);
     }
 
+    /** Only homes enrolled under this property backend are read; a home under another backend reads as absent. */
+    public OwnerDeskRepository backendId(String id) {
+        backendId = id;
+        return this;
+    }
+
     /** Empty means absent, disabled or not owned; contradictory/overflowing data throws, never zero. */
     public Optional<OwnerDeskData> read(UUID world, String region, UUID owner, LocalDate endDay)
             throws SQLException {
+        return read(world, region, owner, endDay, false);
+    }
+
+    public Optional<OwnerDeskData> read(UUID world, String region, UUID owner, LocalDate endDay, boolean includeBills)
+            throws SQLException {
+        return read(world, region, owner, endDay, includeBills, false);
+    }
+
+    public Optional<OwnerDeskData> read(UUID world, String region, UUID owner, LocalDate endDay,
+                                        boolean includeBills, boolean includeUtilityBill) throws SQLException {
         Objects.requireNonNull(world);
         Objects.requireNonNull(owner);
         Objects.requireNonNull(endDay);
@@ -127,7 +162,7 @@ public final class OwnerDeskRepository {
                     begin.execute();
                     require(c.getWarnings() == null && begin.getWarnings() == null, "owner snapshot incomplete");
                 }
-                Optional<OwnerDeskData> result = snapshot(c, world, region, owner, fromDay, endDay, at);
+                Optional<OwnerDeskData> result = snapshot(c, world, region, owner, fromDay, endDay, at, includeBills, includeUtilityBill);
                 c.rollback();
                 return result;
             } catch (SQLException | RuntimeException failure) {
@@ -143,17 +178,20 @@ public final class OwnerDeskRepository {
     }
 
     private Optional<OwnerDeskData> snapshot(Connection c, UUID world, String region, UUID owner,
-                                                   LocalDate from, LocalDate through, Instant at) throws SQLException {
+                                           LocalDate from, LocalDate through, Instant at, boolean includeBills,
+                                           boolean includeUtilityBill) throws SQLException {
         Property property;
         long revision;
         Instant captured;
-        try (PreparedStatement ps = prepare(c, """
+        String backend = backendId;
+        String sql = """
                 SELECT property_id, world_uuid, region_id, market_id, class_key, capacity,
                        reference_rent_cents, asking_rent_cents, owner_uuid, ownership_epoch,
                        condition_score, enabled, row_version, UTC_TIMESTAMP(3) AS captured_at
                 FROM npc_properties WHERE world_uuid=? AND BINARY region_id=? AND owner_uuid=?
-                  AND enabled=TRUE LIMIT 2
-                """, world, region, owner); ResultSet rs = ps.executeQuery()) {
+                  AND enabled=TRUE""" + (backend == null ? "" : " AND backend_id=?") + " LIMIT 2";
+        Object[] values = backend == null ? new Object[]{world, region, owner} : new Object[]{world, region, owner, backend};
+        try (PreparedStatement ps = prepare(c, sql, values); ResultSet rs = ps.executeQuery()) {
             if (!rs.next()) return Optional.empty();
             property = new Property(Uuids.fromBytes(rs.getBytes("property_id")), world, region,
                     rs.getString("market_id"), rs.getString("class_key"), rs.getInt("capacity"),
@@ -177,7 +215,49 @@ public final class OwnerDeskRepository {
                 issues(c, property.propertyId()), upgrades,
                 statement(c, property, from, through, captured), insurance(c, property, through, captured), housing,
                 pendingRent.getAsBoolean() ? pendingRent(c, property) : Optional.empty(),
-                linkedEnabled.getAsBoolean() ? linked(c, owner, through) : Optional.empty(), partner(c, owner, through)));
+                linkedEnabled.getAsBoolean() ? linked(c, owner, through) : Optional.empty(), partner(c, owner, through),
+                includeBills ? bills(c, property, from, through) : Optional.empty(),
+                includeUtilityBill ? utilityBill(c, property.propertyId(), through) : Optional.empty()));
+    }
+
+    private static Optional<UtilityBill> utilityBill(Connection c, UUID property, LocalDate day) throws SQLException {
+        try (var ps = prepare(c, "SELECT * FROM npc_utility_bills WHERE property_id=? AND economy_day=?", property, day.toString());
+             var rs = ps.executeQuery()) {
+            boolean present = rs.next();
+            require(c.getWarnings() == null && ps.getWarnings() == null && rs.getWarnings() == null, "Utility desk read incomplete");
+            if (!present) return Optional.empty();
+            UtilityBill bill = UtilityRepository.readBill(rs);
+            require(property.equals(bill.propertyId()) && day.equals(bill.day()) && !rs.next(), "Utility desk scope differs");
+            require(c.getWarnings() == null && ps.getWarnings() == null && rs.getWarnings() == null, "Utility desk read incomplete");
+            return Optional.of(bill);
+        }
+    }
+
+    private static Optional<OwnerDeskData.Bills> bills(Connection c, Property property, LocalDate from, LocalDate through)
+            throws SQLException {
+        int paid = 0, unpaid = 0, expired = 0;
+        try (PreparedStatement ps = prepare(c, """
+                SELECT state,payable_until_day FROM npc_charge_invoices
+                WHERE property_id=? AND owner_uuid=? AND ownership_epoch=? AND economy_day BETWEEN ? AND ?
+                ORDER BY economy_day LIMIT 8
+                """, property.propertyId(), property.ownerUuid(), property.ownershipEpoch(), from.toString(), through.toString());
+             ResultSet rows = ps.executeQuery()) {
+            while (rows.next()) {
+                require(paid + unpaid + expired < 7, "too many invoices in seven-day period");
+                switch (rows.getString("state")) {
+                    case "PAID" -> paid++;
+                    case "EXPIRED" -> expired++;
+                    case "ISSUED" -> {
+                        if (through.isAfter(LocalDate.parse(rows.getString("payable_until_day")))) expired++;
+                        else unpaid++;
+                    }
+                    default -> throw new SQLException("Invalid bill summary state");
+                }
+            }
+            require(ps.getWarnings() == null, "bill summary incomplete");
+        }
+        return paid + unpaid + expired == 0 ? Optional.empty()
+                : Optional.of(new OwnerDeskData.Bills(paid, unpaid, expired));
     }
 
     /** The owner's partnership active today, from the same snapshot. No read at all while partnerships are off. */
@@ -239,10 +319,10 @@ public final class OwnerDeskRepository {
         }
     }
 
-    private static OwnerDeskData.Insurance insurance(Connection c, Property p, LocalDate day, Instant at)
+    private OwnerDeskData.Insurance insurance(Connection c, Property p, LocalDate day, Instant at)
             throws SQLException {
         var view = new InsuranceRepository().snapshot(c, p, at, day);
-        long premium = PropertyFormulas.insurancePriceCents(p.capacity());
+        long premium = prices.insuranceCents(p.capacity());
         if (view.isEmpty()) return new OwnerDeskData.Insurance(premium, null, null, false, true);
         var term = view.get().receipt();
         return new OwnerDeskData.Insurance(premium, term.startDay(), term.endDayExclusive(), view.get().used(),

@@ -52,6 +52,57 @@ class RepairQuoteTest {
     }
 
     @ParameterizedTest
+    @CsvSource({"PESTS,99c74d4bc1c4b48da3b5e6b1a61828ed334c72de24214a193eadb56f9bf70506",
+            "PLUMBING,9f5b5de2a3ba5f3956d6baefdf698f109aad5e2e27c0a50d4920203f04abbf5d",
+            "BREAK_IN,4fd0dad3b6560e2e301745d6815a5d7a383ea868b48f4b3eebbcb385e8a3bb48"})
+    void explicitDefaultKeepsLegacyQuoteAndFingerprint(IncidentType type, String fingerprint) {
+        var legacy = new RepairQuote(17, type, HASH);
+        var explicit = new RepairQuote(17, type, HASH, (long) type.cashRepairCents());
+        assertEquals(legacy, explicit);
+        assertNull(explicit.configuredPriceCents());
+        var request = repair(REQUEST, DAY, explicit);
+        assertEquals("purchase|" + REQUEST + "|" + fingerprint, request.eventKey());
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {1, 2375, 100_000_000})
+    void frozenPriceBindsRequestAndCannotBeRepriced(long cents) {
+        var quote = new RepairQuote(17, IncidentType.PESTS, HASH, cents);
+        var request = repair(REQUEST, DAY, quote);
+        assertEquals(cents, request.cents());
+        assertEquals(cents, request.configuredPriceCents());
+        assertEquals(request, PurchasePrices.DEFAULT.quote(request));
+        assertNotEquals(repair(REQUEST, DAY, new RepairQuote(17, IncidentType.PESTS, HASH)).eventKey(), request.eventKey());
+        assertEquals(request, new PurchaseRequest(REQUEST, PROPERTY, PAYER, 0, PurchaseRequest.Kind.REPAIR,
+                null, null, null, DAY, quote, null, null, cents));
+        assertThrows(IllegalArgumentException.class, () -> request.withPriceCents(cents));
+        assertThrows(IllegalArgumentException.class, () -> new PurchaseRequest(REQUEST, PROPERTY, PAYER, 0,
+                PurchaseRequest.Kind.REPAIR, null, null, null, DAY, quote, null, null, cents + 1));
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {Long.MIN_VALUE, -1, 0, 100_000_001, Long.MAX_VALUE})
+    void invalidFrozenPriceIsRejected(long cents) {
+        assertThrows(IllegalArgumentException.class, () -> new RepairQuote(17, IncidentType.PESTS, HASH, cents));
+    }
+
+    @Test
+    void materialsMustCoverFrozenCashPriceAndRatio() {
+        var quote = new RepairQuote(17, IncidentType.PESTS, HASH, 2375L);
+        var oldItems = ItemRepairQuoteTest.valid();
+        assertThrows(IllegalArgumentException.class, () -> new ItemRepairQuote(REQUEST, PROPERTY, PAYER, 0,
+                DAY, quote, 2000, 15000, 3000, 3200, "v1", oldItems.lines(), oldItems.returnPlan()));
+        assertThrows(IllegalArgumentException.class, () -> new ItemRepairQuote(REQUEST, PROPERTY, PAYER, 0,
+                DAY, quote, 2375, 15000, 3563, 3200, "v1", oldItems.lines(), oldItems.returnPlan()));
+        var line = ItemRepairQuoteTest.line("PAPER", 1, 3563, 1);
+        var stack = ItemRepairQuoteTest.stack(0, 1);
+        var accepted = new ItemRepairQuote(REQUEST, PROPERTY, PAYER, 0, DAY, quote, 2375, 15000,
+                3563, 3563, "v1", java.util.List.of(line), java.util.List.of(stack));
+        assertEquals(2375, accepted.cashCents());
+        assertEquals(3563, accepted.requiredValueCents());
+    }
+
+    @ParameterizedTest
     @NullAndEmptySource
     @ValueSource(strings = {"abc", " ", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefABCDEF",
             "g123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
@@ -125,6 +176,20 @@ class RepairQuoteTest {
     private static PurchaseRequest repair(UUID request, LocalDate day, RepairQuote quote) {
         return new PurchaseRequest(request, PROPERTY, PAYER, 0, PurchaseRequest.Kind.REPAIR,
                 null, null, null, day, quote);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"PESTS,2000,", "PLUMBING,3500,", "BREAK_IN,5000,", "PESTS,3500,3500",
+            "PLUMBING,2375,2375", "BREAK_IN,100000000,100000000"})
+    void storedPriceRequiresEitherLegacyTermsOrExplicitCustomTerms(IncidentType type, long cash, Long marker) {
+        assertEquals(cash, RepairQuote.storedCents(type, cash, marker));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"PESTS,2375,", "PESTS,2000,2000", "PESTS,2375,2374", "PESTS,0,0",
+            "PESTS,-1,-1", "PESTS,100000001,100000001", "PLUMBING,2000,", "BREAK_IN,5000,3500"})
+    void storedCorruptMarkerCannotBeNormalizedAway(IncidentType type, long cash, Long marker) {
+        assertThrows(IllegalArgumentException.class, () -> RepairQuote.storedCents(type, cash, marker));
     }
 
     private static PurchaseRequest legacy(PurchaseRequest.Kind kind) {

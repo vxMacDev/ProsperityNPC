@@ -1,0 +1,498 @@
+[
+  {
+    "id": "C1",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeLimits.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeLimits",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeLimitsTest",
+    "testCount": 4,
+    "failedMethods": [
+      "aHugeOrdinaryTaxIsCappedWhileASuspectMeterIsOmitted"
+    ],
+    "before": [
+      "            }",
+      "            long capped = Math.min(c.rawCents(), c.maxCents());",
+      "            if (capped < Math.max(1, c.minCents())) {"
+    ],
+    "after": [
+      "            }",
+      "            long capped = c.rawCents();",
+      "            if (capped < Math.max(1, c.minCents())) {"
+    ]
+  },
+  {
+    "id": "C2",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeInvoiceRepository.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeInvoiceRepository",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeInvoiceIT",
+    "testCount": 1,
+    "testMethods": [
+      "linkedAccountsCannotReopenTheDailyOwnerBudgetByTurningTheFlagOff"
+    ],
+    "failedMethods": [
+      "linkedAccountsCannotReopenTheDailyOwnerBudgetByTurningTheFlagOff"
+    ],
+    "before": [
+      "            for (var e : newBaselines.entrySet()) MeterBaselines.write(c, home.propertyId(), e.getKey(), e.getValue(), day);",
+      "            long ownerUsed = used(c, \"benefit_unit_id=?\", unit, day);",
+      "            long serverUsed = used(c, null, null, day);"
+    ],
+    "after": [
+      "            for (var e : newBaselines.entrySet()) MeterBaselines.write(c, home.propertyId(), e.getKey(), e.getValue(), day);",
+      "            long ownerUsed = used(c, \"owner_uuid=?\", home.ownerId(), day);",
+      "            long serverUsed = used(c, null, null, day);"
+    ]
+  },
+  {
+    "id": "C3",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeLimits.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeLimits",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeLimitsTest",
+    "testCount": 4,
+    "failedMethods": [
+      "capsKeepWholeLinesInPolicyOrderWithoutSpendingSkippedHeadroom",
+      "belowMinimumAndExhaustedBudgetsNeverBecomePartialCharges"
+    ],
+    "before": [
+      "            }",
+      "            if (capped > serverLeft) {",
+      "                server.add(c.policyId());",
+      "                continue;",
+      "            }",
+      "            billLeft -= capped;"
+    ],
+    "after": [
+      "            }",
+      "            billLeft -= capped;"
+    ]
+  },
+  {
+    "id": "C4",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/FundingColumns.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.FundingColumns",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeInvoiceIT",
+    "testCount": 1,
+    "testMethods": [
+      "aPaidBillConservesBothBalancesAndAddsOnlyUnfundedCash"
+    ],
+    "failedMethods": [
+      "aPaidBillConservesBothBalancesAndAddsOnlyUnfundedCash"
+    ],
+    "before": [
+      "        if (source.isPayout()) return PAYOUTS;",
+      "        return source.fundsRent() ? SINKS : UNFUNDED;",
+      "    }"
+    ],
+    "after": [
+      "        if (source.isPayout()) return PAYOUTS;",
+      "        return SINKS;",
+      "    }"
+    ]
+  },
+  {
+    "id": "C5",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/EconomyEventRepository.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.EconomyEventRepository",
+    "testClass": "com.prosperitysmp.npc.it.EconomyLedgerIT",
+    "testCount": 8,
+    "testMethods": [
+      "eachSourceBooksExactlyOnce(com.prosperitysmp.npc.economy.EventSource)"
+    ],
+    "failedMethods": [
+      "eachSourceBooksExactlyOnce"
+    ],
+    "before": [
+      "                if (propertyBytes != null) {",
+      "                    String col = FundingColumns.fundingColumn(source);",
+      "                    try (PreparedStatement ps = c.prepareStatement("
+    ],
+    "after": [
+      "                if (propertyBytes != null) {",
+      "                    String col = source.isPayout() ? FundingColumns.PAYOUTS : FundingColumns.SINKS;",
+      "                    try (PreparedStatement ps = c.prepareStatement("
+    ]
+  },
+  {
+    "id": "C6",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeInvoiceRepository.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeInvoiceRepository",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeInvoiceIdentityTest",
+    "testCount": 1,
+    "failedMethods": [
+      "replayKeepsItsIdentityAndDifferentDaysOrOwnershipsStaySeparate"
+    ],
+    "before": [
+      "        Objects.requireNonNull(day);",
+      "        return UUID.nameUUIDFromBytes((\"bills-invoice-v1|\" + property + \"|\" + owner + \"|\" + epoch + \"|\" + day)",
+      "                .getBytes(StandardCharsets.US_ASCII));"
+    ],
+    "after": [
+      "        Objects.requireNonNull(day);",
+      "        return UUID.nameUUIDFromBytes((\"bills-invoice-v1|\" + property + \"|\" + owner + \"|\" + epoch)",
+      "                .getBytes(StandardCharsets.US_ASCII));"
+    ]
+  },
+  {
+    "id": "C7",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/InvoicePlanner.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.InvoicePlanner",
+    "testClass": "com.prosperitysmp.npc.charge.InvoicePlannerTest",
+    "testCount": 2,
+    "failedMethods": [
+      "aFailedMeterSkipsOnlyItsLineAndKeepsTheFailureReason"
+    ],
+    "before": [
+      "                        if (reading == null) {",
+      "                            skipped.add(new Skipped(policy.id(), true, meterFailures.getOrDefault(policy.id(), \"no reading\")));",
+      "                            continue;"
+    ],
+    "after": [
+      "                        if (reading == null) {",
+      "                            drafts.add(new Draft(policy, meterId, 0L, null, null, \"{}\", 0));",
+      "                            continue;"
+    ]
+  },
+  {
+    "id": "C8",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/meter/MeterBaselines.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.meter.MeterBaselines",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeInvoiceIT",
+    "testCount": 1,
+    "testMethods": [
+      "cumulativeReadingsFreezeTheIncreaseAndAReplayDoesNotAdvanceTheBaseline"
+    ],
+    "failedMethods": [
+      "cumulativeReadingsFreezeTheIncreaseAndAReplayDoesNotAdvanceTheBaseline"
+    ],
+    "before": [
+      "        long before = previous.getAsLong();",
+      "        if (current < before) return new Delta(Kind.RESET, 0);",
+      "        return new Delta(Kind.INCREASE, current - before);"
+    ],
+    "after": [
+      "        long before = previous.getAsLong();",
+      "        if (current < before) return new Delta(Kind.INCREASE, before - current);",
+      "        return new Delta(Kind.INCREASE, current - before);"
+    ]
+  },
+  {
+    "id": "C9",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeLimits.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeLimits",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeLimitsTest",
+    "testCount": 4,
+    "failedMethods": [
+      "aHugeOrdinaryTaxIsCappedWhileASuspectMeterIsOmitted"
+    ],
+    "before": [
+      "        for (Candidate c : ordered) {",
+      "            if (c.externalMeter() && c.rawCents() > Math.multiplyExact(SUSPECT_FACTOR, c.maxCents())) {",
+      "                suspect.add(c.policyId());"
+    ],
+    "after": [
+      "        for (Candidate c : ordered) {",
+      "            if (c.rawCents() > Math.multiplyExact(SUSPECT_FACTOR, c.maxCents())) {",
+      "                suspect.add(c.policyId());"
+    ]
+  },
+  {
+    "id": "C10",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeCatalogue.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeCatalogue",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeCatalogueTest",
+    "testCount": 7,
+    "failedMethods": [
+      "selectorsAndRoundingUseTheCapturedFacts"
+    ],
+    "before": [
+      "            };",
+      "            return occupancy && (classes.isEmpty() || classes.contains(classKey))",
+      "                    && (markets.isEmpty() || markets.contains(marketId))"
+    ],
+    "after": [
+      "            };",
+      "            return !occupancy && (classes.isEmpty() || classes.contains(classKey))",
+      "                    && (markets.isEmpty() || markets.contains(marketId))"
+    ]
+  },
+  {
+    "id": "C12",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeInvoiceRepository.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeInvoiceRepository",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeInvoiceIT",
+    "testCount": 1,
+    "testMethods": [
+      "rentFormulaUsesOnlyThisHomesProvedRentFromThePreviousDay"
+    ],
+    "failedMethods": [
+      "rentFormulaUsesOnlyThisHomesProvedRentFromThePreviousDay"
+    ],
+    "before": [
+      "        // Rent proved for the previous completed economy day, so a tax on rent cannot be dodged by timing.",
+      "        out.put(\"rent_paid_cents\", payments.provedRentPaidCents(c, home.propertyId(), day.minusDays(1)));",
+      "        return revision;"
+    ],
+    "after": [
+      "        // Rent proved for the previous completed economy day, so a tax on rent cannot be dodged by timing.",
+      "        out.put(\"rent_paid_cents\", payments.provedRentPaidCents(c, home.propertyId(), day));",
+      "        return revision;"
+    ]
+  },
+  {
+    "id": "C13",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeCatalogue.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeCatalogue",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeCatalogueTest",
+    "testCount": 7,
+    "failedMethods": [
+      "selectorsCannotMoveBetweenFieldsWithoutChangingTheVersion",
+      "aCommaInsideOneSelectorCannotMasqueradeAsTwoSelectors",
+      "anExistingVersionCannotAcquireDifferentTerms"
+    ],
+    "before": [
+      "        String recorded = known.get(id + \"@\" + version);",
+      "        if (recorded != null && !recorded.equals(sha))",
+      "            throw new Rejected(at + \".version: version \" + version + \" was already used for a different definition; raise the version\");",
+      "        return new Policy(id, version, title, applies, List.copyOf(classes), List.copyOf(markets), List.copyOf(properties),"
+    ],
+    "after": [
+      "        String recorded = known.get(id + \"@\" + version);",
+      "        return new Policy(id, version, title, applies, List.copyOf(classes), List.copyOf(markets), List.copyOf(properties),"
+    ]
+  },
+  {
+    "id": "C14",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/AccountingProjection.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.AccountingProjection",
+    "testClass": "com.prosperitysmp.npc.economy.AccountingProjectionCommerceIT",
+    "testCount": 1,
+    "testMethods": [
+      "billsAppearOnlyAfterAnEventAndCountOnceInThePublicOutflow"
+    ],
+    "failedMethods": [
+      "billsAppearOnlyAfterAnEventAndCountOnceInThePublicOutflow"
+    ],
+    "before": [
+      "                for (EventSource source : EventSource.values()) {",
+      "                    if (source == EventSource.BILLS && !billsActive) continue;",
+      "                    totals.put(source.key(), 0L);"
+    ],
+    "after": [
+      "                for (EventSource source : EventSource.values()) {",
+      "                    totals.put(source.key(), 0L);"
+    ]
+  },
+  {
+    "id": "C15",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/AccountingProjection.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.AccountingProjection",
+    "testClass": "com.prosperitysmp.npc.economy.AccountingProjectionTest",
+    "testCount": 7,
+    "failedMethods": [
+      "groupsAllowThirtyTwoSourcesAndRefuseThirtyThree"
+    ],
+    "before": [
+      "    static Group checkedGroup(String day, String category, List<SourceTotal> sources) throws SQLException {",
+      "        if (sources.size() > MAX_SOURCES_PER_GROUP) throw new SQLException(\"Accounting source bound\");",
+      "        return new Group(day, category, sources);"
+    ],
+    "after": [
+      "    static Group checkedGroup(String day, String category, List<SourceTotal> sources) throws SQLException {",
+      "        return new Group(day, category, sources);"
+    ]
+  },
+  {
+    "id": "C16",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeFormula.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeFormula",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeFormulaTest",
+    "testCount": 9,
+    "failedMethods": [
+      "pickAndClampAtRuntime"
+    ],
+    "before": [
+      "                        Rational index = args.get(0);",
+      "                        if (!index.isInteger()) throw new FormulaException(\"pick index is not a whole number\");",
+      "                        BigInteger i = index.numerator();"
+    ],
+    "after": [
+      "                        Rational index = args.get(0);",
+      "                        ",
+      "                        BigInteger i = index.numerator();"
+    ]
+  },
+  {
+    "id": "C17",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/RangeCheck.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.RangeCheck",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeFormulaTest",
+    "testCount": 9,
+    "failedMethods": [
+      "rangeCheckRefusesNegativeChargesAndAcceptsZeroBoundary"
+    ],
+    "before": [
+      "        Interval result = range(formula.root(), constants, variables);",
+      "        if (result.lo().signum() < 0) throw new FormulaException(\"the result can be below zero (lowest \" + result.lo() + \")\");",
+      "        return result;"
+    ],
+    "after": [
+      "        Interval result = range(formula.root(), constants, variables);",
+      "        ",
+      "        return result;"
+    ]
+  },
+  {
+    "id": "C19",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/BillingRuntime.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.BillingRuntime",
+    "testClass": "com.prosperitysmp.npc.economy.HoldRentIT",
+    "testCount": 1,
+    "testMethods": [
+      "noneAndDisabledNeverReadTheCacheAndKeepNormalRent"
+    ],
+    "failedMethods": [
+      "noneAndDisabledNeverReadTheCacheAndKeepNormalRent"
+    ],
+    "assertionMessage": "cache read",
+    "before": [
+      "                                                Supplier<List<Open>> cache) {",
+      "        if (!catalogue.enabled() || catalogue.onUnpaid() != ChargeCatalogue.OnUnpaid.HOLD_RENT) return Optional.of(Set.of());",
+      "        List<Open> rows = cache.get();"
+    ],
+    "after": [
+      "                                                Supplier<List<Open>> cache) {",
+      "        if (!catalogue.enabled()) return Optional.of(Set.of());",
+      "        List<Open> rows = cache.get();"
+    ]
+  },
+  {
+    "id": "C20",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeLimits.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeLimits",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeCeilingTest",
+    "testCount": 4,
+    "failedMethods": [
+      "theCeilingsAreTheChosenAmounts"
+    ],
+    "before": [
+      "    /** The most one bill line can ever be: $200. */",
+      "    public static final long PER_BILL_CEILING_CENTS = 20_000L;",
+      "    /** The most one whole bill (one home, one economy day, all its lines) can ever be: $200. */"
+    ],
+    "after": [
+      "    /** The most one bill line can ever be: $200. */",
+      "    public static final long PER_BILL_CEILING_CENTS = 20_001L;",
+      "    /** The most one whole bill (one home, one economy day, all its lines) can ever be: $200. */"
+    ]
+  },
+  {
+    "id": "C21",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeLimits.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeLimits",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeLimitsTest",
+    "testCount": 4,
+    "failedMethods": [
+      "oneWholeBillNeverPassesTwoHundredDollarsWhateverTheDailyLimitsAllow"
+    ],
+    "before": [
+      "            if (capped > billLeft) {",
+      "                bill.add(c.policyId());"
+    ],
+    "after": [
+      "            if (false) {",
+      "                bill.add(c.policyId());"
+    ]
+  },
+  {
+    "id": "C22",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeCatalogue.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeCatalogue",
+    "testClass": "com.prosperitysmp.npc.charge.ChargeCeilingTest",
+    "testCount": 4,
+    "failedMethods": [
+      "aBillMaximumOneCentAboveTwoHundredDollarsIsRefused"
+    ],
+    "before": [
+      "        long maxCents = whole(at + \".max-cents\", required(at + \".max-cents\", p.get(\"max-cents\")),",
+      "                1, ChargeLimits.PER_BILL_CEILING_CENTS);"
+    ],
+    "after": [
+      "        long maxCents = whole(at + \".max-cents\", required(at + \".max-cents\", p.get(\"max-cents\")),",
+      "                1, Long.MAX_VALUE);"
+    ]
+  },
+  {
+    "id": "C23",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/BillingRuntime.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.BillingRuntime",
+    "testClass": "com.prosperitysmp.npc.charge.BillingRuntimeHoldRentTest",
+    "testCount": 3,
+    "failedMethods": [
+      "anOpenBillHoldsOnlyTheOwnershipItWasIssuedTo"
+    ],
+    "before": [
+      "            if (home != null && home.enabled() && o.ownerId().equals(home.ownerUuid())",
+      "                    && o.ownershipEpoch() == home.ownershipEpoch()) out.add(o);"
+    ],
+    "after": [
+      "            if (home != null && home.enabled()",
+      "                    ) out.add(o);"
+    ]
+  },
+  {
+    "id": "C24",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/BillingRuntime.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.BillingRuntime",
+    "testClass": "com.prosperitysmp.npc.charge.BillingRuntimeHoldRentTest",
+    "testCount": 3,
+    "failedMethods": [
+      "holdRentWaitsUntilTheFirstCatalogueLoadHasFinished"
+    ],
+    "before": [
+      "        if (!Boolean.TRUE.equals(enabledSetting)) return Optional.of(Set.of());",
+      "        if (!loaded && \"hold-rent\".equals(onUnpaidSetting)) return Optional.empty();"
+    ],
+    "after": [
+      "        if (!Boolean.TRUE.equals(enabledSetting)) return Optional.of(Set.of());",
+      "        if (false && \"hold-rent\".equals(onUnpaidSetting)) return Optional.empty();"
+    ]
+  },
+  {
+    "id": "C25",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/UtilityPaymentRuntime.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.UtilityPaymentRuntime",
+    "testClass": "com.prosperitysmp.npc.economy.BillCollectionCountTest",
+    "testCount": 3,
+    "failedMethods": [
+      "aDeclineOrInsufficientFundsIsNotCountedAsPaid"
+    ],
+    "before": [
+      "    static boolean reportsPaid(boolean bill, Result state) {",
+      "        if (!bill) return true;"
+    ],
+    "after": [
+      "    static boolean reportsPaid(boolean bill, Result state) {",
+      "        if (true) return true;"
+    ]
+  },
+  {
+    "id": "C26",
+    "source": "src/main/java/com/prosperitysmp/npc/charge/ChargeInvoiceRepository.java",
+    "subjectClass": "com.prosperitysmp.npc.charge.ChargeInvoiceRepository",
+    "testClass": "com.prosperitysmp.npc.economy.HoldRentIT",
+    "testCount": 1,
+    "testMethods": [
+      "anEarlierOwnersUnpaidBillNeverHoldsTheNewOwnersRent"
+    ],
+    "failedMethods": [
+      "anEarlierOwnersUnpaidBillNeverHoldsTheNewOwnersRent"
+    ],
+    "before": [
+      "                WHERE i.state='ISSUED' AND p.owner_uuid=i.owner_uuid AND p.ownership_epoch=i.ownership_epoch",
+      "                  AND p.enabled=1"
+    ],
+    "after": [
+      "                WHERE i.state='ISSUED'",
+      "                  AND p.enabled=1"
+    ]
+  }
+]

@@ -74,6 +74,7 @@ class ItemSaveProofTest {
         if (Files.readAttributes(file(world), java.nio.file.attribute.BasicFileAttributes.class).fileKey() == null)
             assertFalse(proof.verify(snapshot));
         else assertTrue(proof.verify(snapshot));
+        assertEquals(proof.verify(snapshot), proof.storageAvailable(world));
 
         Object root = fixture();
         Object bread = list(root, "Inventory").get(2);
@@ -95,6 +96,33 @@ class ItemSaveProofTest {
         compound.getMethod("remove", String.class).invoke(crate, "components");
         ItemCustody bare = batch(encode(crate), 1);
         assertFalse(nbtMatches(saved, proof.capture(world, bare, evidence(bare, 0, 1)).orElseThrow()));
+    }
+
+    @Test void storageCapabilityNeedsARealPlayerDirectoryWithStableIdentities() throws Exception {
+        assertFalse(proof.storageAvailable(null));
+        assertFalse(proof.storageAvailable(temporary.resolve("missing-world")));
+        Path world = world(Base64.getDecoder().decode(FIXTURE));
+        boolean identities = Files.readAttributes(file(world), java.nio.file.attribute.BasicFileAttributes.class).fileKey() != null;
+        assertEquals(identities, proof.storageAvailable(world));
+        Files.delete(file(world));
+        assertEquals(identities, proof.storageAvailable(world), "startup does not require a particular player's file");
+        Path directory = world.resolve(relativeData);
+        Files.delete(directory);
+        assertFalse(proof.storageAvailable(world), "the player-data directory is missing");
+        Files.writeString(directory, "not a directory");
+        assertFalse(proof.storageAvailable(world), "a file cannot stand in for the player-data directory");
+    }
+
+    @Test void storageCapabilityRefusesALinkedPlayerDirectory() throws Exception {
+        Path real = Files.createDirectories(temporary.resolve("real-data"));
+        Path world = temporary.resolve("linked-world");
+        Path directory = world.resolve(relativeData);
+        Files.createDirectories(directory.getParent());
+        try { Files.createSymbolicLink(directory, real); }
+        catch (UnsupportedOperationException | java.nio.file.FileSystemException unavailable) {
+            assumeTrue(false, "symbolic links unavailable here");
+        }
+        assertFalse(proof.storageAvailable(world));
     }
 
     @Test void rejectsTruncatedSavedNbt() throws Exception {

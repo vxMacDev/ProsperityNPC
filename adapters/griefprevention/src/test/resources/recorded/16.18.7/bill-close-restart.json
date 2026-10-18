@@ -1,0 +1,78 @@
+{
+  "vendor": "GriefPrevention",
+  "version": "16.18.7",
+  "vendorSha256": "45e9907c61222e559ed2e099ffee0ede706a21243a31d7db549baf678708fdf0",
+  "paper": "26.1.2 build74",
+  "coreBeforeSha256": "bbc12f563c2428f06c9fdc1069537f9dd9a61f4276ae2d4cb9b9782311bf2f7f",
+  "coreAfterSha256": "378fd9cca786707c03b8340b8330edefe0da3d6d8d3c3b1da7e912179d678257",
+  "adapterSha256": "a96df3315cdfaeed755694c44c4894473c75096bf379abe2fd0a45ec493c24ff",
+  "recorders": {
+    "closeAndRed": "dc3fa1f9958244dc4c59698b36808a9a70bdc1260436e6dbf95fba8d4a14f427",
+    "green": "d7a092d3b034b5695221fe456424357a080a8d308d572de2bc43015f56b84c39",
+    "otherHomePayment": "adb82787b0279d4366fc619cc2ba6f909a7645037cc66a65360098d55579f960"
+  },
+  "scope": "Actual domain runtime close while invoice preparation waits on an observed SQL lock, then full Paper+MariaDB restart. Normal GP ownership, Vault/Essentials and internal accounting with synthetic CraftPlayer/no-op transport/manual inventory events and dated policy fixture. Not a process crash during provider dispatch or complete operator recovery.",
+  "afterClose": {
+    "paymentState": "WAITING",
+    "eventState": "PENDING",
+    "attemptRows": 0,
+    "observationRows": 0,
+    "balancesCents": {
+      "payer": 1000,
+      "reserve": 1000
+    }
+  },
+  "afterRestart": {
+    "paymentState": "WAITING",
+    "eventState": "PENDING",
+    "automaticCharge": false,
+    "paymentButton": "Payment unavailable",
+    "startupSwitches": {
+      "system": false,
+      "economy": false
+    },
+    "autoCollectEnabled": false
+  },
+  "textCommandBeforeFix": {
+    "runtime": "recovery-held",
+    "newRequestLeaseHeld": true,
+    "newRows": 0,
+    "moneyMovedCents": 0
+  },
+  "textCommandAfterFix": {
+    "runtime": "beta-only; accounting acknowledged",
+    "newRequestLeaseHeld": false,
+    "reply": "This bill has an unresolved payment or reached its retry limit. No new payment was started. Ask staff to check it.",
+    "newRows": 0,
+    "moneyMovedCents": 0
+  },
+  "otherHomeAfterRefusal": {
+    "sameRuntime": true,
+    "paymentState": "PAID",
+    "receiptProved": true,
+    "paidCents": 100,
+    "balancesCents": {
+      "payer": 900,
+      "reserve": 1100
+    },
+    "funding": {
+      "payouts": 0,
+      "seed": 5000,
+      "sinks": 0,
+      "unfunded": 100
+    }
+  },
+  "originalPendingAfterOtherPayment": {
+    "state": "PENDING",
+    "paymentState": "WAITING",
+    "transferIntents": 0,
+    "automaticallyResolved": false
+  },
+  "limitations": [
+    "Original unstarted payment remains held for staff; this fix does not adjudicate it",
+    "Startup switches stayed off until explicit test actions; automatic collection was disabled",
+    "No provider loss or crash with a durable money intent",
+    "No real clients, complete populated scheduled cycle or performance measurement",
+    "No vendor checksum pin or release package acceptance"
+  ]
+}

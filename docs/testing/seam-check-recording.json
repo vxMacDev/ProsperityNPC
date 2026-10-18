@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "subject": "money-selection-ownership-and-accounting-fault-checks",
+  "coreSha256": "a2c1bde527899f8f4dc661969c2968beafe4644fd7bedd36aafe3fed7d2bfb4d",
+  "databaseSchema": 56,
+  "componentChecks": {
+    "method": "Private compiled source mutations run against the existing compiled tests and cached dependencies. Baselines use the packaged core. Actual loaded code origins, source and class hashes, discovery counts and intended assertion failures are checked. Compilation, linkage, setup failures and aborted tests do not count as caught faults.",
+    "baselineCasesPassed": 52,
+    "baselineFailuresSkipsAndAborts": 0,
+    "faults": {
+      "S1": {
+        "change": "Set the called flag after the provider leg returns",
+        "observed": "Both throwing-provider cases incorrectly report a safe precheck refusal",
+        "result": "Two intended uncertainty assertions fail"
+      },
+      "S2": {
+        "change": "Omit plugin and provider enabled checks from stillCurrent",
+        "result": "The disabled owner-plugin assertion fails"
+      },
+      "S3": {
+        "change": "Use Economy.class as the provider artifact",
+        "result": "The concrete provider artifact assertion fails",
+        "scope": "The component fixture uses a provider class directory. The separate native comparison below checks real JAR hashes."
+      },
+      "S4": {
+        "change": "Select the first duplicate configured ID",
+        "result": "The duplicate-ID refusal assertion fails"
+      },
+      "S5": {
+        "change": "Accept a reserved ID from a third party",
+        "result": "The reserved-ID refusal assertion fails"
+      },
+      "S6": {
+        "change": "Fall back to a built-in when the configured ID is missing",
+        "result": "The missing-ID refusal assertion fails"
+      },
+      "S7": {
+        "change": "Report availability before binding",
+        "result": "The unbound availability assertion fails"
+      },
+      "S9": {
+        "change": "Cache reserve text across reloads",
+        "result": "The live-reload assertion and the separate no-state assertion fail"
+      },
+      "S10": {
+        "change": "Accept another backend's owner token",
+        "result": "The foreign-token incarnation assertion fails"
+      },
+      "S11": {
+        "change": "Read the payer balance after the second authority check",
+        "result": "All three utility, rent and commerce call-order comparisons fail"
+      }
+    }
+  },
+  "accountingRace": {
+    "fault": "S8",
+    "environment": "Paper 26.1.2 build 74, Java 25, MariaDB 11.4.5, internal accounting sink",
+    "method": "In a zero-player local lab, hold the event table lock, invalidate through the public method, submit a real projection read through its private tick, observe its SQL waiting on the lock, invalidate again, release the lock and consume the actual successful old-generation completion. The console probe briefly holds the main thread for coordination; no snapshot, completion, generation, clock or readiness value is injected.",
+    "baseline": "Old completion rejected; snapshot absent and readiness false. Ordinary ticks subsequently publish a newer snapshot.",
+    "mutation": "Remove only the completed-generation comparison",
+    "changedJarEntries": ["com/prosperitysmp/npc/economy/AccountingProjection.class"],
+    "observed": "Old snapshot accepted and readiness true after invalidation",
+    "result": "The stale-generation readiness assertion fails",
+    "controlsPaymentsAndBillsEnabled": false,
+    "playerAccountPropertyAndMoneyFixturesCreated": 0,
+    "all89TableCountsAndLogicalRowsUnchanged": true,
+    "all109OriginalControlledFileHashesRestored": true,
+    "labServicesStopped": true
+  },
+  "nativeProviderArtifactComparison": {
+    "providerName": "EssentialsX Economy",
+    "providerClass": "com.earth2me.essentials.economy.vault.VaultEconomyProvider",
+    "registrationOwner": "Essentials",
+    "providerJar": "EssentialsX-2.22.0.jar",
+    "providerAndMoneyPinSha256": "bda4685105977fca2e209820a9f0ad24275bd103390a03236f38e59bfdac58e6",
+    "apiJar": "Vault.jar",
+    "apiSha256": "a6b5ed97f43a5cf5bbaf00a7c8cd23c5afc9bd003f849875af8b36e6cf77d01d",
+    "result": "The pin matches the concrete provider's own JAR and SHA; the API JAR has a different SHA"
+  },
+  "publicNativeProbeCheck": {
+    "buildTask": "nativeFaultProbeJar",
+    "instructions": "tools/faults/native/README.md",
+    "probeVersion": "0.1",
+    "probeSha256": "c41333a54318c940bcea001ca42618f9e0e5f01d2f36239a8210fe8b2540559b",
+    "probeClassSha256": "85b9f57b376636531eb1866a07038b7339ba964e7b06eb52a78c7be53dc12823",
+    "baseline": "PASS: successful old completion rejected; snapshot absent and readiness false",
+    "mutant": "FAILED: the exact stale-generation assertion detects old snapshot readiness",
+    "loadedCoreProbeAndClassHashesMatched": true,
+    "ordinaryTicksPublishedNewerReadySnapshotAfterBothRuns": true,
+    "nativeProviderArtifactComparison": "PASS on both builds",
+    "withoutLabFlag": "Probe disabled itself",
+    "enabledIncidentSwitch": "INVALID before race admission",
+    "duplicateReportLabel": "Refused before running another check; original report unchanged",
+    "all89SqlTableCountsAndLogicalRowsUnchanged": true,
+    "all109OriginalControlledFileHashesRestored": true,
+    "labServicesStopped": true,
+    "scope": "Same empty-server setup and private tick coordination; no player/account/property/money fixtures or field injection"
+  },
+  "coverageLimits": [
+    "The component command and native probe are available; complete billing fault reproduction and release acceptance remain unfinished",
+    "The accounting race invokes private tick consumption; it is not whole-scheduler or shutdown-race acceptance",
+    "No connected Java or Bedrock clients, paid transfers, provider interruption/recovery or populated daily cycle",
+    "No whole-plugin player-load measurement or broader adapter compatibility claim"
+  ]
+}

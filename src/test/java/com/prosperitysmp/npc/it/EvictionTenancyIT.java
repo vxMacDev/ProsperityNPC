@@ -79,7 +79,7 @@ class EvictionTenancyIT {
             database.connect(new DatabaseSettings("localhost", cfg.getPort(), schema, "root", "", 6, 10_000L));
             for (String file : List.of("V1__initial_schema.sql", "V2__resident_identity.sql",
                     "V3__purchase_receipts.sql", "V4__transfer_journal.sql", "V5__resident_route_tags.sql",
-                    "V6__incident_repairs.sql", "V7__incident_rolls.sql")) applyResource("/db/migration/" + file);
+                    "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V45__property_backend.sql")) applyResource("/db/migration/" + file);
             applyResource(V8);
             applyResource("/db/migration/V15__tenancy_departures.sql");
             // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.

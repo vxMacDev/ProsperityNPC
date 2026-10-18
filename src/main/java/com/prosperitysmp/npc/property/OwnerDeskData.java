@@ -1,6 +1,9 @@
 package com.prosperitysmp.npc.property;
 
 import com.prosperitysmp.npc.economy.LinkedAccounts;
+import com.prosperitysmp.npc.economy.PurchasePrices;
+import com.prosperitysmp.npc.economy.UtilityBill;
+import com.prosperitysmp.npc.economy.UtilityPrices;
 import com.prosperitysmp.npc.formulas.PropertyFormulas;
 import com.prosperitysmp.npc.market.OwnerHousingView;
 import com.prosperitysmp.npc.util.Money;
@@ -15,7 +18,23 @@ import java.util.UUID;
 public record OwnerDeskData(Property property, long revision, Instant capturedAt,
                             List<Resident> residents, List<Issue> issues, List<Upgrade> upgrades,
                             Statement statement, Insurance insurance, Optional<OwnerHousingView> housing,
-                            Optional<PendingRent> pendingRent, Optional<Linked> linked, Optional<Partner> partner) {
+                            Optional<PendingRent> pendingRent, Optional<Linked> linked, Optional<Partner> partner,
+                            Optional<Bills> bills, Optional<UtilityBill> utilityBill) {
+    public OwnerDeskData(Property property, long revision, Instant capturedAt,
+                         List<Resident> residents, List<Issue> issues, List<Upgrade> upgrades,
+                         Statement statement, Insurance insurance, Optional<OwnerHousingView> housing,
+                         Optional<PendingRent> pendingRent, Optional<Linked> linked, Optional<Partner> partner,
+                         Optional<Bills> bills) {
+        this(property, revision, capturedAt, residents, issues, upgrades, statement, insurance, housing, pendingRent,
+                linked, partner, bills, Optional.empty());
+    }
+    public OwnerDeskData(Property property, long revision, Instant capturedAt,
+                         List<Resident> residents, List<Issue> issues, List<Upgrade> upgrades,
+                         Statement statement, Insurance insurance, Optional<OwnerHousingView> housing,
+                         Optional<PendingRent> pendingRent, Optional<Linked> linked, Optional<Partner> partner) {
+        this(property, revision, capturedAt, residents, issues, upgrades, statement, insurance, housing, pendingRent,
+                linked, partner, Optional.empty());
+    }
     public OwnerDeskData(Property property, long revision, Instant capturedAt,
                          List<Resident> residents, List<Issue> issues, List<Upgrade> upgrades,
                          Statement statement, Insurance insurance, Optional<OwnerHousingView> housing,
@@ -54,8 +73,14 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
         Objects.requireNonNull(pendingRent);
         Objects.requireNonNull(linked);
         Objects.requireNonNull(partner);
-        if (insurance.premiumCents() != PropertyFormulas.insurancePriceCents(property.capacity()))
-            throw new IllegalArgumentException("Insurance premium differs from capacity");
+        Objects.requireNonNull(bills);
+        Objects.requireNonNull(utilityBill);
+        utilityBill.ifPresent(bill -> {
+            if (!bill.propertyId().equals(property.propertyId()) || !bill.day().equals(statement.throughDay())
+                    || bill.issuedAt().isAfter(capturedAt))
+                throw new IllegalArgumentException("Utility bill snapshot scope differs");
+        });
+
         if (revision < 0) throw new IllegalArgumentException("negative revision");
         housing.ifPresent(view -> {
             if (!view.propertyId().equals(property.propertyId()) || !view.ownerId().equals(property.ownerUuid())
@@ -65,6 +90,16 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
         residents = List.copyOf(residents);
         issues = List.copyOf(issues);
         upgrades = List.copyOf(upgrades);
+    }
+
+    /** Invoice counts for the same seven days as the statement. */
+    public record Bills(int paid, int unpaid, int expired) {
+        public Bills {
+            if (paid < 0 || unpaid < 0 || expired < 0 || paid > 7 || unpaid > 7 || expired > 7
+                    || paid + unpaid + expired < 1 || paid + unpaid + expired > 7)
+                throw new IllegalArgumentException("Invalid bill summary");
+        }
+        public String line() { return "Bills: " + paid + " paid | " + unpaid + " unpaid | " + expired + " expired"; }
     }
 
     /** A delayed asking-rent change recorded in SQL (housing.rent-change-delay-days). notices = residents told. */
@@ -114,6 +149,17 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
 
     public boolean canPurchaseInsurance() { return insurance.canPurchase(statement.throughDay()); }
 
+    public long utilityMaximum(UtilityPrices prices) {
+        Objects.requireNonNull(prices);
+        return utilityBill.map(UtilityBill::cents).orElseGet(() -> prices.cents(residents.size(),
+                upgrades.stream().mapToInt(Upgrade::level).sum()));
+    }
+
+    public boolean canPayUtility() {
+        return utilityBill.map(bill -> bill.ownerId().equals(property.ownerUuid())
+                && bill.ownershipEpoch() == property.ownershipEpoch()).orElse(true);
+    }
+
     /** Active coverage is shown even when the next adjacent term is already reserved. */
     public record Insurance(long premiumCents, LocalDate startDay, LocalDate endDayExclusive,
                             boolean used, boolean currentIncarnation, boolean nextTermReserved) {
@@ -122,7 +168,7 @@ public record OwnerDeskData(Property property, long revision, Instant capturedAt
             this(premiumCents, startDay, endDayExclusive, used, currentIncarnation, false);
         }
         public Insurance {
-            if (premiumCents < 1400 || premiumCents > 2000 || premiumCents % 200 != 0
+            if (premiumCents <= 0 || premiumCents > PurchasePrices.MAX_CENTS
                     || (startDay == null) != (endDayExclusive == null)
                     || (startDay == null && (used || nextTermReserved))
                     || (nextTermReserved && !currentIncarnation)

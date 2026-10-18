@@ -57,6 +57,7 @@ class NavGraphSurfaceIT {
         database = new Database();
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), schema, "root", "", 6, 10_000L));
         applyResource("/db/migration/V1__initial_schema.sql");
+        applyResource("/db/migration/V44__nav_graph_sources.sql");
         applyResource("/db/migration/V5__resident_route_tags.sql");
         // A graph written before V39 existed, by the old jar's explicit column lists.
         execute("INSERT INTO npc_nav_graphs (graph_id, world_uuid, region_id, palette, version, status) VALUES (?, ?, 'old', 'c001-road44', 1, 'ACTIVE')",

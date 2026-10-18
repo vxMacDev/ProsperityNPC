@@ -39,7 +39,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Real MariaDB with every registered migration (V1..V40) for the contracts and partnerships ITs. No Bukkit, Vault or
+ * Real MariaDB with every registered migration for the contracts and partnerships ITs. No Bukkit, Vault or
  * inventory: take evidence is supplied the way ContractRuntime builds it. Each subclass boots its own server.
  */
 abstract class ContractItBase {
@@ -84,7 +84,7 @@ abstract class ContractItBase {
                     for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8))) execute(sql);
                 }
             }
-            assertEquals(40, last, "V40 is the newest migration");
+            assertEquals(56, last, "V56 is the newest migration");
             tables = rows("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE'")
                     .stream().map(List::getFirst).toList();
         } catch (Exception | AssertionError failure) {

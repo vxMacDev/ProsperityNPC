@@ -16,7 +16,7 @@ class ArmRegionViewTest {
         UUID world = UUID.randomUUID();
         var view = new ArmRegionView("c001", "world", world, null, "SELL", false);
         assertFalse(view.matches(UUID.randomUUID(), "c001"));
-        assertFalse(view.matches(null, "c001"));
+        assertFalse(view.matches((UUID) null, "c001"));
         assertFalse(view.matches(world, null));
         assertFalse(view.matches(world, "c002"));
         assertFalse(new ArmRegionView(null, "world", world, null, "SELL", false).matches(world, "c001"));

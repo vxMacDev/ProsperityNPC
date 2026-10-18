@@ -1,0 +1,26 @@
+// GriefPrevention adapter (property.backend: griefprevention). Unverified. Built only with -Padapters.
+version = '0.1.0'
+
+// GriefPrevention 16.18.7 from JitPack, the build its maintainers point to. Never a 17.x or 18.x snapshot; recheck
+// GriefPrevention's plugin.yml api-version before any bump.
+ext.vendorApis = ['com.github.TechFortress:GriefPrevention:16.18.7']
+ext.vendorRepository = {
+    repositories {
+        exclusiveContent {
+            forRepository { maven { url = 'https://jitpack.io' } }
+            filter { includeGroup 'com.github.TechFortress' }
+        }
+    }
+}
+// sha256 of each vendor API jar. See docs/ADAPTERS.md: a pin is recorded from two independent downloads.
+// Empty on purpose: no GriefPrevention jar is released yet, so packaging stops at the pin check. The model tests
+// (:adapter-griefprevention:test -Padapters) need no vendor jar.
+ext.pinnedVendorApis = [:]
+
+apply from: rootProject.file('gradle/vendor-adapter.gradle')
+
+tasks.named('jar') {
+    archiveBaseName = 'ProsperityNPC-GriefPrevention'
+    archiveVersion = "${project.version}+api1"
+    archiveClassifier = ''
+}

@@ -10,6 +10,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,8 +34,37 @@ public final class NavGraphRepository {
     private static final Set<String> ROUTE_TAGS = Set.of("home", "work", "market", "leisure");
     private static final int MAX_TAGS_PER_NODE = 8;
 
+    /**
+     * {@code source} is how the graph was made ({@code scan}, {@code waypoints} or {@code file}); {@code originSha}
+     * is the document a waypoint or file graph was built from, and {@code originRef} the file name, for display only.
+     */
     public record GraphInfo(UUID graphId, UUID worldUuid, String regionId, String palette,
-                            int version, String status, int nodeCount, int edgeCount, String paletteHash) {
+                            int version, String status, int nodeCount, int edgeCount, String paletteHash,
+                            String source, String originSha, String originRef) {
+        public GraphInfo {
+            source = source == null ? SOURCE_SCAN : source;
+        }
+
+        /** A scan graph, as every graph was before graph sources existed. */
+        public GraphInfo(UUID graphId, UUID worldUuid, String regionId, String palette,
+                         int version, String status, int nodeCount, int edgeCount, String paletteHash) {
+            this(graphId, worldUuid, regionId, palette, version, status, nodeCount, edgeCount, paletteHash,
+                    SOURCE_SCAN, null, null);
+        }
+    }
+
+    public static final String SOURCE_SCAN = "scan";
+    public static final String SOURCE_WAYPOINTS = "waypoints";
+    public static final String SOURCE_FILE = "file";
+
+    /** The current waypoint set of a region: its revision, the sha of its document and the document itself. */
+    public record WaypointSetRow(int revision, String docSha, String document, String updatedBy) {
+    }
+
+    /** Turns the current document (null when the region has no set yet) into the next one; may throw to refuse. */
+    @FunctionalInterface
+    public interface DocumentEdit {
+        String apply(String current);
     }
 
     /** One node's stored class, for the audit and revalidate commands. */
@@ -85,12 +118,13 @@ public final class NavGraphRepository {
             c.setAutoCommit(false);
             try {
                 try (PreparedStatement ps = timedStatement(c,
-                        "SELECT status FROM npc_nav_graphs WHERE graph_id = ? FOR UPDATE")) {
+                        "SELECT status, source FROM npc_nav_graphs WHERE graph_id = ? FOR UPDATE")) {
                     ps.setBytes(1, Uuids.toBytes(graphId));
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!rs.next() || !"DRAFT".equals(rs.getString(1))) {
                             throw new IllegalArgumentException("Only an existing DRAFT graph can be tagged.");
                         }
+                        refuseAuthoredTags(rs.getString(2));
                     }
                 }
                 try (PreparedStatement ps = timedStatement(c,
@@ -139,6 +173,16 @@ public final class NavGraphRepository {
             } finally {
                 c.setAutoCommit(true);
             }
+        }
+    }
+
+    /** The points (or the route file) are the single truth for a waypoint or file graph's tags. */
+    private static void refuseAuthoredTags(String source) {
+        if (SOURCE_WAYPOINTS.equals(source)) {
+            throw new IllegalArgumentException("Tags on waypoint graphs come from the points; use /npcnav wp tag");
+        }
+        if (source != null && !SOURCE_SCAN.equals(source)) {
+            throw new IllegalArgumentException("Tags on route-file graphs come from the file; edit it and import it again");
         }
     }
 
@@ -200,6 +244,12 @@ public final class NavGraphRepository {
      */
     public UUID saveDraft(UUID worldUuid, String regionId, String palette, String paletteHash, NavGraph graph)
             throws SQLException {
+        return saveDraft(worldUuid, regionId, palette, paletteHash, graph, SOURCE_SCAN, null, null);
+    }
+
+    /** As {@link #saveDraft(UUID, String, String, String, NavGraph)}, recording how the graph was made. */
+    public UUID saveDraft(UUID worldUuid, String regionId, String palette, String paletteHash, NavGraph graph,
+                          String source, String originSha, String originRef) throws SQLException {
         UUID graphId = UUID.randomUUID();
         try (Connection c = database.getConnection()) {
             c.setAutoCommit(false);
@@ -207,13 +257,16 @@ public final class NavGraphRepository {
                 int version = nextVersion(c, worldUuid, regionId);
                 try (PreparedStatement ps = c.prepareStatement(
                         "INSERT INTO npc_nav_graphs (graph_id, world_uuid, region_id, palette, version, status, "
-                                + "palette_hash) VALUES (?, ?, ?, ?, ?, 'DRAFT', ?)")) {
+                                + "palette_hash, source, origin_sha, origin_ref) VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?)")) {
                     ps.setBytes(1, Uuids.toBytes(graphId));
                     ps.setBytes(2, Uuids.toBytes(worldUuid));
                     ps.setString(3, regionId);
                     ps.setString(4, palette);
                     ps.setInt(5, version);
                     ps.setString(6, paletteHash);
+                    ps.setString(7, source == null ? SOURCE_SCAN : source);
+                    ps.setString(8, originSha);
+                    ps.setString(9, originRef);
                     ps.executeUpdate();
                 }
                 Map<Long, Long> idMap = new HashMap<>();
@@ -403,7 +456,7 @@ public final class NavGraphRepository {
                      SELECT g.world_uuid, g.region_id, g.palette, g.version, g.status,
                             (SELECT COUNT(*) FROM npc_nav_nodes n WHERE n.graph_id = g.graph_id) AS nodes,
                             (SELECT COUNT(*) FROM npc_nav_edges e WHERE e.graph_id = g.graph_id) AS edges,
-                            g.palette_hash
+                            g.palette_hash, g.source, g.origin_sha, g.origin_ref
                      FROM npc_nav_graphs g WHERE g.graph_id = ?
                      """)) {
             ps.setBytes(1, Uuids.toBytes(graphId));
@@ -412,7 +465,8 @@ public final class NavGraphRepository {
                     return null;
                 }
                 return new GraphInfo(graphId, Uuids.fromBytes(rs.getBytes(1)), rs.getString(2),
-                        rs.getString(3), rs.getInt(4), rs.getString(5), rs.getInt(6), rs.getInt(7), rs.getString(8));
+                        rs.getString(3), rs.getInt(4), rs.getString(5), rs.getInt(6), rs.getInt(7), rs.getString(8),
+                        rs.getString(9), rs.getString(10), rs.getString(11));
             }
         }
     }
@@ -433,13 +487,14 @@ public final class NavGraphRepository {
                      "SELECT g.graph_id, g.world_uuid, g.region_id, g.palette, g.version, g.status, "
                              + "(SELECT COUNT(*) FROM npc_nav_nodes n WHERE n.graph_id = g.graph_id), "
                              + "(SELECT COUNT(*) FROM npc_nav_edges e WHERE e.graph_id = g.graph_id), "
-                             + "g.palette_hash FROM npc_nav_graphs g " + tail)) {
+                             + "g.palette_hash, g.source, g.origin_sha, g.origin_ref FROM npc_nav_graphs g " + tail)) {
             ps.setInt(1, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     out.add(new GraphInfo(Uuids.fromBytes(rs.getBytes(1)), Uuids.fromBytes(rs.getBytes(2)),
                             rs.getString(3), rs.getString(4), rs.getInt(5), rs.getString(6),
-                            rs.getInt(7), rs.getInt(8), rs.getString(9)));
+                            rs.getInt(7), rs.getInt(8), rs.getString(9), rs.getString(10), rs.getString(11),
+                            rs.getString(12)));
                 }
             }
         }
@@ -481,12 +536,13 @@ public final class NavGraphRepository {
             try {
                 byte[] world;
                 try (PreparedStatement ps = timedStatement(c,
-                        "SELECT status, world_uuid FROM npc_nav_graphs WHERE graph_id = ? FOR UPDATE")) {
+                        "SELECT status, world_uuid, source FROM npc_nav_graphs WHERE graph_id = ? FOR UPDATE")) {
                     ps.setBytes(1, Uuids.toBytes(toDraft));
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!rs.next() || !"DRAFT".equals(rs.getString(1))) {
                             throw new IllegalArgumentException("Only an existing DRAFT graph can receive tags.");
                         }
+                        refuseAuthoredTags(rs.getString(3));
                         world = rs.getBytes(2);
                     }
                 }
@@ -632,7 +688,118 @@ public final class NavGraphRepository {
         if (graph == null) {
             throw new IllegalArgumentException("No graph " + archived);
         }
-        return saveDraft(info.worldUuid(), info.regionId(), info.palette(), info.paletteHash(), graph);
+        return saveDraft(info.worldUuid(), info.regionId(), info.palette(), info.paletteHash(), graph,
+                info.source(), info.originSha(), info.originRef());
+    }
+
+    /** SHA-256 of a document's UTF-8 text, as 64 lowercase hex digits. */
+    public static String documentSha(String text) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    /** Keeps a waypoint or route document by its sha (a repeat is a no-op) and returns the sha. */
+    public String storeRouteDocument(String kind, String text) throws SQLException {
+        try (Connection c = database.getConnection()) {
+            return storeRouteDocument(c, kind, text);
+        }
+    }
+
+    private static String storeRouteDocument(Connection c, String kind, String text) throws SQLException {
+        String sha = documentSha(text);
+        try (PreparedStatement ps = timedStatement(c,
+                "INSERT IGNORE INTO npc_nav_route_docs (doc_sha256, kind, document) VALUES (?, ?, ?)")) {
+            ps.setString(1, sha);
+            ps.setString(2, kind);
+            ps.setString(3, text);
+            ps.executeUpdate();
+        }
+        return sha;
+    }
+
+    /** A stored document by sha, or null. The text is checked against its sha before it is returned. */
+    public String routeDocument(String sha) throws SQLException {
+        if (sha == null) return null;
+        try (Connection c = database.getConnection(); PreparedStatement ps = timedStatement(c,
+                "SELECT document FROM npc_nav_route_docs WHERE doc_sha256 = ?")) {
+            ps.setString(1, sha);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                String text = rs.getString(1);
+                return sha.equals(documentSha(text)) ? text : null;
+            }
+        }
+    }
+
+    /** The current waypoint set of a region, or null when it has none. */
+    public WaypointSetRow waypointSet(UUID worldUuid, String regionId) throws SQLException {
+        try (Connection c = database.getConnection(); PreparedStatement ps = timedStatement(c,
+                "SELECT s.revision, s.doc_sha256, d.document, s.updated_by FROM npc_nav_waypoint_sets s "
+                        + "JOIN npc_nav_route_docs d ON d.doc_sha256 = s.doc_sha256 WHERE s.world_uuid = ? AND s.region_id = ?")) {
+            ps.setBytes(1, Uuids.toBytes(worldUuid));
+            ps.setString(2, regionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? new WaypointSetRow(rs.getInt(1), rs.getString(2), rs.getString(3), rs.getString(4)) : null;
+            }
+        }
+    }
+
+    /**
+     * Edits a region's waypoint set under a row lock, so two edits at once both land, one after the other.
+     * {@code emptyDocument} seeds a region that has no set yet (revision 0) before the lock is taken. Each
+     * new document is kept for good; the set row only points at the latest. An exception from {@code edit}
+     * writes nothing but the seed.
+     */
+    public WaypointSetRow editWaypointSet(UUID worldUuid, String regionId, String by, String emptyDocument,
+                                          DocumentEdit edit) throws SQLException {
+        try (Connection c = database.getConnection()) {
+            String emptySha = storeRouteDocument(c, SOURCE_WAYPOINTS, emptyDocument);
+            try (PreparedStatement ps = timedStatement(c, "INSERT IGNORE INTO npc_nav_waypoint_sets "
+                    + "(world_uuid, region_id, revision, doc_sha256, updated_by) VALUES (?, ?, 0, ?, NULL)")) {
+                ps.setBytes(1, Uuids.toBytes(worldUuid));
+                ps.setString(2, regionId);
+                ps.setString(3, emptySha);
+                ps.executeUpdate();
+            }
+            c.setAutoCommit(false);
+            try {
+                int revision;
+                String current;
+                try (PreparedStatement ps = timedStatement(c, "SELECT s.revision, d.document FROM npc_nav_waypoint_sets s "
+                        + "JOIN npc_nav_route_docs d ON d.doc_sha256 = s.doc_sha256 "
+                        + "WHERE s.world_uuid = ? AND s.region_id = ? FOR UPDATE")) {
+                    ps.setBytes(1, Uuids.toBytes(worldUuid));
+                    ps.setString(2, regionId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) throw new SQLException("waypoint set row vanished");
+                        revision = rs.getInt(1);
+                        current = rs.getString(2);
+                    }
+                }
+                String next = edit.apply(revision == 0 ? null : current);
+                String sha = storeRouteDocument(c, SOURCE_WAYPOINTS, next);
+                String who = by == null ? null : by.substring(0, Math.min(32, by.length()));
+                try (PreparedStatement ps = timedStatement(c, "UPDATE npc_nav_waypoint_sets SET revision = ?, "
+                        + "doc_sha256 = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE world_uuid = ? AND region_id = ?")) {
+                    ps.setInt(1, revision + 1);
+                    ps.setString(2, sha);
+                    ps.setString(3, who);
+                    ps.setBytes(4, Uuids.toBytes(worldUuid));
+                    ps.setString(5, regionId);
+                    ps.executeUpdate();
+                }
+                c.commit();
+                return new WaypointSetRow(revision + 1, sha, next, who);
+            } catch (SQLException | RuntimeException failure) {
+                c.rollback();
+                throw failure;
+            } finally {
+                c.setAutoCommit(true);
+            }
+        }
     }
 
     private boolean graphExists(Connection c, UUID graphId) throws SQLException {

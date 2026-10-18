@@ -1,5 +1,6 @@
 package com.prosperitysmp.npc.economy;
 
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +14,18 @@ class AccountingProjectionTest {
         return new AccountingProjection.Snapshot(generation, AT.plusSeconds(generation), "UTC",
                 List.of(new AccountingProjection.Group(day, "xfer-to-public",
                         List.of(new AccountingProjection.SourceTotal("npc-rent", cents)))), List.of());
+    }
+
+    @Test void groupsAllowThirtyTwoSourcesAndRefuseThirtyThree() throws SQLException {
+        var sources = new ArrayList<AccountingProjection.SourceTotal>();
+        for (int i = 0; i < 32; i++) sources.add(new AccountingProjection.SourceTotal("source-" + i, i));
+        var group = AccountingProjection.checkedGroup("2026-09-08", "xfer-to-public", sources);
+        assertEquals(sources, group.sources());
+
+        sources.add(new AccountingProjection.SourceTotal("source-32", 32));
+        var failure = assertThrows(SQLException.class,
+                () -> AccountingProjection.checkedGroup("2026-09-08", "xfer-to-public", sources));
+        assertEquals("Accounting source bound", failure.getMessage());
     }
 
     @Test void identicalFreshDataRetainsAcknowledgement() {
@@ -70,6 +83,8 @@ class AccountingProjectionTest {
         assertThrows(IllegalArgumentException.class,() -> new AccountingProjection.CommerceReceipt(order,payer,reserve,EventSource.RENT.key(),100,AT));
         assertThrows(IllegalArgumentException.class,() -> new AccountingProjection.CommerceReceipt(order,payer,payer,"npc-worker-wages",100,AT));
         assertThrows(IllegalArgumentException.class,() -> new AccountingProjection.CommerceReceipt(order,payer,reserve,"npc-worker-wages",0,AT));
-        assertEquals(7,EventSource.values().length);
+        assertThrows(IllegalArgumentException.class,() -> new AccountingProjection.CommerceReceipt(order,payer,reserve,EventSource.BILLS.key(),100,AT));
+        assertEquals(List.of("RENT", "APPRECIATION", "UTILITY", "UPGRADE", "REPAIR", "INSURANCE", "EVICTION", "BILLS"),
+                java.util.Arrays.stream(EventSource.values()).map(Enum::name).toList());
     }
 }

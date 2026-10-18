@@ -48,6 +48,13 @@ class OwnerDeskDataTest {
         assertEquals(1, statement(Long.MAX_VALUE, Long.MAX_VALUE - 1, 0, 0).netCents());
     }
 
+    @Test void billSummaryIsLimitedToOneInvoicePerDayForSevenDays() {
+        assertEquals("Bills: 1 paid | 2 unpaid | 4 expired", new OwnerDeskData.Bills(1, 2, 4).line());
+        for (int[] counts : List.of(new int[]{0, 0, 0}, new int[]{-1, 1, 0}, new int[]{1, -1, 0},
+                new int[]{0, 1, -1}, new int[]{7, 1, 0}, new int[]{Integer.MAX_VALUE, 1, 0}))
+            assertThrows(IllegalArgumentException.class, () -> new OwnerDeskData.Bills(counts[0], counts[1], counts[2]));
+    }
+
     @Test
     void statementRejectsNegativeMoneyCountsAndWrongWindow() {
         assertThrows(IllegalArgumentException.class, () -> statement(-1, 0, 0, 0));

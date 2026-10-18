@@ -74,7 +74,7 @@ class CivicPlacementRepositoryIT {
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), schema, "root", "", 6, 10_000L));
         for (String resource : List.of("V1__initial_schema.sql", "V2__resident_identity.sql",
                 "V5__resident_route_tags.sql", "V15__tenancy_departures.sql",
-                "V18__civic_placements.sql", "V18__civic_placements.sql", "V39__nav_surface.sql")) {
+                "V18__civic_placements.sql", "V18__civic_placements.sql", "V39__nav_surface.sql", "V44__nav_graph_sources.sql")) {
             applyResource("/db/migration/" + resource);
         }
     }

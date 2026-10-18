@@ -1,5 +1,6 @@
 package com.prosperitysmp.npc.economy;
 
+import com.prosperitysmp.npc.economy.vault.VaultMoneySource;
 import com.prosperitysmp.npc.property.OwnerAway;
 import com.prosperitysmp.npc.property.Property;
 import net.milkbowl.vault.economy.Economy;
@@ -307,10 +308,11 @@ class OwnerAwayDebitRecheckTest {
             throw new AssertionError("unexpected economy call: " + m.getName());
         });
         int[] providerChecks = {0};
-        var observer = new VaultLegObservation(economy, () -> {
+        var pin = VaultMoneySource.pinFor(economy);
+        var observer = new LegObservation(pin, () -> {
             // The runtime's supplier: second check, after the pre-balance read and immediately before the withdraw.
             if (leg == Leg.DEBIT && ++providerChecks[0] == 2) UtilityPaymentRuntime.requireAwayDebitGate(leg, held);
-            return economy;
+            return pin;
         }, () -> true);
         out[0] = observer.execute(ACCOUNT_ID, ACCOUNT, ACCOUNT, 500, leg);
         return moves;
@@ -390,13 +392,15 @@ class OwnerAwayDebitRecheckTest {
         assertEquals(5, count(code, "requireAwayDebitGate("), "definition, two utility call sites, two in finalDebitChecks");
 
         // Utility / repair / purchase / auto-care: the admission predicate, reread before submit, in authorize and at the withdraw.
-        String core = section(code, "com.prosperitysmp.npc.property.AutoCareRepository.Claim recurring, Consumer<Boolean> finished) {",
+        String core = section(code, "com.prosperitysmp.npc.property.AutoCareRepository.Claim recurring, Consumer<Boolean> finished,",
                 "public boolean requestRentBatch(");
         int admission = core.indexOf("if (awayBlocks(plugin.ownerAway().holds(property), recurring != null, incidentId, target != null)) return false;");
         int supplier = core.indexOf("BooleanSupplier awayHeld = () -> awayHeldNow(plugin.getConfig().get(AWAY_DEBIT_RECHECK),\n"
                 + "                () -> awayBlocks(plugin.ownerAway().holds(property), recurring != null, incidentId, target != null));");
         int terminal = core.indexOf("if (prepared.terminal() != null) return CompletableFuture.completedFuture(prepared.terminal());");
-        int provider = core.indexOf("if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) requireAwayDebitGate(leg, awayHeld);");
+        int provider = core.indexOf("if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) {");
+        int providerAway = core.indexOf("requireAwayDebitGate(leg, awayHeld);", provider);
+        assertTrue(providerAway > provider && providerAway < core.indexOf("return registration;", provider));
         int binding = core.indexOf("throw new JournaledTransfer.BindingFailed(\"Utility transfer binding failed\");");
         int authorize = core.indexOf("requireAwayDebitGate(leg, awayHeld);", binding);
         int submit = core.indexOf("return transfer.submit(handle,");
@@ -425,12 +429,12 @@ class OwnerAwayDebitRecheckTest {
         // getBalance and validate (external callbacks that may re-enter), as the last read before the withdraw.
         int checks = rent.indexOf("if (leg == TransferProof.Leg.DEBIT && ++providerChecks[0] == 2) finalDebitChecks(leg, () -> {");
         int providerFloor = rent.indexOf("requireFloor(", checks);
-        int providerGates = rent.indexOf("}, debitGate, awayHeld);", checks);
+        int providerGates = rent.indexOf("}, payoutGate, awayHeld);", checks);
         assertTrue(checks > 0 && providerFloor > checks && providerGates > rent.indexOf("validate(", providerFloor));
         int rentAuthorize = rent.indexOf("public void authorize(TransferJournal.Receipt receipt, TransferProof.Leg leg) {");
         int authorizeChecks = rent.indexOf("finalDebitChecks(leg, () -> {", rentAuthorize);
         assertTrue(rentAuthorize > 0 && authorizeChecks > rent.indexOf("throw new JournaledTransfer.BindingFailed(\"Rent transfer binding failed\");", rentAuthorize)
-                && rent.indexOf("}, debitGate, awayHeld);", authorizeChecks) > rent.indexOf("requireFloor(", authorizeChecks));
+                && rent.indexOf("}, payoutGate, awayHeld);", authorizeChecks) > rent.indexOf("requireFloor(", authorizeChecks));
         String helper = code.substring(code.indexOf("static void finalDebitChecks("), code.indexOf("private boolean payoutAwayHeld("));
         assertTrue(helper.lastIndexOf("requireAwayDebitGate(leg, awayHeld);") > helper.indexOf("debitOnlyChecks.run();"));
 

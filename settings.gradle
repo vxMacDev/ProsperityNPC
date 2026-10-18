@@ -1,1 +1,13 @@
 rootProject.name = 'ProsperityNPC'
+// The adapter API ships inside the plugin jar. The example adapter is DEV only and never released.
+include 'api'
+include 'adapter-example'
+project(':adapter-example').projectDir = file('adapters/example')
+
+// Vendor adapters build only with -Padapters. Only GriefPrevention is in this tree; no vendor jar is released.
+if (providers.gradleProperty('adapters').isPresent()) {
+    ['griefprevention'].each { name ->
+        include "adapter-${name}"
+        project(":adapter-${name}").projectDir = file("adapters/${name}")
+    }
+}

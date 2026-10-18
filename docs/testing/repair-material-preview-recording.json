@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "subject": "configured-material-preview-and-refusal-before-take",
+  "coreSha256": "7a0e2de222d88a1f00777bdd522f070bfd8df22835ffa899e1693aacf5729745",
+  "environment": {
+    "paper": "26.1.2-74",
+    "java": 25,
+    "database": "MariaDB11.4.5",
+    "databaseSchema": 56,
+    "host": "Windows local lab",
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "materialRepairsEnabled": true,
+    "autoCareEnabled": false,
+    "valueRatioBps": 15000,
+    "maxUnits": 256,
+    "maxReturnStacks": 4
+  },
+  "method": "One fresh synthetic owner/home, in-memory transport, public enrollment and typed material-repair command. IncidentRollRepository with active RepairPrices and a selected bounded test seed generated PESTS3500. No money was seeded. Real plain ItemStacks and a native player save were inspected. No successful collection, take or item service occurred.",
+  "checks": [
+    {"case": "new-pests3500", "cashCents": 3500, "configuredMarkerCents": 3500, "alsoEqualsPlumbingDefault": true, "conditionBefore": 80, "conditionAfter": 75},
+    {"case": "low-price-preview", "unitCents": 1, "reason": "TOO_MANY_UNITS", "publicCommandRefusedWithoutCollection": true, "inventoryWalletsAndAll89LogicalTableSnapshotsUnchanged": true},
+    {"case": "scaled-preview", "unitCents": 100, "paperQuantity": 35, "bakedPotatoQuantity": 18, "valueCents": 5300, "requiredValueCents": 5250},
+    {"case": "valid-command-stopped-before-intent", "survival": true, "itemsStillPresent": [35, 18], "collectionRows": 0, "takeOccurred": false, "all89CountsAndLogicalRowsUnchanged": true},
+    {"case": "stopped-native-save-inspection", "nbtReaderAvailable": true, "fileDataVersion": 4790, "prototypeDataVersions": [4790], "savedStorageAndEnderUnits": [35, 18], "wholeFileUnits": [35, 18], "beforeTakeMarkerMatched": true, "playerUuidMatched": true, "playerFileAndInspectedParentFileKeysAvailable": false, "boundBaselineAccepted": false}
+  ],
+  "finding": {
+    "runtimeReportedReady": true,
+    "actualStorageCouldProveTake": false,
+    "cause": "The Java filesystem provider returned no stable file identities on the inspected save path. The existing durability proof correctly refused its baseline. Readiness did not detect this capability gap.",
+    "status": "Reproduced; readiness correction and identity-capable native success acceptance remain pending. No weaker inventory proof was introduced."
+  },
+  "cleanup": {
+    "fixtureTablesProvedArchivedAndRemoved": 5,
+    "schema56BaselineCountsAndLogicalRowsRestored": 89,
+    "nativeWalletsNeverSeededOrChanged": true,
+    "collectionTakeOrItemServiceOccurred": false,
+    "originalRefusedPlayerSavePreserved": true,
+    "syntheticReconnectLimitation": "The synthetic reconnect did not load its saved inventory; it started empty. The original stopped35/18 save remains private. Empty cleanup inventory is not successful hand-in or real-client reconnect proof.",
+    "nativeClaimsAndSyntheticPlayerRemoved": true,
+    "newPluginFilesArchivedAndRemoved": 10,
+    "syntheticWorldProfileFilesArchivedAndRemoved": 7,
+    "originalControlledFilesRestoredExactly": 108,
+    "servicesStoppedAndLoopbackPortsClosed": true,
+    "retained": "Forward database schema and sequences, GP next-claim counter and ordinary world changes. No bitwise database/world restoration claim."
+  },
+  "notVerified": [
+    "Successful material take, durable collection proof, applied item service and exact delivered returns",
+    "Frozen material collection and return terms after a price change/restart",
+    "Corrected readiness on unsupported storage",
+    "Connected Java/Bedrock clients, populated daily cycle or realistic player load",
+    "Public vendor pin/package acceptance and extended operator/recovery lifecycle"
+  ]
+}

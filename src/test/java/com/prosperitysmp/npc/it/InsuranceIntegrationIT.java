@@ -8,6 +8,7 @@ import com.prosperitysmp.npc.db.MigrationRunner;
 import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.economy.EconomyEventRepository;
 import com.prosperitysmp.npc.economy.PurchaseRepository;
+import com.prosperitysmp.npc.economy.PurchasePrices;
 import com.prosperitysmp.npc.economy.PurchaseRequest;
 import com.prosperitysmp.npc.economy.TransferJournal;
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
@@ -34,6 +35,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real local SQL composition; no Vault calls or live client evidence. */
@@ -58,7 +61,8 @@ class InsuranceIntegrationIT {
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), schema, "root", "", 4, 10000));
         for (String file : List.of("V1__initial_schema.sql", "V2__resident_identity.sql", "V3__purchase_receipts.sql",
                 "V4__transfer_journal.sql", "V6__incident_repairs.sql", "V7__incident_rolls.sql",
-                "V8__eviction_tenancies.sql", "V17__transfer_resolutions.sql", "V23__property_insurance.sql")) {
+                "V8__eviction_tenancies.sql", "V17__transfer_resolutions.sql", "V23__property_insurance.sql", "V45__property_backend.sql",
+                "V47__purchase_prices.sql", "V50__eviction_price.sql", "V51__insurance_prices.sql")) {
             try (var in = InsuranceIntegrationIT.class.getResourceAsStream("/db/migration/" + file)) {
                 assertNotNull(in, file);
                 for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8)))
@@ -201,6 +205,107 @@ class InsuranceIntegrationIT {
         assertEquals(0, count("npc_economy_events")); assertEquals(0, count("npc_property_insurance"));
     }
 
+    private static PurchasePrices prices(long capacityTwoPrice) {
+        return new PurchasePrices(1000, PurchasePrices.DEFAULT.upgrades(), 1000,
+                List.of(1400L, capacityTwoPrice, 1800L, 2000L));
+    }
+    private static PurchaseRepository purchasesAt(long cents, Clock clock) {
+        return new PurchaseRepository(database, RESERVE, clock, ZoneOffset.UTC, 0, () -> false, prices(cents));
+    }
+
+    @Test void configuredPremiumSurvivesChangedSettingsAndStillPreventsOneFutureIncident() throws Exception {
+        purchases = purchasesAt(1777, Clock.systemUTC());
+        var quote = quote();
+        assertEquals(1777, quote.cents()); assertEquals(2, quote.insurance().capacity());
+        assertThrows(PurchaseRepository.MaximumExceededException.class, () -> purchases.enqueue(quote, 1776, 5000));
+        assertThrows(PurchaseRepository.InsufficientFundsException.class, () -> purchases.enqueue(quote, 1777, 1776));
+        assertEquals(0, count("npc_economy_events"));
+        var waiting = paid(quote);
+        var changed = purchasesAt(2399, Clock.systemUTC());
+        assertEquals(waiting, changed.findByRequest(quote.requestId()).orElseThrow());
+        assertEquals(waiting, changed.enqueue(quote));
+        var applied = changed.complete(waiting.eventId()).orElseThrow();
+        assertEquals(PurchaseRepository.State.APPLIED, applied.state());
+        assertEquals(quote, applied.request());
+        var term = term(waiting.eventId());
+        assertEquals(1777, term.priceCents()); assertEquals(2, term.capacity());
+        assertEquals(DAY.plusDays(1), term.startDay()); assertEquals(DAY.plusDays(8), term.endDayExclusive());
+        assertEquals(applied, changed.complete(waiting.eventId()).orElseThrow());
+        assertThrows(PurchaseRepository.TargetUnavailableException.class,
+                () -> changed.quoteInsurance(UUID.randomUUID(), property.propertyId(), OWNER, 0, DAY));
+        var future = purchasesAt(2399, Clock.fixed(AT.plusSeconds(7 * 86400L), ZoneOffset.UTC));
+        assertEquals(2399, future.quoteInsurance(UUID.randomUUID(), property.propertyId(), OWNER, 0, DAY.plusDays(7)).cents());
+        var desk = new OwnerDeskRepository(database, prices(2399)).read(WORLD, property.regionId(), OWNER, DAY).orElseThrow();
+        assertEquals(2399, desk.insurance().premiumCents());
+        assertEquals(1777, term(waiting.eventId()).priceCents());
+        var first = rolls(1).roll(property.propertyId(), OWNER, 0, DAY.plusDays(1));
+        assertEquals(IncidentRollRepository.Outcome.PREVENTED, first.outcome());
+        assertFalse(rolls(1).roll(property.propertyId(), OWNER, 0, DAY.plusDays(1)).newlyRecorded());
+        assertEquals(IncidentRollRepository.Outcome.INCIDENT, rolls(2).roll(property.propertyId(), OWNER, 0, DAY.plusDays(2)).outcome());
+        assertEquals(1, count("npc_property_insurance")); assertEquals(1, count("npc_insurance_preventions"));
+        assertEquals(1, count("npc_transfer_attempts"));
+        assertEquals(1777, scalar("SELECT successful_cash_sinks_cents FROM npc_property_funding"));
+    }
+
+    @Test void configuredCoverageCannotChangeItsPaidPriceOrDiscardTheCustomSnapshot() throws Exception {
+        purchases = purchasesAt(1777, Clock.systemUTC());
+        var waiting = paid(); purchases.complete(waiting.eventId()).orElseThrow();
+        var term = term(waiting.eventId());
+        assertThrows(SQLException.class, () -> execute("UPDATE npc_property_insurance SET price_cents=1,configured_price_cents=1 WHERE event_id=?", waiting.eventId()));
+        assertThrows(SQLException.class, () -> execute("UPDATE npc_property_insurance SET price_cents=1600,configured_price_cents=NULL WHERE event_id=?", waiting.eventId()));
+        assertThrows(SQLException.class, () -> execute("UPDATE npc_purchase_intents SET quoted_amount_cents=1900,configured_price_cents=1900 WHERE event_id=?", waiting.eventId()));
+        assertEquals(term, term(waiting.eventId()));
+        assertEquals(1777, purchases.findByRequest(waiting.request().requestId()).orElseThrow().quotedCents());
+        assertEquals(1, count("npc_transfer_attempts"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9})
+    void insurancePriceMigrationRecoversEveryCutAndPreservesLegacyTerms(int cut) throws Exception {
+        var waiting = paid(); purchases.complete(waiting.eventId()).orElseThrow();
+        var legacyTerm = term(waiting.eventId());
+        var legacyReceipt = purchases.findByRequest(waiting.request().requestId()).orElseThrow();
+        String path = "V51__insurance_prices.sql";
+        var statements = statements(path); assertEquals(9, statements.size());
+        try {
+            execute("ALTER TABLE npc_property_insurance DROP FOREIGN KEY IF EXISTS fk_insurance_quoted_price_v51");
+            execute("DROP INDEX IF EXISTS uq_purchase_event_quote_v51 ON npc_purchase_intents");
+            execute("ALTER TABLE npc_property_insurance DROP CONSTRAINT IF EXISTS ck_insurance_price_v51");
+            execute("ALTER TABLE npc_property_insurance DROP COLUMN IF EXISTS configured_price_cents");
+            execute("ALTER TABLE npc_purchase_intents DROP CONSTRAINT IF EXISTS ck_purchase_configured_price_v51");
+            execute("ALTER TABLE npc_purchase_intents DROP CONSTRAINT IF EXISTS ck_purchase_shape_v51");
+            for (String sql : statements("V50__eviction_price.sql")) execute(sql);
+            execute(statements("V23__property_insurance.sql").stream()
+                    .filter(sql -> sql.contains("ADD CONSTRAINT IF NOT EXISTS ck_purchase_shape_v23")).findFirst().orElseThrow());
+            execute("ALTER TABLE npc_property_insurance ADD CONSTRAINT IF NOT EXISTS ck_insurance_price CHECK (capacity BETWEEN 1 AND 4 AND price_cents=1200+200*capacity)");
+            assertEquals(legacyTerm, term(waiting.eventId()));
+            for (int i = 0; i < cut; i++) execute(statements.get(i));
+            assertEquals(legacyTerm, term(waiting.eventId()));
+            assertEquals(legacyReceipt, purchases.findByRequest(waiting.request().requestId()).orElseThrow());
+        } finally {
+            for (String sql : statements) execute(sql);
+        }
+        for (String sql : statements) execute(sql);
+        assertEquals(legacyTerm, term(waiting.eventId()));
+        assertEquals(legacyReceipt, purchases.findByRequest(waiting.request().requestId()).orElseThrow());
+        var id = UUID.randomUUID();
+        property = new Property(id, WORLD, "insurance-next-" + cut, "fixture", "room", 2, 1000, 1000, OWNER, 0, 80, true);
+        new PropertyRepository(database).insertEnrollment(property, 5000);
+        purchases = purchasesAt(1777, Clock.systemUTC());
+        var next = paid();
+        assertEquals(PurchaseRepository.State.APPLIED, purchases.complete(next.eventId()).orElseThrow().state());
+        assertEquals(1777, term(next.eventId()).priceCents());
+        assertEquals(legacyTerm, term(waiting.eventId()));
+        assertEquals(2, count("npc_property_insurance"));
+    }
+
+    private static List<String> statements(String file) throws Exception {
+        try (var in = InsuranceIntegrationIT.class.getResourceAsStream("/db/migration/" + file)) {
+            assertNotNull(in, file);
+            return MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+    }
+
     private PurchaseRequest quote() throws SQLException {
         return purchases.quoteInsurance(UUID.randomUUID(), property.propertyId(), OWNER, 0, DAY);
     }
@@ -211,11 +316,12 @@ class InsuranceIntegrationIT {
         var waiting = purchases.enqueue(quote); var journal = new TransferJournal(database, RESERVE);
         var handle = new TransferJournal.Handle(UUID.randomUUID(), waiting.eventId(), UUID.randomUUID(), "a".repeat(64));
         assertTrue(journal.beginDebit(handle).newlyStarted());
+        double amount = waiting.quotedCents() / 100.0;
         assertEquals(TransferJournal.State.CREDIT_READY, journal.recordDebit(handle,
-                new Observation(true, true, 16.0, 1000.0, 984.0, false)).state());
+                new Observation(true, true, amount, 1000.0, 1000.0 - amount, false)).state());
         assertTrue(journal.beginCredit(handle).newlyStarted());
         assertEquals(TransferJournal.State.PAID, journal.recordCredit(handle,
-                new Observation(true, true, 16.0, 2000.0, 2016.0, false)).state());
+                new Observation(true, true, amount, 2000.0, 2000.0 + amount, false)).state());
         return waiting;
     }
     private static PurchaseRepository purchases(Instant at) {

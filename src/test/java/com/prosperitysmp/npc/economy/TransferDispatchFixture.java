@@ -1,5 +1,7 @@
 package com.prosperitysmp.npc.economy;
 
+import com.prosperitysmp.npc.db.Database;
+import com.prosperitysmp.npc.economy.vault.VaultMoneySource;
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.economy.EconomyResponse;
 import org.bukkit.OfflinePlayer;
@@ -14,6 +16,18 @@ import java.util.function.Predicate;
 /** Package bridge for the existing real-MariaDB fixture; not shipped in the plugin. */
 public final class TransferDispatchFixture {
     private TransferDispatchFixture() { }
+
+    public static String recoveryDomain(Database database, long eventId) throws Exception {
+        return RefundRecoveryTool.domain(database, eventId);
+    }
+
+    public static void checkBillRecovery(Database database, UUID reserve, long eventId, UUID payer) throws Exception {
+        RefundRecoveryTool.checkBillReceipt(database, reserve, eventId, payer);
+    }
+
+    public static String completeBillRecovery(Database database, UUID reserve, long eventId) throws Exception {
+        return RefundRecoveryTool.completeBillReceipt(database, reserve, eventId);
+    }
     public static CompletionStage<TransferJournal.Receipt> dispatch(TransferJournal journal,
             TransferJournal.Handle handle, List<String> calls) {
         return dispatch(journal, handle, calls, 100.0);
@@ -63,7 +77,8 @@ public final class TransferDispatchFixture {
                         default -> throw new AssertionError("unexpected economy call: " + m.getName());
                     });
             this.dispatcher = new JournaledTransfer(journal, (receipt, leg) -> {
-                var observer = new VaultLegObservation(economy, () -> economy, () -> true);
+                var pin = VaultMoneySource.pinFor(economy);
+                var observer = new LegObservation(pin, () -> pin, () -> true);
                 UUID account = leg == TransferProof.Leg.DEBIT ? receipt.payer() : receipt.payee();
                 UUID other = leg == TransferProof.Leg.DEBIT ? receipt.payee() : receipt.payer();
                 return observer.execute(account, player(account), player(other), receipt.cents(), leg);

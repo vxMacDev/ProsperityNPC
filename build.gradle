@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.prosperitysmp'
-version = '0.2.0-dev.63'
+version = '0.2.0-dev.67'
 
 // -PnpcBuildDir=<path> moves build output, and with it the integration-test temp folder, to another drive when this
 // one is short of space. Use a fast disk: the MariaDB integration tests time out on spinning drives.
@@ -17,7 +17,22 @@ repositories {
     maven { url = 'https://jitpack.io' }
 }
 
+// The adapter API and the example adapter build with the same repositories, and their output follows -PnpcBuildDir.
+subprojects {
+    repositories {
+        mavenCentral()
+        maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    }
+    if (rootProject.hasProperty('npcBuildDir')) {
+        layout.buildDirectory.set(file("${rootProject.property('npcBuildDir')}/sub/${project.name}"))
+    }
+}
+
 dependencies {
+    // The adapter API. It ships inside the plugin jar (see the jar task), so adapters share one copy of each type.
+    implementation project(':api')
+    testImplementation testFixtures(project(':api'))
+
     // Paper API (26.1.2). compileOnly: provided by the server.
     compileOnly 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
 
@@ -129,6 +144,8 @@ test {
     testLogging {
         events 'passed', 'skipped', 'failed'
     }
+    // Deliberately broken contract subjects run only inside the contract meta-test.
+    useJUnitPlatform { excludeTags 'meta-subject' }
 }
 
 // Command wiring tests reference Bukkit interfaces, using the same resolved API as main compilation.
@@ -155,7 +172,60 @@ processResources {
 tasks.named('jar') {
     archiveBaseName = 'ProsperityNPC'
     archiveClassifier = ''
+    // The adapter API is part of the plugin; adapters compile against it and never bundle it.
+    from project(':api').sourceSets.main.output
+    from('LICENSE') { into 'META-INF' }
 }
+
+// Packages the plugin jar must never carry: Vault (optional and provided by the server), any adapter (adapters are
+// separate plugins), and every vendor plugin or library the server or the vendor plugins provide.
+def forbiddenPluginPackages = ['net/milkbowl/', 'com/prosperitysmp/npc/adapter/', 'me/angeschossen/',
+        'com/incredibleplugins/', 'me/ryanhamshire/', 'com/plotsquared/', 'com/intellectualsites/', 'com/bekvon/',
+        'net/Zrips/', 'com/sk89q/', 'net/alex9849/', 'net/citizensnpcs/', 'org/geysermc/', 'org/bukkit/',
+        'io/papermc/', 'org/mariadb/', 'com/zaxxer/', 'com/google/', 'net/kyori/']
+
+// What is wrong with a plugin jar; empty when it passes the gate.
+def pluginJarProblems = { File jarFile ->
+    def problems = []
+    def names = new java.util.zip.ZipFile(jarFile).withCloseable { zip -> zip.entries().collect { it.name } }
+    if (!names.contains('com/prosperitysmp/npc/api/MoneySource.class')) problems << 'does not carry the adapter API'
+    if (!names.contains('META-INF/LICENSE')) problems << 'no META-INF/LICENSE'
+    forbiddenPluginPackages.each { prefix ->
+        def bundled = names.find { it.startsWith(prefix) }
+        if (bundled != null) problems << "bundles ${prefix}: ${bundled}"
+    }
+    return problems
+}
+
+// The gate must be able to fail: a deliberately bad jar is built and must be refused.
+tasks.register('testPluginJarGate') {
+    def bad = layout.buildDirectory.file('tmp/plugin-gate/bad-plugin.jar')
+    outputs.file(bad)
+    doLast {
+        def file = bad.get().asFile
+        file.parentFile.mkdirs()
+        new java.util.zip.ZipOutputStream(new FileOutputStream(file)).withCloseable { zip ->
+            ['plugin.yml', 'com/prosperitysmp/npc/adapter/example/NullBackend.class',
+             'me/ryanhamshire/GriefPrevention/GriefPrevention.class', 'net/milkbowl/vault/economy/Economy.class'].each {
+                zip.putNextEntry(new java.util.zip.ZipEntry(it))
+                zip.closeEntry()
+            }
+        }
+        def problems = pluginJarProblems(file)
+        if (problems.size() != 5) throw new GradleException("The plugin jar gate missed a bad jar: ${problems}")
+    }
+}
+
+// Jar gate: the plugin carries the adapter API and the licence text, and none of the forbidden packages.
+tasks.register('verifyPluginJar') {
+    dependsOn tasks.named('jar'), tasks.named('testPluginJarGate')
+    doLast {
+        def jarFile = tasks.named('jar').get().archiveFile.get().asFile
+        def problems = pluginJarProblems(jarFile)
+        if (!problems.isEmpty()) throw new GradleException("${jarFile.name}: ${problems.join('; ')}")
+    }
+}
+tasks.named('build') { dependsOn tasks.named('verifyPluginJar') }
 
 // Offline operator tool for Chronicle receipts; not part of the installed plugin.
 sourceSets {
@@ -187,6 +257,59 @@ sourceSets {
     }
 }
 sourceSets.test.compileClasspath += sourceSets.skinTools.output
+
+sourceSets {
+    seamFaults {
+        java.srcDir 'tools/faults/java'
+        compileClasspath = sourceSets.test.compileClasspath + sourceSets.test.runtimeClasspath + configurations.compileClasspath
+        runtimeClasspath += compileClasspath
+    }
+}
+
+tasks.named('compileSeamFaultsJava') { dependsOn tasks.named('testClasses') }
+
+sourceSets {
+    nativeFaultProbe {
+        java.srcDir 'tools/faults/native/java'
+        resources.srcDir 'tools/faults/native/resources'
+        compileClasspath = sourceSets.main.output + configurations.compileClasspath
+    }
+}
+
+tasks.register('nativeFaultProbeJar', Jar) {
+    group = 'verification'
+    description = 'Builds the separate disposable-server accounting probe.'
+    dependsOn tasks.named('nativeFaultProbeClasses')
+    from sourceSets.nativeFaultProbe.output
+    archiveBaseName = 'ProsperityNPC-FaultProbe'
+    archiveVersion = '0.1'
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+tasks.register('seamFaultChecks', JavaExec) {
+    group = 'verification'
+    description = 'Runs the component source faults documented in tools/faults/README.md.'
+    dependsOn tasks.named('seamFaultsClasses')
+    classpath = sourceSets.seamFaults.runtimeClasspath
+    mainClass = 'com.prosperitysmp.npc.checks.SeamFaultChecks'
+    workingDir = projectDir
+    setArgs([projectDir.absolutePath, layout.buildDirectory.dir('reports/seam-faults').get().asFile.absolutePath,
+             sourceSets.main.output.classesDirs.singleFile.absolutePath,
+             project.findProperty('seamFaults')?.toString() ?: 'all'])
+}
+
+tasks.register('billFaultChecks', JavaExec) {
+    group = 'verification'
+    description = 'Runs the unit and SQL billing source faults in tools/faults/bills.json.'
+    dependsOn tasks.named('seamFaultsClasses')
+    classpath = sourceSets.seamFaults.runtimeClasspath
+    mainClass = 'com.prosperitysmp.npc.checks.SeamFaultChecks'
+    workingDir = projectDir
+    setArgs([projectDir.absolutePath, layout.buildDirectory.dir('reports/bill-faults').get().asFile.absolutePath,
+             sourceSets.main.output.classesDirs.singleFile.absolutePath,
+             project.findProperty('billFaults')?.toString() ?: 'all', 'bills.json'])
+}
 tasks.named('compileTestJava') { dependsOn tasks.named('skinToolsClasses') }
 tasks.named('test') {
     dependsOn tasks.named('skinToolsClasses')

@@ -13,9 +13,12 @@ Common requirements, used below:
   restart after changing it), a published walking route, and a housed resident or a placed one
   with `town.enabled`.
 - **Money:** the `system` and `economy` switches, `economy.payments-enabled`, `centralbank.uuid`,
-  Vault, the Skript accounting bridge acknowledged, and the patched ARM with
-  `integration.arm-coordination: true`. This is the gate for rent, bills, repairs and other
-  property payments.
+  Vault (or the money source named by `money.source`), the Skript accounting bridge acknowledged
+  (or `accounting.sink: internal`), and a guarded home backend. With `property.backend: arm`, the
+  default, that is the patched ARM with `integration.arm-coordination: true`. Another backend needs
+  its guard installed and the startup ownership check finished; if it cannot block owner changes,
+  rent and appreciation wait unless `property.when-unguarded: reread-before-payout` is set. This is
+  the gate for rent, bills, repairs and other property payments.
 - **Town:** `town.enabled` plus the named sub-flag.
 
 ## Residents
@@ -115,7 +118,7 @@ Common requirements, used below:
 - **Directions.** A private boss-bar compass, in a straight line, to a fixed stop. For an errand
   it points to the recipient's market stop. It stops within 5 blocks or after 5 minutes. On:
   `town.enabled` plus the `system` and `rendering` switches.
-- **Route authoring (staff).** `/npcnav scanhere|scanbox|taghere|copytags|corridor|validate|audit|publish|restore|revalidate|palette|info|list`.
+- **Route authoring (staff).** `/npcnav scanhere|scanbox|taghere|copytags|corridor|validate|audit|publish|restore|revalidate|palette|info|list|wp|import|export`.
   Always on for staff with `prosperitynpc.admin`. `nav.scan-below` and `nav.scan-above` set how
   far `scanhere` looks.
 - **Sidewalk routing.** Residents walk only on sidewalk blocks (plus optional "access" blocks for lot
@@ -141,6 +144,29 @@ Common requirements, used below:
   `nav.audit.gate-publish` (on) makes `publish` refuse unclassified graphs, a changed palette and a failed
   audit, and a graph too big for residents to plan across. `load` loads chunks without generating them,
   DEV only. Needs migration V39.
+- **Staff waypoints.** Instead of scanning, staff can place named points and link them:
+  `/npcnav wp add <region> <name> [sidewalk|access] [link]` at their feet (or `x y z world` from
+  console), then `wp link <region> <a> <b> [walk|cross|crosswalk]`. A link runs straight along x or z;
+  a bend needs a point. The only way onto a road is a `cross` or `crosswalk` link between two sidewalk
+  points, level and at most `nav.street.max-crossing-length` road blocks long. `wp tag` sets stops,
+  `wp list` and `wp check` show the set and its rule breaks, and `wp build <region> [palette] [load]`
+  fills in every block between the points, checks them against the world through a palette and saves an
+  ordinary DRAFT, which is audited and published like a scan. A palette is required by default
+  (`nav.waypoints.require-palette`); a server without one can turn that off and gets a warning on every
+  build. A waypoint graph is always gated at publish, whatever `nav.audit.gate-publish` says: changing the
+  palette, the street numbers or the points after a build makes publish refuse until it is rebuilt. Every
+  built set is kept, so an archived waypoint graph can be restored and published with `asbuilt`. Tags on
+  a waypoint graph come from its points (`taghere` and `copytags` refuse it). A waypoint crossing records
+  its own length as the road width; `audit <draft> live` measures the real width. `wp export` and
+  `wp import <region> <file>` move a set through `plugins/ProsperityNPC/nav-import/`. Limits:
+  `nav.waypoints.max-points`, `max-links`, `max-nodes`. Needs migration V44.
+- **Route files.** `/npcnav import <region> <world> <file> [palette] [load]` reads a node and edge file
+  (`format: prosperity-nav-graph/1`, YAML or JSON) from `nav-import/` into a DRAFT, through the same
+  checks as a waypoint build; `/npcnav export <graph>` writes any classified graph in that format. Road and
+  curb step costs are always worked out by the plugin, and a file may only make an ordinary step slower.
+  The reader refuses unknown keys, YAML aliases and anchors, repeated keys, files over
+  `nav.import.max-bytes`, and any name that is not a bare file in the folder. File contents are never
+  logged. An import never publishes. A file graph may have at most 1024 nodes.
 
 ## Training and resident shops
 
@@ -300,6 +326,14 @@ Common requirements, used below:
   when a payment is held for staff review. An item repair's receipt id is shown when it is done.
 - **Eviction.** `/tenants evict <id> <max>` or the desk, $10, named confirmation. With
   `housing.evicted-slot-lock-days`, the room stays closed for that many days.
+- **Owner prices.** The amounts above are the shipped defaults. `owner-prices` (maintenance,
+  upgrades, eviction, insurance), `utility-prices` (the daily utility tariff) and `repair-prices`
+  (pests, plumbing, break-ins) change them, in quoted integer cents. Restart to change them;
+  `/npcadmin reload` reports a pending or invalid change and keeps the prices in use. A missing block
+  keeps the defaults. An invalid block at startup disables the plugin instead of charging a fallback.
+  Accepted purchases, issued bills and open problems keep the price they were made at. Once a
+  custom-priced charge or purchase is saved, an older jar cannot read it, so roll forward or restore a
+  backup of both the database and the jar.
 
 ## Tenant market
 
@@ -382,6 +416,41 @@ Common requirements, used below:
   unclassified and route exactly as before until rescanned; rolling back the jar needs no schema step.
 - **dev.63.** Legacy install-record proof reads its server and backup folder from the root-owned
   `/etc/prosperitynpc/legacy-provenance.properties`. Without it, held legacy rows stay held.
+- **dev.64.** Money, homes and accounting now go through three named pieces, chosen in the config
+  (`money.source`, `property.backend`, `accounting.sink`; all absent by default, which keeps Vault, ARM
+  and the Skript bridge exactly as before). Vault is optional: without it the plugin loads and payments
+  stay off. `accounting.sink: internal` lets a server without Skript run payments; the plugin then
+  acknowledges its own totals and publishes none to Skript. Another plugin can register a money source
+  or a property backend by id (see `docs/ADAPTERS.md`). In dev.64 a third-party property backend could be
+  listed and read, but payments with it stayed off; dev.67 adds its guard. `/npcadmin diagnose` lists the pieces
+  in use, the ones found but not used, and why any was refused. One new startup line names the pieces.
+  No schema change; rolling back the jar needs no schema step and the old jar ignores the new keys.
+- **dev.65.** Bills and taxes. A server writes its own daily bills in a `bills:` block (off by default,
+  `bills.enabled`): each policy has a formula, variables, a version and limits, and can read a meter that
+  another plugin registers (adapter API 1.1). Once a day, after rent, each home gets at most one invoice,
+  fixed when issued. The owner pays it from the owner desk or with
+  `/property bills pay <bill> <maximum-dollars>`, and the money goes to the reserve. Automatic collection is
+  built but off (`bills.auto-collect-enabled`). An unpaid bill moves no money, adds no debt or late fee and
+  expires after `bills.payable-days`. It has no other effect unless `bills.on-unpaid: hold-rent` is set;
+  then a home earns no rent while its current owner has an unpaid bill from an earlier day, and
+  `/property bills` and the desk say so. Fixed ceilings that config can lower but never raise: $200 per
+  bill (each line and the whole bill), $1,000 per owner per day, $25,000 per server per day. Bills never fund rent. Staff use
+  `/npcadmin bills status` and `/npcadmin bills preview <property>`. Once a bill event is saved an older jar
+  cannot read the database, so rolling back means restoring a backup of both the database and the jar.
+- **dev.66.** Staff waypoints and route files (see Route authoring). Adds V44 (a `source` per graph,
+  the waypoint sets and every built document). Existing graphs read as scans and behave exactly as before.
+  Rolling back to an older jar needs no schema step, but delete waypoint and file drafts before tagging
+  anything with that jar: it cannot tell them from scans and would let `taghere` change them.
+- **dev.67.** Adapter API 1.2 and home backends. `property.backend: worldguard-listed` uses plain
+  WorldGuard regions with one owner each (not yet checked against a real WorldGuard server). A home backend
+  other than ARM gets a guard and a startup ownership check before any payout, and a backend that cannot
+  block owner changes holds rent and appreciation by default (`property.when-unguarded: hold-payouts`);
+  `reread-before-payout` is an opt-in that pays after a fresh owner read, with a small risk. Each home
+  remembers the backend that enrolled it and stays out of payments while another backend is configured.
+  The GriefPrevention adapter is in the source tree with model tests; no vendor adapter jar is released.
+  After `/npcadmin reload` changes `money.source` or `property.backend`, `/npcadmin diagnose` says a restart
+  is required. This release also brings configurable owner prices (see Owner prices, migrations V47 to
+  V56). Migrations V41 to V56 run on upgrade; back up the database first.
 - **Accounting bridge.** NPC money shows as its own sources; payments wait for its acknowledgement.
 
 ## Chronicle and publication

@@ -1,0 +1,151 @@
+{
+  "vendor": "GriefPrevention",
+  "version": "16.18.7",
+  "vendorSha256": "45e9907c61222e559ed2e099ffee0ede706a21243a31d7db549baf678708fdf0",
+  "paper": "26.1.2 build74",
+  "coreSha256": "bbc12f563c2428f06c9fdc1069537f9dd9a61f4276ae2d4cb9b9782311bf2f7f",
+  "adapterSha256": "666cd24f69fca293a3b7b7c10a446cee6876eb9de571979a1773a61d95e0241d",
+  "recorderSha256": "dbed71098be67444608e6b52326d9321d9a7cc26a64bf063ec772de5403a72d3",
+  "scope": "Actual vendor API calls with normal core bindings, no RealEstate. Cache-only/financial tests are not part of this recording. Applied/declined facts were asserted after DataStore.changeClaimOwner returned. Explicit ID reuse was supplied through createClaim, not a player command.",
+  "transfer": {
+    "cancelledTransferStops": true,
+    "monitorBeforeCommit": true,
+    "cancelledMonitorSkippedByAdapter": true
+  },
+  "passed": [
+    "parent and subdivision lookups inherit paying owner",
+    "admin claim present but never payable",
+    "actual GP transfer veto covers a held subdivision",
+    "actual unheld transfer changes parent and child principal",
+    "actual deletion invalidates child lease",
+    "explicit API id reuse creates a new live claim"
+  ],
+  "events": [
+    {
+      "stage": "create",
+      "priority": "CREATE_MONITOR",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb60",
+      "cancelled": false,
+      "inDataStore": false,
+      "children": []
+    },
+    {
+      "stage": "create",
+      "priority": "CREATE_MONITOR",
+      "main": true,
+      "id": 1,
+      "owner": "00000000-0000-0000-0000-00000009eb60",
+      "cancelled": false,
+      "inDataStore": false,
+      "children": []
+    },
+    {
+      "stage": "create",
+      "priority": "CREATE_MONITOR",
+      "main": true,
+      "id": 2,
+      "cancelled": false,
+      "inDataStore": false,
+      "children": []
+    },
+    {
+      "stage": "transfer-held-child",
+      "priority": "LOWEST",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb60",
+      "target": "00000000-0000-0000-0000-00000009eb61",
+      "cancelled": false,
+      "inDataStore": true,
+      "children": [
+        1
+      ]
+    },
+    {
+      "stage": "transfer-held-child",
+      "priority": "MONITOR",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb60",
+      "target": "00000000-0000-0000-0000-00000009eb61",
+      "cancelled": true,
+      "inDataStore": true,
+      "children": [
+        1
+      ]
+    },
+    {
+      "stage": "transfer-unheld",
+      "priority": "LOWEST",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb60",
+      "target": "00000000-0000-0000-0000-00000009eb61",
+      "cancelled": false,
+      "inDataStore": true,
+      "children": [
+        1
+      ]
+    },
+    {
+      "stage": "transfer-unheld",
+      "priority": "MONITOR",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb60",
+      "target": "00000000-0000-0000-0000-00000009eb61",
+      "cancelled": false,
+      "inDataStore": true,
+      "children": [
+        1
+      ]
+    },
+    {
+      "stage": "delete-held-child",
+      "priority": "DELETE_MONITOR",
+      "main": true,
+      "id": 1,
+      "owner": "00000000-0000-0000-0000-00000009eb61",
+      "inDataStore": false,
+      "children": []
+    },
+    {
+      "stage": "delete-held-child",
+      "priority": "DELETE_MONITOR",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb61",
+      "inDataStore": false,
+      "children": []
+    },
+    {
+      "stage": "reuse-id",
+      "priority": "CREATE_MONITOR",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb61",
+      "cancelled": false,
+      "inDataStore": false,
+      "children": []
+    },
+    {
+      "stage": "cleanup",
+      "priority": "DELETE_MONITOR",
+      "main": true,
+      "id": 2,
+      "inDataStore": false,
+      "children": []
+    },
+    {
+      "stage": "cleanup",
+      "priority": "DELETE_MONITOR",
+      "main": true,
+      "id": 0,
+      "owner": "00000000-0000-0000-0000-00000009eb61",
+      "inDataStore": false,
+      "children": []
+    }
+  ]
+}

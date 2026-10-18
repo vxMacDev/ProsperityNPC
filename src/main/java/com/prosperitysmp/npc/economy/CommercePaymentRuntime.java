@@ -9,10 +9,9 @@ import com.prosperitysmp.npc.commerce.CommerceOrderRepository;
 import com.prosperitysmp.npc.commerce.CommercePriceBook;
 import com.prosperitysmp.npc.db.Database;
 import java.util.concurrent.RejectedExecutionException;
-import net.milkbowl.vault.economy.Economy;
+import com.prosperitysmp.npc.api.MoneySource;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.scheduler.BukkitTask;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -143,19 +142,19 @@ public final class CommercePaymentRuntime {
             reply.accept(new Result(busy ? Status.BUSY : Status.UNAVAILABLE, null));
             return false;
         }
-        var pinned = registration();
+        var pinned = plugin.moneySource().pin().orElse(null);
         final Path jar;
         try {
-            if (pinned == null || !pinned.getPlugin().isEnabled() || !pinned.getProvider().isEnabled()) {
+            if (pinned == null || !pinned.stillCurrent()) {
                 reply.accept(new Result(Status.UNAVAILABLE, null));
                 return false;
             }
-            long balance = TransferProof.availableCents(pinned.getProvider().getBalance(player)).orElseThrow();
+            long balance = TransferProof.availableCents(pinned.balanceDollars(player)).orElseThrow();
             if (balance < order.costCents()) {
                 reply.accept(new Result(Status.INSUFFICIENT_FUNDS, null));
                 return false;
             }
-            jar = Path.of(pinned.getProvider().getClass().getProtectionDomain().getCodeSource().getLocation().toURI());
+            jar = pinned.artifact();
         } catch (Exception unavailable) {
             reply.accept(new Result(Status.UNAVAILABLE, null));
             return false;
@@ -266,17 +265,17 @@ public final class CommercePaymentRuntime {
     }
 
     private TransferProof.Observation observe(Player player, CommerceOrder order, CommerceCatalogue.Entry entry,
-            int feeDiscountPct, BooleanSupplier authorized, RegisteredServiceProvider<Economy> pinned, FinancialFence.Lease lease,
+            int feeDiscountPct, BooleanSupplier authorized, MoneySource.Pin pinned, FinancialFence.Lease lease,
             TransferProof.Leg leg) {
-        var observation = new VaultLegObservation(pinned.getProvider(), () -> {
+        var observation = new LegObservation(pinned, () -> {
             // Completing a verified debit depends only on the provider: not on the player staying in the menu or
             // online, nor on a reload or kill switch since the debit.
-            UtilityPaymentRuntime.requireLegAuthority(leg, this::registration, pinned, () -> {
+            UtilityPaymentRuntime.requireLegAuthority(leg, pinned, () -> {
                 provider(pinned, lease);
                 if (!actor(player, order, entry, feeDiscountPct, authorized))
                     throw new IllegalStateException("Commerce debit authority changed");
             });
-            return pinned.getProvider();
+            return pinned;
         }, Bukkit::isPrimaryThread);
         UUID account = leg == TransferProof.Leg.DEBIT ? order.playerId() : reserve;
         UUID counterparty = leg == TransferProof.Leg.DEBIT ? reserve : order.playerId();
@@ -284,11 +283,11 @@ public final class CommercePaymentRuntime {
                 order.costCents(), leg);
     }
 
-    private void provider(RegisteredServiceProvider<Economy> pinned, FinancialFence.Lease lease) {
+    private void provider(MoneySource.Pin pinned, FinancialFence.Lease lease) {
         main();
         lease.validate();
-        if (closed || !plugin.isEnabled() || registration() != pinned || !pinned.getPlugin().isEnabled()
-                || !pinned.getProvider().isEnabled() || !reserve.toString().equals(plugin.getConfig().getString("centralbank.uuid")))
+        if (closed || !plugin.isEnabled() || !pinned.stillCurrent()
+                || !reserve.toString().equals(ReserveAccount.liveText(plugin.getConfig())))
             throw new IllegalStateException("Commerce provider unavailable");
     }
     private boolean actor(Player player, CommerceOrder order, CommerceCatalogue.Entry entry, int feeDiscountPct,
@@ -334,9 +333,6 @@ public final class CommercePaymentRuntime {
             case CANCELLED -> CommerceOrderRepository.QUOTE_EXPIRED.equals(receipt.outcome()) ? Status.EXPIRED : Status.CANCELLED;
             default -> Status.HELD;
         }, receipt);
-    }
-    private RegisteredServiceProvider<Economy> registration() {
-        return plugin.getServer().getServicesManager().getRegistration(Economy.class);
     }
     private static boolean knownLimit(Throwable failure) {
         for (Throwable next = failure; next != null; next = next.getCause()) {

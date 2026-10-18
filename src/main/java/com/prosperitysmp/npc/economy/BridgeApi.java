@@ -37,7 +37,7 @@ public final class BridgeApi {
 
     /** Configured reserve account; blank until the server owner sets one, which keeps payments held. */
     public String centralBankUuid() {
-        return plugin.getConfig().getString("centralbank.uuid", "");
+        return ReserveAccount.liveText(plugin.getConfig());
     }
 
     public long centralBankFloorCents() {

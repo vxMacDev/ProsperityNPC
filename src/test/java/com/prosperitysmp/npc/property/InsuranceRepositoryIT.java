@@ -193,7 +193,7 @@ class InsuranceRepositoryIT {
             assertEquals(current, snapshot);
             var method = OwnerDeskRepository.class.getDeclaredMethod("insurance", Connection.class, Property.class, LocalDate.class, Instant.class);
             method.setAccessible(true);
-            var display = (OwnerDeskData.Insurance) method.invoke(null, c, property, last, lastAt);
+            var display = (OwnerDeskData.Insurance) method.invoke(new OwnerDeskRepository(db), c, property, last, lastAt);
             assertEquals(original.startDay(), display.startDay()); assertTrue(display.nextTermReserved());
             assertFalse(display.canPurchase(last));
             c.rollback();

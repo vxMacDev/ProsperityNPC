@@ -51,8 +51,13 @@ public final class UtilityRepository {
     private final ZoneId zone;
     private final int resetHour;
     private final EconomyClock economyClock;
+    private final UtilityPrices prices;
 
     public UtilityRepository(Database database, UUID reserve, Clock clock, ZoneId zone, int resetHour) {
+        this(database, reserve, clock, zone, resetHour, UtilityPrices.DEFAULT);
+    }
+
+    public UtilityRepository(Database database, UUID reserve, Clock clock, ZoneId zone, int resetHour, UtilityPrices prices) {
         this.database = Objects.requireNonNull(database);
         this.reserve = Objects.requireNonNull(reserve);
         this.transfers = new TransferJournal(database, reserve);
@@ -60,6 +65,8 @@ public final class UtilityRepository {
         this.zone = Objects.requireNonNull(zone);
         this.resetHour = resetHour;
         this.economyClock = new EconomyClock(clock, zone, resetHour);
+        this.prices = Objects.requireNonNull(prices);
+        prices.requireExactTotals();
     }
 
     /** One immutable bill/property/day. Only an explicit new UUID after a proved decline retries. */
@@ -100,7 +107,7 @@ public final class UtilityRepository {
                 if (!day.equals(preparationDay)) throw new SQLException("New utility bill must be for current day");
                 bill = new UtilityBill(propertyId, ownerId, ownershipEpoch, property.revision(), day,
                         property.capacity(), occupancy(c, propertyId, property.capacity()), upgrades(c, propertyId),
-                        clock.instant().truncatedTo(ChronoUnit.MILLIS), zone.getId(), resetHour);
+                        clock.instant().truncatedTo(ChronoUnit.MILLIS), zone.getId(), resetHour, prices);
                 if (bill.cents() > maximumCents) throw new MaximumExceededException();
                 insertBill(c, bill);
             } else {
@@ -176,6 +183,24 @@ public final class UtilityRepository {
                 one(ps.executeUpdate());
             }
             return Optional.of(new Receipt(bill, receipt.requestId(), receipt.attemptNumber(), eventId, state, outcome, paidAt));
+        });
+    }
+
+    /** Original payer only; this lookup never starts or settles a payment. */
+    public Optional<Receipt> findByRequest(UUID requestId, UUID payer) throws SQLException {
+        Objects.requireNonNull(requestId);
+        Objects.requireNonNull(payer);
+        return transaction(c -> {
+            RequestScope scope = requestScope(c, "request_id", requestId, 0);
+            if (scope == null) return Optional.empty();
+            property(c, scope.property());
+            UtilityBill bill = bill(c, scope.property(), scope.day());
+            if (bill == null) throw new SQLException("Utility receipt has no bill");
+            if (!payer.equals(bill.ownerId())) return Optional.empty();
+            List<Receipt> history = attempts(c, bill);
+            reconcileScope(c, scope.property(), scope.day(), history);
+            return Optional.of(history.stream().filter(receipt -> requestId.equals(receipt.requestId())).findFirst()
+                    .orElseThrow(() -> new SQLException("Utility request missing from its bill history")));
         });
     }
 
@@ -267,12 +292,12 @@ public final class UtilityRepository {
     }
 
     /** Shared receipt codec; the caller supplies unaliased bill columns, never inferred current inputs. */
-    static UtilityBill readBill(ResultSet rs) throws SQLException {
+    public static UtilityBill readBill(ResultSet rs) throws SQLException {
         try {
             UtilityBill bill = new UtilityBill(uuid(rs, "property_id", false), uuid(rs, "owner_uuid", false),
                     integer(rs, "ownership_epoch"), number(rs, "property_revision"), parseDay(rs.getString("economy_day")),
                     integer(rs, "capacity"), integer(rs, "occupied_tenants"), integer(rs, "installed_upgrade_levels"),
-                    instant(rs, "issued_at"), rs.getString("clock_zone"), integer(rs, "reset_hour"));
+                    instant(rs, "issued_at"), rs.getString("clock_zone"), integer(rs, "reset_hour"), readPrices(rs));
             if (!bill.periodStart().equals(instant(rs, "period_start")) || !bill.dueAt().equals(instant(rs, "due_at"))
                     || bill.cents() != number(rs, "amount_cents") || !bill.fingerprint().equals(rs.getString("payload_sha256")))
                 throw new SQLException("Utility bill fingerprint or terms mismatch");
@@ -280,12 +305,30 @@ public final class UtilityRepository {
         } catch (RuntimeException invalid) { throw new SQLException("Invalid utility bill", invalid); }
     }
 
+    private static UtilityPrices readPrices(ResultSet rs) throws SQLException {
+        Set<String> columns = new HashSet<>();
+        var metadata = rs.getMetaData();
+        for (int i = 1; i <= metadata.getColumnCount(); i++) columns.add(metadata.getColumnLabel(i).toLowerCase(java.util.Locale.ROOT));
+        var rateColumns = Set.of("configured_base_cents", "configured_tenant_cents", "configured_upgrade_level_cents");
+        if (rateColumns.stream().noneMatch(columns::contains)) return null;
+        if (!columns.containsAll(rateColumns)) throw new SQLException("Incomplete utility tariff columns");
+        boolean noBase = rs.getObject("configured_base_cents") == null;
+        boolean noTenant = rs.getObject("configured_tenant_cents") == null;
+        boolean noUpgrade = rs.getObject("configured_upgrade_level_cents") == null;
+        if (noBase && noTenant && noUpgrade) return null;
+        if (noBase || noTenant || noUpgrade) throw new SQLException("Incomplete utility tariff snapshot");
+        return new UtilityPrices(number(rs, "configured_base_cents"), number(rs, "configured_tenant_cents"),
+                number(rs, "configured_upgrade_level_cents"));
+    }
+
     private static void insertBill(Connection c, UtilityBill b) throws SQLException {
+        UtilityPrices rates = b.configuredPrices();
         try (PreparedStatement ps = prepare(c, """
                 INSERT INTO npc_utility_bills(property_id,economy_day,owner_uuid,ownership_epoch,property_revision,
                   capacity,occupied_tenants,installed_upgrade_levels,issued_at,period_start,due_at,clock_zone,
-                  reset_hour,amount_cents,payload_sha256) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """)) {
+                  reset_hour,amount_cents,payload_sha256
+                """ + (rates == null ? ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                        : ",configured_base_cents,configured_tenant_cents,configured_upgrade_level_cents) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"))) {
             id(ps, 1, b.propertyId());
             ps.setString(2, b.day().toString());
             id(ps, 3, b.ownerId());
@@ -301,6 +344,11 @@ public final class UtilityRepository {
             ps.setInt(13, b.resetHour());
             ps.setLong(14, b.cents());
             ps.setString(15, b.fingerprint());
+            if (rates != null) {
+                ps.setLong(16, rates.baseCents());
+                ps.setLong(17, rates.tenantCents());
+                ps.setLong(18, rates.upgradeLevelCents());
+            }
             one(ps.executeUpdate());
         }
     }

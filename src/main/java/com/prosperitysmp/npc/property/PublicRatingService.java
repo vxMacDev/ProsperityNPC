@@ -42,7 +42,7 @@ public final class PublicRatingService implements AutoCloseable {
 
     public void show(Player player) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Public rating requires the main thread");
-        if (closed || !plugin.isEnabled() || plugin.armAdapter() == null || plugin.propertyService() == null) {
+        if (closed || !plugin.isEnabled() || plugin.propertyBackend() == null || plugin.propertyService() == null) {
             say(player, "Property ratings are unavailable.");
             return;
         }
@@ -54,7 +54,7 @@ public final class PublicRatingService implements AutoCloseable {
         }
         lastAsk.put(player.getUniqueId(), now);
         if (lastAsk.size() > 512) lastAsk.values().removeIf(t -> now - t > COOLDOWN_NANOS);
-        var at = plugin.armAdapter().regionAt(player.getLocation());
+        var at = plugin.propertyBackend().regionAt(player.getLocation());
         var property = at.flatMap(a -> plugin.propertyService().findByWorldRegion(a.worldId(), a.regionId()))
                 .filter(Property::enabled).orElse(null);
         if (property == null) {

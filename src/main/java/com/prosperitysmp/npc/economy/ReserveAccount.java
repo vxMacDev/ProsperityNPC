@@ -14,9 +14,12 @@ public final class ReserveAccount {
 
     private ReserveAccount() { }
 
+    /** The configured reserve text, read live on every call. Never cached: a reload that changes it must refuse in-flight work. */
+    public static String liveText(ConfigurationSection config) { return config.getString(PATH, ""); }
+
     /** Throws IllegalArgumentException when blank or not canonical; callers treat that as payments held. */
     public static UUID fromConfig(ConfigurationSection config) {
-        String text = config.getString(PATH, "");
+        String text = liveText(config);
         if (!isCanonical(text)) throw new IllegalArgumentException(PATH + " must be a canonical lowercase UUID");
         return UUID.fromString(text);
     }

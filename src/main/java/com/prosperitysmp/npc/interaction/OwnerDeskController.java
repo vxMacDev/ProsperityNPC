@@ -1,8 +1,11 @@
 package com.prosperitysmp.npc.interaction;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
-import com.prosperitysmp.npc.arm.ArmAdapter;
+import com.prosperitysmp.npc.api.OwnershipToken;
 import com.prosperitysmp.npc.clock.EconomyClock;
+import com.prosperitysmp.npc.charge.BillingRuntime;
+import com.prosperitysmp.npc.charge.BillText;
+import com.prosperitysmp.npc.charge.ChargeInvoiceRepository;
 import com.prosperitysmp.npc.economy.ItemRepairCopy;
 import com.prosperitysmp.npc.economy.ItemRepairRecipes;
 import com.prosperitysmp.npc.economy.ItemRepairRuntime;
@@ -25,8 +28,10 @@ import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.scheduler.BukkitTask;
 import java.time.Clock;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -53,6 +58,36 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
         default boolean showRepairChoice(Player player, UUID token, OwnerDeskData.Issue issue,
                                          ItemRepairRuntime.Preview preview,
                                          BooleanSupplier authorized) { return false; }
+        default boolean showBills(Player player, UUID token, BillPage page, BooleanSupplier authorized) { return false; }
+        default boolean confirmBill(Player player, UUID token, BillPage page, ChargeInvoiceRepository.Invoice invoice,
+                                    BooleanSupplier authorized) { return false; }
+    }
+    public record BillPage(ChargeInvoiceRepository.OwnerView view, LocalDate day, boolean newer, long utilityMaximum,
+                           boolean utilityPayable) {
+        public BillPage(ChargeInvoiceRepository.OwnerView view, LocalDate day, boolean newer, long utilityMaximum) {
+            this(view, day, newer, utilityMaximum, true);
+        }
+        public BillPage {
+            java.util.Objects.requireNonNull(view);
+            java.util.Objects.requireNonNull(day);
+            if (view.invoices().size() > 8 || utilityMaximum <= 0) throw new IllegalArgumentException("Invalid bill page");
+        }
+    }
+
+    private static final class Bills {
+        final BillingRuntime runtime;
+        final LocalDate day;
+        final List<LocalDate> pages = new ArrayList<>();
+        int page;
+        long readAt = -2_000;
+        boolean loading;
+        ChargeInvoiceRepository.OwnerView view;
+        ChargeInvoiceRepository.Invoice selected;
+        Bills(BillingRuntime runtime) {
+            this.runtime = runtime;
+            day = runtime.today();
+            pages.add(null);
+        }
     }
     private NativeUi nativeUi;
     public void setNativeUi(NativeUi ui) {
@@ -61,7 +96,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
     }
     private static final class Active {
         OwnerDeskSessions.Ticket ticket;
-        final ArmAdapter.OwnerRead authority;
+        final OwnershipToken authority;
         final Player session;
         final boolean text, tenantsOnly;
         OwnerDeskData data;
@@ -72,7 +107,8 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
         // item-repairs: the open choice screen and the item list it shows (main thread).
         OwnerDeskData.Issue repairIssue;
         ItemRepairRuntime.Preview repairPreview;
-        Active(OwnerDeskSessions.Ticket ticket, ArmAdapter.OwnerRead authority, Player player, boolean text, boolean tenantsOnly) {
+        Bills bills;
+        Active(OwnerDeskSessions.Ticket ticket, OwnershipToken authority, Player player, boolean text, boolean tenantsOnly) {
             this.ticket = ticket;
             this.authority = authority;
             this.session = player;
@@ -107,7 +143,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
                 plugin.getConfig().getInt("clock.daily-reset-hour", 4));
         pauseControls = plugin.getConfig().getBoolean("ux.desk-pause-controls", false);
         menu = new OwnerDeskMenu(this, () -> Boolean.TRUE.equals(plugin.getConfig().get("housing.advertising-rank-enabled")),
-                pauseControls);
+                pauseControls, plugin.purchasePrices(), plugin.utilityPrices());
         try {
             Bukkit.getPluginManager().registerEvents(this, plugin);
             Bukkit.getPluginManager().registerEvents(menu, plugin);
@@ -121,11 +157,12 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
     }
     /** The desk flag is read once at construction; Bedrock asks here so both UIs always agree. */
     boolean pauseControls() { return pauseControls; }
+    boolean billsOn() { return plugin.billing() != null && plugin.billing().enabledNow(); }
     private long now() { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started); }
     private static void requireMain() { if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Owner desk requires main thread"); }
     private boolean allowed(Player player) {
         return !closed && plugin.isEnabled() && player != null && player.isOnline() && !player.isDead()
-                && player.hasPermission("prosperitynpc.use") && plugin.armAdapter() != null
+                && player.hasPermission("prosperitynpc.use") && plugin.propertyBackend() != null
                 && (plugin.killSwitches().isSystemEnabled() || (player.hasPermission("prosperitynpc.admin")
                 && plugin.getConfig().getBoolean("beta.resident-lab-enabled", false)
                 && plugin.getConfig().getBoolean("beta.encounters-enabled", false)));
@@ -155,7 +192,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
             retire(refreshing.ticket);
             return;
         }
-        var authority = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId());
+        var authority = plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId());
         if (authority.isEmpty()) {
             note(player, "Stand in one property you own outright. Shared, nested or overlapping ownership needs staff review.");
             return;
@@ -171,6 +208,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
         active.put(ticket.actor(), new Active(ticket, authority.get(), player, text, tenantsOnly));
         operations.put(ticket.actor(), ticket.token());
         var day = clock.today();
+        boolean includeBills = plugin.billing() != null && plugin.billing().enabledNow();
         note(player, "Checking your property records...");
         try {
             worker.execute(() -> {
@@ -180,10 +218,8 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
                 String failure = null;
                 boolean isPaused = false;
                 try {
-                    data = repository.read(ticket.world(), ticket.region(), ticket.actor(), day).orElse(null);
-                    if (data == null && pauseControls)
-                        isPaused = new PropertyRepository(plugin.database())
-                                .findByWorldRegion(ticket.world(), ticket.region()).filter(p -> !p.enabled()).isPresent();
+                    data = repository.read(ticket.world(), ticket.region(), ticket.actor(), day, includeBills, !tenantsOnly).orElse(null);
+                    if (data == null && pauseControls) isPaused = pausedHere(ticket.world(), ticket.region());
                 }
                 catch (Exception error) { failure = error.getClass().getSimpleName(); }
                 OwnerDeskData result = data;
@@ -202,7 +238,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
     private boolean valid(Active state) {
         if (state == null || !sessions.valid(state.ticket, now()) || !allowed(state.session)
                 || Bukkit.getPlayer(state.ticket.actor()) != state.session) return false;
-        var authority = plugin.armAdapter().ownerReadAt(state.session.getLocation(), state.ticket.actor());
+        var authority = plugin.propertyBackend().ownerReadAt(state.session.getLocation(), state.ticket.actor());
         return authority.isPresent() && state.authority.sameIncarnation(authority.get());
     }
     static boolean matches(OwnerDeskSessions.Ticket ticket, OwnerDeskData data) {
@@ -236,7 +272,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
         state.data = data;
         if (plugin.ownerAway().isAway(data.property())) note(state.session, OwnerAway.DESK_NOTE);
         if (state.text) {
-            OwnerDeskMenu.text(state.session, data, state.tenantsOnly, itemRepairLines(ticket.actor()));
+            OwnerDeskMenu.text(state.session, data, state.tenantsOnly, itemRepairLines(ticket.actor()), plugin.purchasePrices(), plugin.utilityPrices());
             retire(ticket);
         }
         else {
@@ -256,7 +292,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
                         return;
                     }
                     if (!shown) {
-                        OwnerDeskMenu.text(state.session, data, state.tenantsOnly);
+                        OwnerDeskMenu.text(state.session, data, state.tenantsOnly, List.of(), plugin.purchasePrices(), plugin.utilityPrices());
                         retire(ticket);
                     }
                 } else if (!menu.show(state.session, ticket, data, authorized)) retire(ticket);
@@ -292,7 +328,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
     }
     void scheduleAction(Player player, UUID token, int slot) {
         requireMain();
-        if (closed || (slot != 10 && slot != 12 && slot != 14 && slot != 16 && slot != 32 && slot != 34
+        if (closed || ((slot < 9 || slot > 17) && slot != 32 && slot != 34 && slot != 35
                 && slot != 22 && slot != 24 && slot != 26 && slot != 28 && slot != 30 && slot != 36 && slot != 38 && slot != 40
                 && slot != 42)) return;
         Active state = active.get(player.getUniqueId());
@@ -334,7 +370,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
                 }
                 boolean accepted = service.resumeCoordinated(state.authority.worldId(), state.authority.regionId(),
                         () -> player.isOnline() && player.hasPermission("prosperitynpc.use")
-                            && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                            && plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId())
                                 .filter(state.authority::sameIncarnation).isPresent(), message -> note(player, message));
                 retire(state.ticket);
                 note(player, accepted ? "Checking property and ownership..." : "Property unavailable or busy; nothing changed.");
@@ -343,6 +379,10 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
         }
         if (!valid(state) || state.data == null) {
             retire(state.ticket);
+            return;
+        }
+        if (state.bills != null) {
+            billAction(state, token, slot);
             return;
         }
         if (state.autoCare) {
@@ -379,7 +419,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
                 }
                 boolean accepted = service.unenrollCoordinated(state.authority.worldId(), state.authority.regionId(),
                         () -> player.isOnline() && player.hasPermission("prosperitynpc.use")
-                            && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                            && plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId())
                                 .filter(state.authority::sameIncarnation).isPresent(), message -> note(player, message));
                 retire(state.ticket);
                 note(player, accepted ? "Checking property and ownership..." : "Property unavailable or busy; nothing changed.");
@@ -433,14 +473,23 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
                     return;
                 }
                 boolean accepted = payments.requestEviction(state.data.property().propertyId(), player.getUniqueId(), resident.id(),
-                        OwnerDeskMenu.EVICTION_CENTS, () -> player.isOnline() && !player.isDead()
+                        plugin.purchasePrices().evictionCents(), () -> player.isOnline() && !player.isDead()
                             && Bukkit.getPlayer(player.getUniqueId()) == player && player.hasPermission("prosperitynpc.use")
-                            && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                            && plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId())
                                 .filter(state.authority::sameIncarnation).isPresent(), message -> note(player, message));
                 retire(state.ticket);
                 note(player, accepted ? "Checking the selected tenancy and displayed cost. Wait for the verified result."
                         : "Property payments are busy or unavailable. No payment was started.");
             }
+            return;
+        }
+        if (slot == 35) {
+            if (!billsOn()) {
+                note(player, "Configured bills are unavailable.");
+                return;
+            }
+            state.bills = new Bills(plugin.billing());
+            loadBills(state, 0, null);
             return;
         }
         var selectedResident = OwnerDeskMenu.evictionTarget(state.data, slot);
@@ -471,12 +520,12 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
                 note(player, "This upgrade is already at maximum level.");
                 return;
             }
-            long cost = type == null ? 1000 : type.costToLevelCents(level);
+            long cost = type == null ? plugin.purchasePrices().maintenanceCents() : plugin.purchasePrices().upgradeCents(type, level);
             boolean accepted = payments.requestPurchase(state.data.property().propertyId(), player.getUniqueId(),
                     type == null ? PurchaseRequest.Kind.MAINTAIN : PurchaseRequest.Kind.UPGRADE,
                     type, level, cost, () -> player.isOnline() && !player.isDead() && Bukkit.getPlayer(player.getUniqueId()) == player
                         && player.hasPermission("prosperitynpc.use")
-                        && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                        && plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId())
                             .filter(a -> state.authority.sameIncarnation(a)).isPresent(), message -> note(player, message));
             if (accepted) retire(state.ticket);
             note(player, accepted ? "Checking the displayed benefit and cost. Wait for the verified result."
@@ -517,7 +566,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
             boolean accepted = payments.requestInsurance(state.data.property().propertyId(), player.getUniqueId(),
                     state.data.insurance().premiumCents(), () -> player.isOnline() && !player.isDead()
                         && Bukkit.getPlayer(player.getUniqueId()) == player && player.hasPermission("prosperitynpc.use")
-                        && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                        && plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId())
                             .filter(state.authority::sameIncarnation).isPresent(), message -> note(player, message));
             if (accepted) retire(state.ticket);
             note(player, accepted ? "Checking the displayed insurance premium. Wait for the verified result."
@@ -525,12 +574,16 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
             return;
         }
         if (slot == 42) {
+            if (!state.data.canPayUtility()) {
+                note(player, "Today's utility bill belongs to earlier ownership and needs review.");
+                return;
+            }
             var payments = plugin.utilityPayments();
             if (payments == null) {
                 note(player, "Utility payments are unavailable.");
                 return;
             }
-            long maximum = OwnerDeskMenu.utilityLimit(state.data);
+            long maximum = OwnerDeskMenu.utilityLimit(state.data, plugin.utilityPrices());
             boolean accepted = payments.request(state.data.property().propertyId(), player.getUniqueId(), maximum,
                     () -> player.isOnline() && !player.isDead() && Bukkit.getPlayer(player.getUniqueId()) == player
                             && player.hasPermission("prosperitynpc.use"), message -> note(player, message));
@@ -540,7 +593,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
             return;
         }
         if (slot == 38) {
-            OwnerDeskMenu.text(player, state.data, state.tenantsOnly);
+            OwnerDeskMenu.text(player, state.data, state.tenantsOnly, List.of(), plugin.purchasePrices(), plugin.utilityPrices());
             retire(state.ticket);
         }
     }
@@ -560,7 +613,7 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
     private void openRepairChoice(Player player, UUID token, Active state) {
         var issue = state.data.issues().getFirst();
         var runtime = plugin.itemRepairs();
-        var preview = runtime == null ? null : runtime.preview(issue.id(), issue.type(), issue.repairCents());
+        var preview = runtime == null || !runtime.ready() ? null : runtime.preview(issue.id(), issue.type(), issue.repairCents());
         if (preview == null) {
             IncidentType type;
             try { type = IncidentType.valueOf(issue.type()); }
@@ -628,8 +681,173 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
         }
         runtime.request(player, issue.id(), preview, () -> player.isOnline() && !player.isDead()
                 && Bukkit.getPlayer(player.getUniqueId()) == player && player.hasPermission("prosperitynpc.use")
-                && plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId())
+                && plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId())
                     .filter(state.authority::sameIncarnation).isPresent(), message -> note(player, message));
+    }
+
+    private void loadBills(Active state, int page, LocalDate before) {
+        Bills bills = state.bills;
+        if (!billAuthority(state) || !valid(state)) { retire(state.ticket); return; }
+        if (bills.loading) return;
+        if (now() - bills.readAt < 2_000) {
+            note(state.session, "Please wait a moment before checking another bill page.");
+            showBills(state);
+            return;
+        }
+        var old = state.ticket;
+        if (!rotateView(state)) return;
+        var ticket = state.ticket;
+        menu.closeOwned(state.session, old.token());
+        if (!billVisible(state, ticket)) { retire(ticket); return; }
+        var home = state.data.property();
+        bills.page = page;
+        if (page == bills.pages.size()) bills.pages.add(before);
+        else bills.pages.set(page, before);
+        bills.selected = null;
+        bills.loading = true;
+        bills.readAt = now();
+        operations.put(ticket.actor(), ticket.token());
+        note(state.session, "Checking your bills...");
+        try {
+            worker.execute(() -> {
+                if (closed || !ticket.token().equals(operations.get(ticket.actor()))) return;
+                ChargeInvoiceRepository.OwnerView result = null;
+                boolean failed = false;
+                try { result = bills.runtime.invoices().ownerView(home.propertyId(), home.ownerUuid(), home.ownershipEpoch(), before); }
+                catch (Exception unavailable) { failed = true; }
+                var view = result;
+                boolean error = failed;
+                if (closed) return;
+                try {
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (!operations.remove(ticket.actor(), ticket.token()) || active.get(ticket.actor()) != state
+                                || state.ticket != ticket || state.bills != bills) return;
+                        bills.loading = false;
+                        if (!billVisible(state, ticket) || now() - bills.readAt >= OwnerDeskSessions.READ_MS) {
+                            retire(ticket);
+                            return;
+                        }
+                        if (error) {
+                            retire(ticket);
+                            note(state.session, "Bills could not be read right now. Nothing changed.");
+                            return;
+                        }
+                        // With on-unpaid: hold-rent, the bill pages say which bills are pausing the home's rent.
+                        bills.view = view.withHoldRent(bills.runtime.holdsRentNow());
+                        showBills(state);
+                    });
+                } catch (IllegalStateException shutdown) { operations.remove(ticket.actor(), ticket.token()); }
+            });
+        } catch (RejectedExecutionException full) {
+            retire(ticket);
+            note(state.session, "The owner desk is busy. Try again shortly.");
+        }
+    }
+
+    /** A paused row for this region under the configured backend. A row under another backend is not this desk's. */
+    private boolean pausedHere(java.util.UUID world, String region) throws java.sql.SQLException {
+        var repository = plugin.propertyRepository();
+        if (repository == null) return false;
+        try {
+            return repository.findByWorldRegion(world, region, repository.backendId()).filter(p -> !p.enabled()).isPresent();
+        } catch (PropertyRepository.EnrolledUnderOtherBackend elsewhere) {
+            return false;
+        }
+    }
+
+    private void showBills(Active state) {
+        Bills bills = state.bills;
+        if (!valid(state) || !billAuthority(state) || !rotateView(state)) { retire(state.ticket); return; }
+        var ticket = state.ticket;
+        BooleanSupplier authorized = () -> billVisible(state, ticket);
+        try {
+            var page = new BillPage(bills.view, bills.day, bills.page > 0,
+                    OwnerDeskMenu.utilityLimit(state.data, plugin.utilityPrices()), state.data.canPayUtility());
+            boolean nativePlayer = nativeUi != null && nativeUi.handles(ticket.actor());
+            boolean shown;
+            if (nativePlayer) shown = bills.selected == null ? nativeUi.showBills(state.session, ticket.token(), page, authorized)
+                    : nativeUi.confirmBill(state.session, ticket.token(), page, bills.selected, authorized);
+            else shown = bills.selected == null ? menu.showBills(state.session, ticket, page, authorized)
+                    : menu.confirmBill(state.session, ticket, page, bills.selected, authorized);
+            if (!shown || !authorized.getAsBoolean()) retire(ticket);
+        } catch (RuntimeException | LinkageError unavailable) {
+            retire(ticket);
+            note(state.session, "The bill view could not open. Use /property bills.");
+        }
+    }
+
+    private boolean billAuthority(Active state) {
+        var bills = state.bills;
+        if (bills == null || !allowed(state.session) || Bukkit.getPlayer(state.ticket.actor()) != state.session
+                || plugin.billing() != bills.runtime || !bills.runtime.enabledNow() || !bills.day.equals(bills.runtime.today())
+                || plugin.propertyService() == null) return false;
+        var authority = plugin.propertyBackend().ownerReadAt(state.session.getLocation(), state.ticket.actor());
+        var home = state.data.property();
+        var current = plugin.propertyService().findByWorldRegion(home.worldUuid(), home.regionId());
+        return authority.isPresent() && state.authority.sameIncarnation(authority.get()) && current.isPresent()
+                && current.get().enabled() && home.propertyId().equals(current.get().propertyId())
+                && home.ownerUuid().equals(current.get().ownerUuid()) && home.ownershipEpoch() == current.get().ownershipEpoch();
+    }
+
+    private boolean billVisible(Active state, OwnerDeskSessions.Ticket ticket) {
+        return billAuthority(state) && active.get(ticket.actor()) == state && state.ticket == ticket && sessions.valid(ticket, now());
+    }
+
+    private void billAction(Active state, UUID token, int slot) {
+        Bills bills = state.bills;
+        if (!billVisible(state, state.ticket) || !state.ticket.token().equals(token)) {
+            retire(state.ticket);
+            note(state.session, "The bill view changed or expired. Open your property again.");
+            return;
+        }
+        if (bills.loading) return;
+        if (slot == 34) {
+            if (bills.selected != null) {
+                bills.selected = null;
+                showBills(state);
+            } else {
+                state.bills = null;
+                if (rotateView(state)) showExisting(state);
+            }
+            return;
+        }
+        if (bills.selected == null) {
+            if (slot == 30 && bills.page > 0) loadBills(state, bills.page - 1, bills.pages.get(bills.page - 1));
+            else if (slot == 32 && bills.view.hasOlder())
+                loadBills(state, bills.page + 1, bills.view.invoices().getLast().day());
+            else if (slot >= 9 && slot < 9 + bills.view.invoices().size()) {
+                bills.selected = bills.view.invoices().get(slot - 9);
+                showBills(state);
+            } else if (slot == 42) {
+                if (!state.data.canPayUtility()) {
+                    note(state.session, "Today's utility bill belongs to earlier ownership and needs review.");
+                    return;
+                }
+                var payments = plugin.utilityPayments();
+                boolean accepted = payments != null && payments.request(state.data.property().propertyId(), state.ticket.actor(),
+                        OwnerDeskMenu.utilityLimit(state.data, plugin.utilityPrices()), () -> billAuthority(state), message -> note(state.session, message));
+                retire(state.ticket);
+                note(state.session, accepted ? "Checking today's utility bill. Wait for the payment result."
+                        : "Utility payments are busy or unavailable. No payment was started.");
+            }
+            return;
+        }
+        var invoice = bills.selected;
+        var payment = bills.view.payments().get(invoice.invoiceId());
+        if (slot == 38 && payment != null) {
+            var receipts = plugin.purchaseService();
+            retire(state.ticket);
+            if (receipts != null) receipts.showReceipt(state.session, payment.requestId());
+            else note(state.session, "Keep your reference: /property receipt " + payment.requestId());
+        } else if (slot == 32 && BillText.payable(invoice, payment, bills.day)) {
+            var payments = plugin.utilityPayments();
+            // The view closes on admission; player and ownership checks continue through the debit.
+            boolean accepted = payments != null && payments.requestBill(state.data.property().propertyId(), state.ticket.actor(),
+                    invoice.invoiceId(), invoice.totalCents(), () -> billAuthority(state), message -> note(state.session, message));
+            retire(state.ticket);
+            note(state.session, accepted ? "Checking the selected bill and displayed maximum. Wait for the payment result."
+                    : "Payments are busy or unavailable. No payment was started.");
+        } else showBills(state);
     }
 
     void viewClosed(UUID actor, UUID token) {
@@ -677,7 +895,8 @@ public final class OwnerDeskController implements Listener, AutoCloseable {
         for (var ticket : sessions.all()) {
             Active state = active.get(ticket.actor());
             if (!valid(state) || OwnerDeskSessions.undelivered(state.data != null, state.paused,
-                    sessions.mayDeliver(ticket, now()))) retire(ticket);
+                    sessions.mayDeliver(ticket, now())) || (state.bills != null && state.bills.loading
+                    && now() - state.bills.readAt >= OwnerDeskSessions.READ_MS)) retire(ticket);
         }
     }
     @EventHandler public void quit(PlayerQuitEvent event) {

@@ -103,7 +103,7 @@ class UtilityServiceRepositoryIT {
                 version.setAccessible(true);
                 resource.setAccessible(true);
                 int number = (Integer) version.invoke(migration);
-                if (number > 14) continue;
+                if (number > 14 && number != 45) continue;
                 String path = "/" + resource.invoke(migration);
                 applyResource(path);
                 if (number == 14) v14 = path;

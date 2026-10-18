@@ -82,7 +82,7 @@ class NavLiveAuditRoundsTest {
         // sweep, hash, palette name, world, no error, world present, chunk counts, tickets, palette
         Object outcome = build(outcomeType, sweep, "hash-1", "city", "world", null, false, 0, 0, 0, 0, firstRound);
         // rules, no rules error, limits and counts, no report sink (this path writes no report)
-        Object settings = build(settingsType, new StreetRules(12, 16, 0.4), null, 1L, 1, 1, false, 1, 1, 1, 1, 0, 0, null);
+        Object settings = build(settingsType, new StreetRules(12, 16, 0.4), null, 1L, 1, 1, false, 1, 1, 1, 1, 0, 0, null, 1);
         var info = new NavGraphRepository.GraphInfo(UUID.randomUUID(), UUID.randomUUID(), "region", "old-list-palette",
                 1, "ACTIVE", graph.nodeCount(), graph.edgeCount(), null);
 
@@ -127,7 +127,7 @@ class NavLiveAuditRoundsTest {
     @Test
     void theNodeCapComesFromConfigAndReachesTheAuditOptions() throws Exception {
         Class<?> settingsType = Class.forName("com.prosperitysmp.npc.command.NpcNavCommand$Settings");
-        Object settings = build(settingsType, new StreetRules(12, 16, 0.4), null, 1L, 1, 4321, false, 1, 1, 1, 1, 0, 0, null);
+        Object settings = build(settingsType, new StreetRules(12, 16, 0.4), null, 1L, 1, 4321, false, 1, 1, 1, 1, 0, 0, null, 1);
         Method options = settingsType.getDeclaredMethod("auditOptions");
         options.setAccessible(true);
         assertEquals(4321, ((com.prosperitysmp.npc.nav.StreetAudit.Options) options.invoke(settings)).maxNodes());

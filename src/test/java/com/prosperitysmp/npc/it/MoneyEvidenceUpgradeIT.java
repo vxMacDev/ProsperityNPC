@@ -17,8 +17,6 @@ import com.prosperitysmp.npc.economy.EventSource;
 import com.prosperitysmp.npc.economy.HeldClass;
 import com.prosperitysmp.npc.economy.TransferJournal;
 import com.prosperitysmp.npc.economy.TransferJournal.Handle;
-import com.prosperitysmp.npc.property.Property;
-import com.prosperitysmp.npc.property.PropertyRepository;
 import com.prosperitysmp.npc.resident.ResidentCatalogue;
 import com.prosperitysmp.npc.resident.ResidentRepository;
 import org.junit.jupiter.api.AfterAll;
@@ -83,7 +81,7 @@ class MoneyEvidenceUpgradeIT {
     @Timeout(300)
     void v40ReplaysAfterAnyPartialRunAndAltersOnlyItsOwnTables() throws Exception {
         List<Migration> all = migrations();
-        Migration v40 = all.getLast();
+        Migration v40 = all.stream().filter(m -> m.version() == 40).findFirst().orElseThrow();
         assertEquals(40, v40.version());
         Map<String, String> clean = null;
         for (int prefix = 0; prefix <= v40.statements().size(); prefix++) {
@@ -115,13 +113,23 @@ class MoneyEvidenceUpgradeIT {
     @Timeout(300)
     void rowsWrittenBeforeV40KeepTheirMeaningAndProofs() throws Exception {
         List<Migration> all = migrations();
+        Migration v40 = all.stream().filter(m -> m.version() == 40).findFirst().orElseThrow();
         String name = freshSchema();
         try (Connection c = DriverManager.getConnection(url + name, "root", ""); Database db = new Database()) {
             for (Migration m : all) if (m.version() < 40) for (String sql : m.statements()) execute(c, sql);
             db.connect(new DatabaseSettings("localhost", port, name, "root", "", 4, 10_000L));
             UUID property = new UUID(4, 1);
-            new PropertyRepository(db).insertEnrollment(new Property(property, WORLD, "upgrade-1", "downtown", "room",
-                    2, 1_000, 1_000, OWNER, 0, 80, true), 5_000);
+            // Seed the V39 shape directly; today's repository also writes V45's backend id.
+            execute(c, """
+                    INSERT INTO npc_properties(property_id,world_uuid,region_id,market_id,class_key,capacity,
+                        reference_rent_cents,asking_rent_cents,owner_uuid,ownership_epoch,condition_score,enabled,row_version)
+                    VALUES(?,?,'upgrade-1','downtown','room',2,1000,1000,?,0,80,TRUE,0)
+                    """, property, WORLD, OWNER);
+            execute(c, "INSERT INTO npc_property_funding(property_id,one_time_seed_cents) VALUES(?,5000)", property);
+            execute(c, """
+                    INSERT INTO npc_property_ownership(property_id,old_owner_uuid,new_owner_uuid,ownership_epoch,source_snapshot)
+                    VALUES(?,NULL,?,0,'enroll')
+                    """, property, OWNER);
             var events = new EconomyEventRepository(db);
             var journal = new TransferJournal(db, RESERVE);
 
@@ -175,7 +183,7 @@ class MoneyEvidenceUpgradeIT {
             long observations = count(c, "npc_transfer_observations") + count(c, "npc_commerce_money_evidence");
             assertTrue(observations >= 4, "positive control: old evidence exists");
 
-            for (String sql : all.getLast().statements()) execute(c, sql);
+            for (String sql : v40.statements()) execute(c, sql);
 
             assertEquals(0, count(c, "npc_transfer_observations WHERE refused_before_call IS NOT NULL OR refusal_cause IS NOT NULL"));
             assertEquals(0, count(c, "npc_commerce_money_evidence WHERE refused_before_call IS NOT NULL OR refusal_cause IS NOT NULL"));
@@ -211,7 +219,7 @@ class MoneyEvidenceUpgradeIT {
                     INSERT INTO npc_transfer_resolutions(attempt_id,resolution_id,operator_ref,evidence_sha256,original_outcome,
                     refund_before_bits,refund_after_bits,kind,credit_proof) VALUES(?,?,'staff:new',?,'DEBIT_UNCERTAIN',NULL,NULL,'LEGACY_REFUSAL',NULL)
                     """, held.attemptId(), legacyResolution, "f".repeat(64));
-            for (String sql : all.getLast().statements()) execute(c, sql);
+            for (String sql : v40.statements()) execute(c, sql);
             assertEquals(1, count(c, "npc_transfer_resolutions WHERE kind='LEGACY_REFUSAL' AND refund_before_bits IS NULL"));
             assertEquals(1, count(c, "npc_transfer_resolutions WHERE kind='REFUND'"));
             assertEquals(2, count(c, "npc_refund_claims"), "a rerun claims nothing new, and a legacy refusal claims nothing");

@@ -1,6 +1,7 @@
 package com.prosperitysmp.npc.command;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import com.prosperitysmp.npc.nav.Dijkstra;
 import com.prosperitysmp.npc.nav.NavChunkLoader;
 import com.prosperitysmp.npc.nav.NavCorridor;
 import com.prosperitysmp.npc.nav.NavGraph;
@@ -17,6 +18,9 @@ import com.prosperitysmp.npc.nav.NavSweep;
 import com.prosperitysmp.npc.nav.NavWorldReader;
 import com.prosperitysmp.npc.nav.StreetAudit;
 import com.prosperitysmp.npc.nav.StreetRules;
+import com.prosperitysmp.npc.nav.origin.DocumentOrigin;
+import com.prosperitysmp.npc.nav.origin.GraphOrigin;
+import com.prosperitysmp.npc.nav.origin.OriginRegistry;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
@@ -92,43 +96,40 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
     private int sweepReads;
     private BukkitTask tagPump;
     private volatile boolean closed;
+    // Staff waypoints and route files (dev.66); they queue through this command's worker and sweep slot.
+    private final NavWaypointCommands waypoints;
 
     private record TagRequest(UUID playerId, UUID graphId, UUID worldId, double x, double y, double z,
                               String tag, boolean add) { }
     private record TagReply(boolean success, String message) { }
-    @FunctionalInterface
-    private interface Work {
-        Reply run() throws SQLException;
-    }
 
     /** {@code sweeps} marks a request that keeps the scan/sweep slot busy until its reply is delivered. */
     private record Request(CommandSender sender, UUID playerId, UUID worldId, World scanWorld, Work work,
                            boolean sweeps) { }
-    private record Line(NamedTextColor color, String text) { }
 
     /**
      * A world read the worker wants the main thread to run, then hand back to {@code followup}. Everything
      * that only needs the graph, such as the chunk list, is worked out by the worker before the hand-off.
      */
-    private record SweepJob(UUID worldId, String paletteName, String requestedPalette, NavSweep sweep,
+    record SweepJob(UUID worldId, String paletteName, String requestedPalette, NavSweep sweep,
                             List<Long> chunkKeys, boolean load, boolean live, Followup followup, NavPalette palette) {
-        private SweepJob(UUID worldId, String paletteName, String requestedPalette, NavSweep sweep, boolean load,
+        SweepJob(UUID worldId, String paletteName, String requestedPalette, NavSweep sweep, boolean load,
                          boolean live, Followup followup) {
             this(worldId, paletteName, requestedPalette, sweep, load ? sweep.chunkKeys() : List.of(), load, live,
                     followup, null);
         }
 
         /** A later round of a read: it uses the palette the earlier round read with, not one looked up again by name. */
-        private SweepJob(UUID worldId, String paletteName, NavPalette palette, NavSweep sweep, boolean load,
+        SweepJob(UUID worldId, String paletteName, NavPalette palette, NavSweep sweep, boolean load,
                          Followup followup) {
             this(worldId, paletteName, null, sweep, load ? sweep.chunkKeys() : List.of(), load, true, followup, palette);
         }
     }
     @FunctionalInterface
-    private interface Followup {
+    interface Followup {
         Reply run(SweepOutcome outcome) throws SQLException;
     }
-    private record SweepOutcome(NavSweep sweep, String currentHash, String paletteName,
+    record SweepOutcome(NavSweep sweep, String currentHash, String paletteName,
                                 String worldName, String error, boolean worldMissing, int chunksLoaded,
                                 int chunksAbsent, int chunksSkipped, int ticketsRemaining, NavPalette palette) {
         /** The same read continued: chunk counts add up across rounds, the ticket count is the latest. */
@@ -139,28 +140,23 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         }
     }
 
-    private record Reply(List<Line> lines, NavGraphRepository.GraphInfo invalidate, SweepJob next) {
-        private Reply {
-            lines = List.copyOf(lines);
-        }
-
-        private Reply(List<Line> lines, NavGraphRepository.GraphInfo invalidate) {
-            this(lines, invalidate, null);
-        }
-    }
-
     /** Street and audit numbers, read on the main thread so workers never touch config. */
-    private record Settings(StreetRules rules, String rulesError, long maxNanos, int maxStarts, int auditMaxNodes,
+    record Settings(StreetRules rules, String rulesError, long maxNanos, int maxStarts, int auditMaxNodes,
                             boolean gate, int maxNodes, int readsPerTick, int maxChunks, int concurrency, int below, int above,
-                            ReportSink sink) {
+                            ReportSink sink, int maxStep) {
         /** {@code rules} is null (with the reason in {@code rulesError}) when nav.street is misconfigured. */
         StreetAudit.Options auditOptions() {
             return new StreetAudit.Options(rules, maxNanos, maxStarts, System::nanoTime, auditMaxNodes);
         }
+
+        /** The street numbers a waypoint or file graph's fingerprint covers; null when nav.street is misconfigured. */
+        String rulesText() {
+            return rules == null ? null : DocumentOrigin.rules(rules, maxStep);
+        }
     }
 
     /** Where a command leaves its log line and JSON file. Safe to call from the worker. */
-    private record ReportSink(Logger logger, Path dir) {
+    record ReportSink(Logger logger, Path dir) {
         void log(String line) {
             logger.info(line);
         }
@@ -176,7 +172,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         }
     }
 
-    private static Reply reply(NamedTextColor color, String text) {
+    static Reply reply(NamedTextColor color, String text) {
         return new Reply(List.of(new Line(color, text)), null);
     }
 
@@ -189,6 +185,27 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
         plugin.trackDatabaseWorker(tagWorker);
+        waypoints = new NavWaypointCommands(plugin, new NavWaypointCommands.Host() {
+            @Override
+            public void enqueue(CommandSender sender, Work work) {
+                NpcNavCommand.this.enqueue(sender, work);
+            }
+
+            @Override
+            public void enqueueSweep(CommandSender sender, Work work) {
+                NpcNavCommand.this.enqueueSweep(sender, work);
+            }
+
+            @Override
+            public Settings settings() {
+                return readSettings();
+            }
+
+            @Override
+            public Map<String, String> paletteHashes() {
+                return currentHashes();
+            }
+        });
     }
 
     @Override
@@ -221,6 +238,9 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
                 case "audit" -> audit(sender, args);
                 case "info" -> info(sender, args);
                 case "list" -> list(sender);
+                case "wp" -> waypoints.wp(sender, args);
+                case "import" -> waypoints.importFile(sender, args);
+                case "export" -> waypoints.export(sender, args);
                 default -> help(sender);
             }
         } catch (Exception e) {
@@ -414,6 +434,8 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         }
         NavPalette palette = job.palette();
         String paletteName = palette != null ? palette.name() : job.paletteName();
+        // A waypoint or file graph built without a palette is read without one: solid ground and headroom only.
+        boolean classless = palette == null && !job.live() && (paletteName == null || paletteName.isEmpty());
         // A later round of a read keeps the palette the first round used, even if config was reloaded between them.
         if (palette == null && job.live()) {
             // A graph scanned with a list palette stores no classes; read its world through a classified one.
@@ -429,7 +451,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
                 return;
             }
         }
-        if (palette == null) {
+        if (palette == null && !classless) {
             try {
                 // The graph already exists, so a palette name config no longer (or never) defined still reads.
                 palette = NavPalette.loadForExistingGraph(plugin, paletteName);
@@ -443,9 +465,9 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         sweepRequest = origin;
         sweepJob = job;
         sweepWorld = world;
-        sweepReader = new NavWorldReader(world, palette);
-        sweepPaletteHash = palette.hash();
-        sweepPaletteName = paletteName;
+        sweepReader = classless ? NavWorldReader.anySolid(world) : new NavWorldReader(world, palette);
+        sweepPaletteHash = classless ? "" : palette.hash();
+        sweepPaletteName = classless ? "" : paletteName;
         sweepPalette = palette;
         sweepReads = settings.readsPerTick();
         sweepLoader = job.load() ? new NavChunkLoader(NavChunkLoader.of(world, plugin), job.chunkKeys(),
@@ -755,7 +777,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         });
     }
 
-    private static List<Line> validationLines(NavGraphValidator.Report report) {
+    static List<Line> validationLines(NavGraphValidator.Report report) {
         List<Line> lines = new ArrayList<>();
         lines.add(new Line(report.valid() ? NamedTextColor.GREEN : NamedTextColor.GOLD,
                 "Validation: " + (report.valid() ? "PASS" : "FAIL") + " (" + report.errors() + " errors, "
@@ -783,7 +805,8 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             } catch (IllegalArgumentException refused) {
                 return reply(NamedTextColor.RED, refused.getMessage());
             }
-            UUID draft = repository.saveDraft(info.worldUuid(), info.regionId(), info.palette(), info.paletteHash(), compact);
+            UUID draft = repository.saveDraft(info.worldUuid(), info.regionId(), info.palette(), info.paletteHash(), compact,
+                    info.source(), info.originSha(), info.originRef());
             return reply(NamedTextColor.GREEN, "Corridor DRAFT " + draft + ": " + compact.nodeCount()
                     + " nodes, " + compact.edgeCount() + " edges. Source " + id
                     + " preserved. Review and publish separately; walking remains unverified.");
@@ -796,8 +819,10 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             return;
         }
         boolean legacy = args.length >= 3 && args[2].equalsIgnoreCase("legacy");
-        if (args.length > 3 || (args.length == 3 && !legacy)) {
-            send(sender, NamedTextColor.GRAY, "Usage: /npcnav publish <graphId> [legacy]");
+        // asbuilt: publish a waypoint graph built from an older set, checked against its own document.
+        boolean asBuilt = args.length >= 3 && args[2].equalsIgnoreCase("asbuilt");
+        if (args.length > 3 || (args.length == 3 && !legacy && !asBuilt)) {
+            send(sender, NamedTextColor.GRAY, "Usage: /npcnav publish <graphId> [legacy|asbuilt]");
             return;
         }
         Settings settings = readSettings();
@@ -806,14 +831,14 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             return;
         }
         PublishPolicy policy = new PublishPolicy(settings.gate(), legacy, currentHashes(), settings.auditOptions(),
-                settings.sink(), sender.getName());
+                settings.sink(), sender.getName(), asBuilt, settings.rulesText());
         NavGraphRepository repository = plugin.navGraphRepository();
         enqueue(sender, () -> publishGraph(repository, id, policy));
     }
 
     /** What the publish gate needs, read on the main thread. */
     private record PublishPolicy(boolean gate, boolean legacy, Map<String, String> hashes,
-                                 StreetAudit.Options options, ReportSink sink, String by) { }
+                                 StreetAudit.Options options, ReportSink sink, String by, boolean asBuilt, String rules) { }
 
     private static Reply publishGraph(NavGraphRepository repository, UUID id, PublishPolicy policy) throws SQLException {
         NavGraphRepository.GraphInfo info = repository.info(id);
@@ -826,14 +851,32 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             if (!report.valid()) return reply(NamedTextColor.RED,
                     "Refusing to publish: " + report.errors() + " validation errors. Run /npcnav validate " + id);
             int unknown = (int) graph.nodes().stream().filter(n -> n.surface() == NavSurface.UNKNOWN).count();
-            String current = policy.hashes().get(info.palette());
+            GraphOrigin origin = OriginRegistry.of(info.source());
+            if (origin == null) return reply(NamedTextColor.RED, "Refusing to publish: " + OriginRegistry.unknown(info.source()));
+            // A scan graph is gated as before. A waypoint or file graph always is, whatever nav.audit.gate-publish says.
+            boolean gate = policy.gate() || origin.alwaysGate();
+            String paletteHash = policy.hashes().get(info.palette());
+            String current = paletteHash;
+            if (origin.alwaysGate()) {
+                if (policy.options().rules() == null) return reply(NamedTextColor.RED, "Refusing to publish: nav.street is misconfigured.");
+                String tooBig = overRouteSearchCaps(graph);
+                if (tooBig != null) return reply(NamedTextColor.RED, tooBig);
+                String olderSet = olderWaypointSet(repository, info, policy.asBuilt());
+                if (olderSet != null) return reply(NamedTextColor.RED, olderSet);
+                boolean noPalette = info.palette() == null || info.palette().isEmpty();
+                current = origin.fingerprintFor(info, noPalette ? "" : paletteHash, policy.rules(), repository::routeDocument);
+            }
             StreetAudit.Result audit = null;
-            if (policy.gate() && unknown == 0 && info.paletteHash() != null && info.paletteHash().equals(current)) {
+            if (gate && unknown == 0 && info.paletteHash() != null && info.paletteHash().equals(current)) {
                 audit = StreetAudit.audit(graph, null, policy.options());
                 policy.sink().log(StreetAudit.logLine(id.toString(), audit));
             }
-            NavPublishGate.Decision decision = NavPublishGate.decide(policy.gate(), policy.legacy(), unknown,
+            NavPublishGate.Decision decision = NavPublishGate.decide(gate, policy.legacy(), unknown,
                     info.paletteHash(), current, audit);
+            if (!decision.allowed() && origin.alwaysGate() && (current == null || !current.equals(info.paletteHash()))) {
+                return reply(NamedTextColor.RED, "Refusing to publish: the palette, the street rules or the "
+                        + info.source() + " document changed since this graph was built. Rebuild it.");
+            }
             if (!decision.allowed()) return reply(NamedTextColor.RED, "Refusing to publish: " + decision.reason());
             if (decision.legacyOverride()) {
                 policy.sink().log("NPCNAV-PUBLISH legacy=true graph=" + id + " by=" + policy.by());
@@ -846,6 +889,32 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             return new Reply(List.of(new Line(NamedTextColor.RED,
                     "Publish outcome unconfirmed. Routes invalidated; inspect the database before retrying.")), info);
         }
+    }
+
+    /**
+     * The refusal for a waypoint or file graph bigger than a resident's route search covers, or null. Build and import
+     * already refuse these; publish checks again so a graph that got past them is never made active.
+     */
+    static String overRouteSearchCaps(NavGraph graph) {
+        if (graph.nodeCount() <= Dijkstra.MAX_VISITED && graph.edgeCount() <= Dijkstra.MAX_EDGES_EXAMINED) return null;
+        return "Refusing to publish: the graph has " + graph.nodeCount() + " nodes and " + graph.edgeCount()
+                + " edges; a waypoint or route-file graph may have at most " + Dijkstra.MAX_VISITED + " nodes and "
+                + Dijkstra.MAX_EDGES_EXAMINED + " edges. Split this district into two regions.";
+    }
+
+    /**
+     * The refusal for a waypoint graph built from a set that has been edited since, or null. With {@code asBuilt}
+     * it is published as built: still checked against its own document, which is how restore then publish rolls back.
+     */
+    private static String olderWaypointSet(NavGraphRepository repository, NavGraphRepository.GraphInfo info,
+                                           boolean asBuilt) throws SQLException {
+        if (asBuilt || !NavGraphRepository.SOURCE_WAYPOINTS.equals(info.source())) return null;
+        NavGraphRepository.WaypointSetRow set = repository.waypointSet(info.worldUuid(), info.regionId());
+        if (set == null || set.docSha().equals(info.originSha())) return null;
+        String built = info.originSha() == null ? "unknown" : info.originSha().substring(0, 8);
+        return "This graph was built from an older waypoint set (" + built + "); the set is now "
+                + set.docSha().substring(0, 8) + ". Rebuild, or publish it as built with: /npcnav publish "
+                + info.graphId() + " asbuilt";
     }
 
     @FunctionalInterface
@@ -996,20 +1065,22 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             NavGraphRepository.GraphInfo info = repository.info(target);
             NavGraph graph = info == null ? null : repository.loadGraph(target);
             if (graph == null) return reply(NamedTextColor.RED, "No graph " + target);
+            if (OriginRegistry.of(info.source()) == null) return reply(NamedTextColor.RED, OriginRegistry.unknown(info.source()));
             if (graph.nodeCount() > settings.maxNodes()) {
                 return reply(NamedTextColor.RED, "Graph has " + graph.nodeCount() + " nodes; nav.revalidate.max-nodes is "
                         + settings.maxNodes() + ".");
             }
-            NavSweep sweep = NavSweep.forRevalidation(graph, info.paletteHash());
+            boolean classes = info.palette() != null && !info.palette().isEmpty();
+            NavSweep sweep = NavSweep.forRevalidation(graph, info.paletteHash(), classes);
             return new Reply(List.of(new Line(NamedTextColor.GRAY, "Revalidating " + target + " (" + graph.nodeCount()
                     + " nodes, " + sweep.total() + " cells" + (load ? ", loading chunks" : "") + ")...")), null,
-                    new SweepJob(info.worldUuid(), info.palette(), null, sweep, load, false,
-                            outcome -> revalidated(info, outcome, settings, load)));
+                    new SweepJob(info.worldUuid(), classes ? info.palette() : "", null, sweep, load, false,
+                            outcome -> revalidated(repository, info, outcome, settings, load)));
         });
     }
 
-    private static Reply revalidated(NavGraphRepository.GraphInfo info, SweepOutcome out, Settings settings,
-                                     boolean load) {
+    private static Reply revalidated(NavGraphRepository repository, NavGraphRepository.GraphInfo info, SweepOutcome out,
+                                     Settings settings, boolean load) throws SQLException {
         String id = info.graphId().toString();
         ReportSink sink = settings.sink();
         Map<String, Object> json = new LinkedHashMap<>();
@@ -1025,7 +1096,12 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             return reply(NamedTextColor.RED, out.worldMissing() ? "The world for this graph is not loaded: WORLD_MISSING."
                     : "Revalidate stopped: " + out.error());
         }
-        NavSweep.Revalidation r = out.sweep().revalidation(out.currentHash());
+        GraphOrigin origin = OriginRegistry.of(info.source());
+        // A waypoint or file graph stores a fingerprint, not a palette hash: compare like with like.
+        String currentHash = origin.alwaysGate()
+                ? origin.fingerprintFor(info, out.currentHash(), settings.rulesText(), repository::routeDocument)
+                : out.currentHash();
+        NavSweep.Revalidation r = out.sweep().revalidation(currentHash);
         List<Line> lines = new ArrayList<>();
         NamedTextColor color = r.verdict() == NavSweep.Verdict.CLEAN ? NamedTextColor.GREEN
                 : r.verdict() == NavSweep.Verdict.DRIFTED ? NamedTextColor.RED : NamedTextColor.YELLOW;
@@ -1035,10 +1111,8 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
                 + ", palette " + r.palette()));
         for (String line : r.lines()) lines.add(new Line(NamedTextColor.GRAY, "  " + clip(line)));
         if (r.driftBox() != null) {
-            int[] box = r.driftBox();
-            lines.add(new Line(NamedTextColor.GRAY, clip("  Rescan: /npcnav scanbox " + info.regionId() + " " + out.worldName() + " "
-                    + (box[0] - 3) + " " + (box[1] - settings.below()) + " " + (box[2] - 3) + " " + (box[3] + 3) + " "
-                    + (box[4] + settings.above()) + " " + (box[5] + 3) + " " + info.palette())));
+            lines.add(new Line(NamedTextColor.GRAY, clip(origin.fixHint(info, r.driftBox(), out.worldName(),
+                    settings.below(), settings.above()))));
         }
         if (r.notLoaded() > 0 && !load) {
             lines.add(new Line(NamedTextColor.GRAY, "  Some chunks are not loaded; add 'load' to load them (DEV only)."));
@@ -1111,6 +1185,11 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             NavGraphRepository.GraphInfo info = repository.info(id);
             NavGraph graph = info == null ? null : repository.loadGraph(id);
             if (graph == null) return reply(NamedTextColor.RED, "No graph " + id);
+            if (wantLive && wantPalette == null && !NavGraphRepository.SOURCE_SCAN.equals(info.source())
+                    && (info.palette() == null || info.palette().isEmpty())) {
+                return reply(NamedTextColor.RED, "This graph was built without a palette, so a live audit has nothing to "
+                        + "classify blocks with. Name one: /npcnav audit " + id + " live palette <name>");
+            }
             boolean unclassified = graph.nodes().stream().anyMatch(n -> n.surface() == NavSurface.UNKNOWN);
             if (!needsWorldRead(wantLive, unclassified, graph.nodeCount(), settings.auditMaxNodes())) {
                 return auditReply(info, StreetAudit.audit(graph, null, settings.auditOptions()), settings, null);
@@ -1248,7 +1327,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
     }
 
     /** At most 20 detail lines, then how many were left out. */
-    private static void addDetails(List<Line> lines, List<String> details) {
+    static void addDetails(List<Line> lines, List<String> details) {
         for (int i = 0; i < Math.min(details.size(), DETAIL_LINES); i++) {
             lines.add(new Line(NamedTextColor.GRAY, clip("  " + details.get(i))));
         }
@@ -1257,7 +1336,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         }
     }
 
-    private static String clip(String text) {
+    static String clip(String text) {
         return text.length() <= LINE_WIDTH ? text : text.substring(0, LINE_WIDTH - 3) + "...";
     }
 
@@ -1302,7 +1381,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
                 clamp(config.getInt("nav.revalidate.max-chunks", 256), 1, 4096),
                 clamp(config.getInt("nav.revalidate.load-concurrency", 4), 1, 16),
                 clamp(config.getInt("nav.scan-below", 6), 0, 64), clamp(config.getInt("nav.scan-above", 4), 0, 64),
-                reportSink());
+                reportSink(), clamp(config.getInt("nav.max-step", 1), 0, 1));
     }
 
     private static int clamp(int value, int low, int high) {
@@ -1330,6 +1409,9 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
                     + ", crossing " + classes.getOrDefault(NavSurface.CROSSING, 0)
                     + ", unclassified " + classes.getOrDefault(NavSurface.UNKNOWN, 0)));
             lines.add(new Line(NamedTextColor.GRAY, "  palette hash: " + (gi.paletteHash() == null ? "none (legacy scan)" : gi.paletteHash())));
+            if (!NavGraphRepository.SOURCE_SCAN.equals(gi.source())) lines.add(new Line(NamedTextColor.GRAY, "  source: "
+                    + gi.source() + " document " + (gi.originSha() == null ? "none" : gi.originSha().substring(0, 12))
+                    + (gi.originRef() == null ? "" : " from " + gi.originRef())));
             if ("DRAFT".equals(gi.status())) lines.add(new Line(NamedTextColor.GRAY,
                     "  Tag nearby nodes: /npcnav taghere " + id + " <tag> [remove]"));
             return new Reply(lines, null);
@@ -1373,13 +1455,15 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         send(sender, NamedTextColor.GRAY, "  scanhere <region> <radius> [palette]   (in-game)");
         send(sender, NamedTextColor.GRAY, "  scanbox <region> <world> <x1> <y1> <z1> <x2> <y2> <z2> [palette] [load]");
         send(sender, NamedTextColor.GRAY, "  palette <name>   (prints the block classes, street numbers and hash)");
-        send(sender, NamedTextColor.GRAY, "  validate <graphId> | publish <graphId> [legacy] | info <graphId> | list");
+        send(sender, NamedTextColor.GRAY, "  validate <graphId> | publish <graphId> [legacy|asbuilt] | info <graphId> | list");
         send(sender, NamedTextColor.GRAY, "  corridor <graphId> (2..8 tagged nodes; creates a new draft only)");
         send(sender, NamedTextColor.GRAY, "  copytags <fromGraphId> <toDraftId> [partial]   (carry tags onto a new draft)");
         send(sender, NamedTextColor.GRAY, "  restore <archivedGraphId>   (new draft from an archived graph)");
         send(sender, NamedTextColor.GRAY, "  revalidate <graphId|active> [load]   (does the world still match the graph?)");
         send(sender, NamedTextColor.GRAY, "  audit <graphId> [live] [load] [palette <name>] | audit selftest   (do routes keep to sidewalks?)");
         send(sender, NamedTextColor.GRAY, "  taghere <graphUUID> <tag> [remove]   (DRAFT, in-game, within 1.5 blocks)");
+        send(sender, NamedTextColor.GRAY, "  wp add|move|remove|link|unlink|tag|list|check|build|export|import <region> ...   (staff waypoints)");
+        send(sender, NamedTextColor.GRAY, "  import <region> <world> <file> [palette] [load] | export <graphId>   (route files in nav-import/)");
         send(sender, NamedTextColor.GRAY, "  Tags: home|work|market|leisure[:residentUUID], work:<occupation>, spawn");
         send(sender, NamedTextColor.GRAY, "  Tags describe routes; they grant no ownership or access permissions.");
     }
@@ -1394,7 +1478,7 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
         String last = args.length == 0 ? "" : args[args.length - 1].toLowerCase(Locale.ROOT);
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(List.of("scanhere", "scanbox", "palette", "validate", "publish", "corridor",
-                    "copytags", "restore", "revalidate", "audit", "taghere", "info", "list"));
+                    "copytags", "restore", "revalidate", "audit", "taghere", "info", "list", "wp", "import", "export"));
             subs.removeIf(s -> !s.startsWith(last));
             return subs;
         }
@@ -1410,7 +1494,9 @@ public final class NpcNavCommand implements CommandExecutor, TabCompleter, AutoC
             case "palette" -> args.length == 2 ? paletteNames() : List.of();
             case "scanbox" -> args.length == 10 ? paletteNames() : args.length >= 10 ? List.of("load") : List.of();
             case "scanhere" -> args.length == 4 ? paletteNames() : List.of();
-            case "publish" -> args.length == 3 ? List.of("legacy") : List.of();
+            case "publish" -> args.length == 3 ? List.of("legacy", "asbuilt") : List.of();
+            case "wp" -> NavWaypointCommands.complete(args, paletteNames());
+            case "import" -> args.length == 5 ? paletteNames() : args.length == 6 ? List.of("load") : List.of();
             case "copytags" -> args.length == 4 ? List.of("partial") : List.of();
             case "revalidate" -> args.length == 2 ? List.of("active") : args.length == 3 ? List.of("load") : List.of();
             case "audit" -> args.length == 2 ? List.of("selftest") : args.length >= 3

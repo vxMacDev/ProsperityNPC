@@ -1,5 +1,7 @@
 package com.prosperitysmp.npc.economy;
 
+import com.prosperitysmp.npc.api.MoneySource;
+import com.prosperitysmp.npc.economy.vault.VaultMoneySource;
 import com.prosperitysmp.npc.economy.TransferProof.Leg;
 import com.prosperitysmp.npc.economy.TransferProof.LegOutcome;
 import com.prosperitysmp.npc.economy.TransferProof.Refusal;
@@ -14,7 +16,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.*;
 
-class VaultLegObservationTest {
+class LegObservationTest {
     private static final UUID ID = new UUID(0, 7), OTHER_ID = new UUID(0, 8);
     private static final OfflinePlayer ACCOUNT = player(ID), COUNTERPARTY = player(OTHER_ID);
 
@@ -53,15 +55,16 @@ class VaultLegObservationTest {
                     }
                     throw new AssertionError("unexpected economy call: " + m.getName());
                 });
-        final Supplier<Economy> current = () -> {
+        final MoneySource.Pin pin = VaultMoneySource.pinFor(economy);
+        final Supplier<MoneySource.Pin> current = () -> {
             supplierCalls++;
             trace.add("supplier-" + supplierCalls);
             if (supplierThrows != null) throw supplierThrows;
             if (supplierError != null) throw supplierError;
             if (stale || (staleOnSecondCheck && supplierCalls == 2)) return null;
-            return economy;
+            return pin;
         };
-        VaultLegObservation adapter(boolean main) { return new VaultLegObservation(economy, current, () -> main); }
+        LegObservation adapter(boolean main) { return new LegObservation(pin, current, () -> main); }
         TransferProof.Observation run(long cents, Leg leg) { return adapter(true).execute(ID, ACCOUNT, COUNTERPARTY, cents, leg); }
     }
 

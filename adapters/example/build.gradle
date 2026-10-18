@@ -1,0 +1,20 @@
+// DEV-only reference adapter. Never released.
+version = '0.1.0'
+apply from: rootProject.file('gradle/adapter.gradle')
+
+tasks.named('jar') {
+    archiveBaseName = 'ProsperityNPC-Example'
+    archiveClassifier = ''
+}
+
+// The adapter runs the shared contract suite against its own backend, as a third-party adapter would.
+dependencies {
+    testImplementation testFixtures(project(':api'))
+    testImplementation project(':api')
+    testImplementation 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform { excludeTags 'meta-subject' }
+}

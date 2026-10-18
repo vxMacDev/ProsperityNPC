@@ -38,9 +38,19 @@ public final class PurchaseService implements AutoCloseable {
     public interface ItemReceiptReader {
         Optional<ItemRepairRepository.Stored> find(UUID collection, UUID player) throws SQLException;
     }
+    @FunctionalInterface
+    public interface BillReceiptReader {
+        Optional<BillPayments.Receipt> find(UUID request, UUID payer) throws SQLException;
+    }
+    @FunctionalInterface
+    public interface UtilityReceiptReader {
+        Optional<UtilityRepository.Receipt> find(UUID request, UUID payer) throws SQLException;
+    }
     private final ProsperityNpcPlugin plugin;
     private final ReceiptReader purchases;
     private final ItemReceiptReader itemRepairs;
+    private final BillReceiptReader bills;
+    private final UtilityReceiptReader utilities;
     private final Set<UUID> pending = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Long> cooldowns = new HashMap<>(); // main-thread only, capped at 256
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
@@ -57,10 +67,22 @@ public final class PurchaseService implements AutoCloseable {
 
     /** itemRepairs is asked only when no purchase receipt matches, so a purchase receipt always wins. */
     public PurchaseService(ProsperityNpcPlugin plugin, ReceiptReader purchases, ItemReceiptReader itemRepairs) {
+        this(plugin, purchases, itemRepairs, (request, payer) -> Optional.empty());
+    }
+
+    public PurchaseService(ProsperityNpcPlugin plugin, ReceiptReader purchases, ItemReceiptReader itemRepairs,
+                           BillReceiptReader bills) {
+        this(plugin, purchases, itemRepairs, bills, (request, payer) -> Optional.empty());
+    }
+
+    public PurchaseService(ProsperityNpcPlugin plugin, ReceiptReader purchases, ItemReceiptReader itemRepairs,
+                           BillReceiptReader bills, UtilityReceiptReader utilities) {
         this.plugin = plugin;
         if (plugin != null) plugin.trackDatabaseWorker(worker);
         this.purchases = purchases;
         this.itemRepairs = Objects.requireNonNull(itemRepairs);
+        this.bills = Objects.requireNonNull(bills);
+        this.utilities = Objects.requireNonNull(utilities);
     }
 
     /** Receipts remain readable during a hold and after sale, but only by their payer. */
@@ -81,9 +103,17 @@ public final class PurchaseService implements AutoCloseable {
                     var receipt = purchases.findByRequest(request);
                     boolean paid = receipt.isPresent() && receipt.get().request().payerId().equals(actor);
                     var items = paid ? Optional.<ItemRepairRepository.Stored>empty() : itemRepairs.find(request, actor);
+                    var bill = paid || items.isPresent() ? Optional.<BillPayments.Receipt>empty()
+                            : bills.find(request, actor).filter(receiptRow -> actor.equals(receiptRow.ownerId())
+                                    && request.equals(receiptRow.requestId()));
+                    var utility = paid || items.isPresent() || bill.isPresent() ? Optional.<UtilityRepository.Receipt>empty()
+                            : utilities.find(request, actor).filter(row -> actor.equals(row.bill().ownerId())
+                                    && request.equals(row.requestId()));
                     deliver(player, () -> {
                         if (paid) report(player, receipt.get());
                         else if (items.isPresent()) itemLines(items.get()).forEach(line -> send(player, NamedTextColor.GRAY, line));
+                        else if (bill.isPresent()) billLines(bill.get()).forEach(line -> send(player, NamedTextColor.GRAY, line));
+                        else if (utility.isPresent()) utilityLines(utility.get()).forEach(line -> send(player, NamedTextColor.GRAY, line));
                         else send(player, NamedTextColor.GRAY, "No matching receipt for your account.");
                     });
                 } catch (SQLException | RuntimeException error) {
@@ -143,6 +173,28 @@ public final class PurchaseService implements AutoCloseable {
         return List.of("Item repair for problem #" + q.repair().incidentId() + "." + when,
                 "Items: " + ItemRepairRecipes.describe(q.lines()) + ". No money moved.", state);
     }
+
+    static List<String> billLines(BillPayments.Receipt receipt) {
+        String state = switch (receipt.state()) {
+            case PAID -> "Bill paid.";
+            case WAITING -> "Payment is still being checked. Do not pay again yet.";
+            case DECLINED -> "This attempt was declined. Check the bill before paying again.";
+            case REVIEW_REQUIRED -> "Payment needs a staff check. Do not pay again.";
+        };
+        return List.of("Bill for " + receipt.day() + ": " + Money.format(receipt.cents()) + ".", state,
+                "Bill: " + receipt.invoiceId(), "/property receipt " + receipt.requestId());
+    }
+    static List<String> utilityLines(UtilityRepository.Receipt receipt) {
+        String state = switch (receipt.state()) {
+            case WAITING -> "Utility payment pending. Do not pay again.";
+            case PAID -> "Utility bill paid.";
+            case DECLINED -> "Utility payment declined. Check today's bill before trying again.";
+            case REVIEW_REQUIRED -> "Utility payment needs a staff check. Do not pay again.";
+        };
+        return List.of("Utility bill for " + receipt.bill().day() + ": " + Money.format(receipt.bill().cents()) + ".",
+                state, "/property receipt " + receipt.requestId());
+    }
+
     public static void unavailable(Player player) {
         send(player, NamedTextColor.RED, "Receipts are unavailable right now.");
     }

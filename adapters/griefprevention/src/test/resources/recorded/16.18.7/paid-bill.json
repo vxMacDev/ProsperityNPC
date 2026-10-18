@@ -1,0 +1,90 @@
+{
+  "vendor": "GriefPrevention",
+  "version": "16.18.7",
+  "vendorSha256": "45e9907c61222e559ed2e099ffee0ede706a21243a31d7db549baf678708fdf0",
+  "paper": "26.1.2 build74",
+  "coreSha256": "bbc12f563c2428f06c9fdc1069537f9dd9a61f4276ae2d4cb9b9782311bf2f7f",
+  "adapterSha256": "a96df3315cdfaeed755694c44c4894473c75096bf379abe2fd0a45ec493c24ff",
+  "recorderSha256": "0de701c4ba76cc005c7d8833937a5434d442518069d7760a808f6642b141938b",
+  "moneyProvider": "Essentials 2.22.0 through Vault",
+  "moneyProviderSha256": "bda4685105977fca2e209820a9f0ad24275bd103390a03236f38e59bfdac58e6",
+  "scope": "One real-provider configured-bill payment through normal GP enrollment, BillingRuntime issuance, core inventory handlers, journal and internal accounting. Synthetic CraftPlayer with no-op memory transport; manually dispatched inventory clicks, not a real client. Prior-day policy history was a fixture written through the normal repository before startup; normal owner-away sync was invoked as an internal stage. No runtime/backend/cache/readiness or clock override.",
+  "configuration": {
+    "property.backend": "griefprevention",
+    "money.source": "vault",
+    "accounting.sink": "internal",
+    "bills.auto-collect-enabled": false,
+    "bills.on-unpaid": "none",
+    "policy": "qa-gp-paid@1",
+    "policyAmountCents": 100
+  },
+  "fixtureSetup": {
+    "newToyAccounts": 2,
+    "seedCentsEach": 1000,
+    "fundsDrainedToZeroAfterVerification": true
+  },
+  "confirmation": {
+    "displayedButton": "Pay bill up to $1.00",
+    "maximumCents": 100,
+    "invoiceCents": 100
+  },
+  "balancesCents": {
+    "before": {
+      "payer": 1000,
+      "reserve": 1000
+    },
+    "after": {
+      "payer": 900,
+      "reserve": 1100
+    },
+    "afterReplay": {
+      "payer": 900,
+      "reserve": 1100
+    },
+    "conservedTotal": 2000
+  },
+  "ownership": {
+    "observedQueryWaiting": "invoice FOR UPDATE waiting for table metadata lock",
+    "subdivisionLeaseHeld": true,
+    "actualParentTransferVetoed": true
+  },
+  "settlement": {
+    "invoiceState": "PAID",
+    "paymentState": "PAID",
+    "eventState": "PAID",
+    "paidCents": 100,
+    "receiptProved": true,
+    "eventCount": 1,
+    "paymentCount": 1,
+    "attemptCount": 1,
+    "observationCount": 2,
+    "publicReceiptSaysBillPaid": true,
+    "replayCountsUnchanged": true
+  },
+  "funding": {
+    "before": {
+      "seed": 5000,
+      "sinks": 0,
+      "unfunded": 0,
+      "payouts": 0
+    },
+    "after": {
+      "seed": 5000,
+      "sinks": 0,
+      "unfunded": 100,
+      "payouts": 0
+    }
+  },
+  "accounting": {
+    "source": "npc-property-bills",
+    "xfer-from-public": 100,
+    "xfer-to-public": 0
+  },
+  "limitations": [
+    "No real Java or Bedrock client interaction",
+    "No scheduled populated daily-cycle or real next-day policy activation",
+    "No provider failure/retry/restart or every bill lifecycle case",
+    "No real RealEstate add-on payment flow",
+    "No vendor pin/package or performance acceptance"
+  ]
+}

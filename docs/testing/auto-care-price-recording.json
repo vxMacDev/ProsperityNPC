@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "subject": "scheduled-auto-care-maintenance-price",
+  "coreSha256": "3cf4750bbd0fd0e7df9513e36845259bd9ece48659deaf8462b021784d787aee",
+  "environment": {
+    "paper": "26.1.2",
+    "java": 25,
+    "databaseSchema": 49,
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "clockZone": "UTC",
+    "dailyResetHour": 4,
+    "settlementTime": "23:59",
+    "vacationFeatureDays": 0
+  },
+  "method": "Synthetic CraftPlayer/in-memory connection, public consent and utility commands, actual unchanged two-minute Bukkit scheduler and installed economy plugins. Read-only observation of scheduler deadline, busy state, queued task and cursor; no cycle invocation or scheduler-field writes.",
+  "checks": [
+    {
+      "case": "manual-utility-preparation",
+      "command": "/property utility pay 1.00",
+      "paidCents": 100,
+      "journal": "PAID",
+      "bothProviderLegsConfirmed": true
+    },
+    {
+      "case": "budget-refusal",
+      "ceilingCents": 1500,
+      "maintenanceCostCents": 1750,
+      "ownerEligible": true,
+      "controlsEnabled": true,
+      "cycleAdvancedAndWorkerDrained": true,
+      "newAutoCareClaims": 0,
+      "newPurchases": 0,
+      "allTableCountsUnchanged": 89,
+      "conditionRetained": 75,
+      "walletMovementCents": 0
+    },
+    {
+      "case": "affordable-next-scheduled-pass",
+      "newCeilingCents": 3000,
+      "consentRevision": 1,
+      "maintenancePaidCents": 1750,
+      "claimState": "SPENT",
+      "receiptState": "APPLIED",
+      "journalState": "PAID",
+      "configuredClaimAndPurchasePriceCents": 1750,
+      "claimIdEqualsRequestId": true,
+      "bothProviderLegsConfirmed": true,
+      "conditionAfter": 80
+    },
+    {
+      "case": "public-off",
+      "consentEnabled": false,
+      "consentRevision": 2,
+      "ceilingCents": 0,
+      "actionMask": 0,
+      "spentClaimAndPaidHistoryRetained": true,
+      "extraMoneyMovementCents": 0
+    }
+  ],
+  "balancesCents": {
+    "ownerBefore": 100000,
+    "reserveBefore": 100000,
+    "ownerAfter": 98150,
+    "reserveAfter": 101850,
+    "combinedBeforeAndAfter": 200000
+  },
+  "funding": {
+    "unfunded": 0,
+    "payouts": 0,
+    "seed": 5000,
+    "sinks": 1850
+  },
+  "cleanup": {
+    "bothAccountsDrained": true,
+    "publicPauseAndClaimPlayerRemoval": true,
+    "fixtureTablesArchivedAndRemoved": 11,
+    "all89BaselineTableCountsRestored": true,
+    "scope": "GP claim sequence and world state were outside bitwise restoration. Historical claim was also re-read under default current prices before removal."
+  },
+  "limits": [
+    "One property with no resident occupants or incidents. Manual utility payment isolates the maintenance budget decision. UTC/late settlement and disabled vacation feature isolate this control from the daily cycle and owner-away decisions.",
+    "This verifies these scheduled price/budget and OFF observations. Broader auto-care lifecycle, provider-call interruption, connected clients, full populated daily cycle and realistic load remain separate acceptance work.",
+    "The private GP QA artifact does not establish vendor dependency/package acceptance."
+  ]
+}

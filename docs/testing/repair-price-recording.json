@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "subject": "repair-price-startup-manual-payment-and-frozen-history",
+  "coreSha256": "7a0e2de222d88a1f00777bdd522f070bfd8df22835ffa899e1693aacf5729745",
+  "environment": {
+    "paper": "26.1.2-74",
+    "java": 25,
+    "database": "MariaDB11.4.5",
+    "schemaBeforeStartupControls": 53,
+    "schemaAfter": 56,
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "zone": "UTC",
+    "resetHour": 4,
+    "settlementTime": "23:59",
+    "vacationFeatureDays": 0,
+    "materialRepairsEnabled": false
+  },
+  "method": "Synthetic CraftPlayer with in-memory transport, public commands and manually delivered Bukkit inventory events. A bounded selected test seed and IncidentRollRepository using active RepairPrices generated one PESTS incident. Money and receipts used the installed native plugins. This was a manual cash repair, not a normal incident cycle or scheduled auto-care repair.",
+  "checks": [
+    {"case": "invalid-startup", "pestsCents": 0, "disabledBeforeDatabaseInitialization": true, "schema53AndAll89CountsAndLogicalRowsUnchanged": true},
+    {"case": "valid-startup", "pestsCents": 2375, "migration54Statements": 4, "migration55Statements": 2, "migration56Statements": 2, "other88TableCountsAndLogicalRowsUnchanged": true},
+    {"case": "reload", "validFileCents": 3500, "invalidFileCents": 0, "restartAndRejectionNoticesShown": true, "activeCentsRemain": 2375},
+    {"case": "new-incident", "type": "PESTS", "cashCents": 2375, "configuredMarkerCents": 2375, "conditionBefore": 80, "conditionAfter": 75},
+    {"case": "public-maximum-refusal", "maximumCents": 2374, "savedCents": 2375, "nativeWalletsAndAll89CountsAndLogicalRowsUnchanged": true},
+    {"case": "public-owner-desk-cash", "displayedCents": 2375, "paidCents": 2375, "configuredPurchaseCents": 2375, "purchaseState": "APPLIED", "journalState": "PAID", "nativeTwoLegProof": true, "serviceCashCents": 2375, "conditionAfter": 80},
+    {"case": "retired-view-replay", "paymentsEnabled": true, "noExtraMoneyOrRows": true},
+    {"case": "public-auto-care-off", "enabledConsentNeverIssued": true, "disabledConsentRevision": 0, "autoCareClaims": 0},
+    {"case": "full-paper-database-restart", "activePestsCents": 3500, "savedIncidentPurchaseAndServiceCents": 2375, "nativeWalletsAndAll89CountsAndLogicalRowsUnchanged": true},
+    {"case": "public-receipt", "systemAndEconomyOff": true, "displayedOriginalCents": 2375},
+    {"case": "cold-owner-desk", "systemOnEconomyOff": true, "noReload": true, "noOpenRepairAfterPaidEffect": true}
+  ],
+  "money": {
+    "beforeCents": [100000, 100000],
+    "afterCents": [97525, 102475],
+    "totalCents": 200000,
+    "cashRepairCents": 2375,
+    "separatelyPaidUtilityCents": 100,
+    "bothPaymentsHaveNativeTwoLegProof": true,
+    "fundingCents": {"seed": 5000, "cashSinks": 2475, "cashPayouts": 0, "unfunded": 0}
+  },
+  "cleanup": {
+    "fixtureTablesProvedArchivedAndRemoved": 13,
+    "schema56BaselineCountsAndLogicalRowsRestored": 89,
+    "publicPropertyPauseAndConsentOff": true,
+    "nativeClaimsAndSyntheticPlayerRemoved": true,
+    "nativeWalletsExactlyZero": true,
+    "newPluginFilesArchivedAndRemoved": 10,
+    "syntheticWorldProfileFilesArchivedAndRemoved": 7,
+    "originalControlledFilesRestoredExactly": 108,
+    "servicesStoppedAndLoopbackPortsClosed": true,
+    "retained": "Forward database schema and sequences, GP next-claim counter and ordinary world changes. No bitwise database/world restoration claim."
+  },
+  "notVerified": [
+    "Scheduled repair ceiling refusal/payment and spent configured-price claim",
+    "New PESTS3500 generation and its marker when equal to another incident type's default",
+    "Native material preview, take, save, return and service history",
+    "Populated scheduled incident and daily cycle",
+    "Connected Java/Bedrock clients or realistic concurrent-player/daily-churn load",
+    "Provider interruption/recovery and full operator/Linux acceptance",
+    "Public vendor pin/package acceptance or other property backends"
+  ]
+}

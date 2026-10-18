@@ -168,4 +168,26 @@ class NavPublishRefreshTest {
             }
         }
     }
+    @Test void waypointEntryPointsLeaveRepositoryAndFileIoOnTheWorker() throws Exception {
+        var entryPoints = List.of("wp", "add", "move", "simpleEdit", "submitEdit", "list", "check", "build",
+                "importFile", "export", "exportSet", "importSet");
+        var seen = new java.util.HashSet<String>();
+        try (var bytes = NavWaypointCommands.class.getResourceAsStream("NavWaypointCommands.class")) {
+            assertNotNull(bytes);
+            var model = ClassFile.of().parse(bytes.readAllBytes());
+            for (var method : model.methods()) {
+                String name = method.methodName().stringValue();
+                if (!entryPoints.contains(name)) continue;
+                seen.add(name);
+                var calls = method.code().stream().flatMap(code -> code.elementStream())
+                        .filter(InvokeInstruction.class::isInstance).map(InvokeInstruction.class::cast).toList();
+                assertFalse(calls.stream().anyMatch(call -> call.owner().asInternalName().endsWith("NavGraphRepository")
+                        && !call.name().equalsString("isValidDraftTag")), name + " contains direct repository IO");
+                assertFalse(calls.stream().anyMatch(call -> call.owner().asInternalName().equals("java/nio/file/Files")),
+                        name + " contains direct file IO");
+            }
+        }
+        assertEquals(java.util.Set.copyOf(entryPoints), seen);
+    }
+
 }

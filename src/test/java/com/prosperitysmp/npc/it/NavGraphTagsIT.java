@@ -68,6 +68,7 @@ class NavGraphTagsIT {
         database = new Database();
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), schemaName, "root", "", 6, 10_000L));
         applyResource("/db/migration/V1__initial_schema.sql");
+        applyResource("/db/migration/V44__nav_graph_sources.sql");
         // The repository writes the surface class and palette hash, so the graph tables need V39 too.
         applyResource("/db/migration/V39__nav_surface.sql");
 

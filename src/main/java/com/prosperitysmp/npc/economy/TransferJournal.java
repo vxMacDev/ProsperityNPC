@@ -58,10 +58,15 @@ public final class TransferJournal {
     private record Event(long id, String key, EventSource source, UUID property, UUID counterparty,
                          int epoch, UUID benefitUnit, String day, long cents, String state, Long paid) {
         String fingerprint() {
-            // All fields preceding key have delimiter-free typed encodings; key is last.
-            return sha("transfer-v1|" + id + "|" + source + "|" + property + "|" + counterparty
-                    + "|" + epoch + "|" + benefitUnit + "|" + day + "|" + cents + "|" + key);
+            return requestSha256(id, source, property, counterparty, epoch, benefitUnit, day, cents, key);
         }
+    }
+    /** The request_sha256 stored on every transfer attempt. Pinned by RequestShaGoldenTest. */
+    static String requestSha256(long id, EventSource source, UUID property, UUID counterparty, int epoch,
+                                UUID benefitUnit, String day, long cents, String key) {
+        // All fields preceding key have delimiter-free typed encodings; key is last.
+        return sha("transfer-v1|" + id + "|" + source + "|" + property + "|" + counterparty
+                + "|" + epoch + "|" + benefitUnit + "|" + day + "|" + cents + "|" + key);
     }
     private final Database database;
     private final UUID reserve;
@@ -286,10 +291,15 @@ public final class TransferJournal {
     /** The same proof for a reader that holds the attempt row's fields rather than a Receipt. */
     public static boolean declinedProof(Connection c, UUID attempt, long cents, boolean creditStarted,
                                         Observation debit, Observation credit) throws SQLException {
+        return declinedProof(c, attempt, cents, creditStarted, debit, credit, true);
+    }
+
+    private static boolean declinedProof(Connection c, UUID attempt, long cents, boolean creditStarted,
+                                          Observation debit, Observation credit, boolean lock) throws SQLException {
         if (credit != null) return false;
         if (evaluate(cents, Leg.DEBIT, debit) == LegOutcome.NO_MOVEMENT) return true;
         if (creditStarted) return false;
-        Resolution r = resolution(c, attempt);
+        Resolution r = resolution(c, attempt, lock);
         return r != null && "LEGACY_REFUSAL".equals(r.kind()) && legacyGateRefused(cents, Leg.DEBIT, debit);
     }
 
@@ -299,6 +309,23 @@ public final class TransferJournal {
         if (found.isEmpty() || found.get().state() != expected) return false;
         Receipt receipt = found.get();
         binding(c, event(c, eventId, true), receipt, receipt.handle());
+        return true;
+    }
+
+    /** Receipt readers use one read-only snapshot, without taking payment locks. */
+    static boolean receiptProvedReadOnly(Connection c, long eventId, UUID payer, long cents, boolean paid) throws SQLException {
+        if (c.getAutoCommit()) throw new SQLException("Receipt proof requires caller-owned transaction");
+        var found = byEvent(c, eventId, false);
+        if (found.isEmpty()) return false;
+        Receipt receipt = found.get();
+        Event event = event(c, eventId, false);
+        if (event == null || !receipt.payer().equals(payer) || receipt.cents() != cents || event.cents() != cents
+                || !receipt.requestSha256().equals(event.fingerprint())) return false;
+        if (paid) {
+            if (receipt.state() != State.PAID || !"PAID".equals(event.state()) || !Objects.equals(event.paid(), cents)) return false;
+        } else if ((receipt.state() != State.DECLINED && receipt.state() != State.COMPENSATED)
+                || !"FAILED".equals(event.state()) || !Objects.equals(event.paid(), 0L)) return false;
+        proofs(c, receipt, false);
         return true;
     }
 
@@ -361,7 +388,7 @@ public final class TransferJournal {
             // A credit refused before its call leaves the debit to be refunded by staff; it is never retried.
             if (evaluateTransfer(receipt.cents(), debit, evidence) != TransferOutcome.PAID)
                 return ambiguous(c, receipt, evidence.refusedBeforeCall() != null ? "CREDIT_REFUSED_BEFORE_CALL" : "CREDIT_UNCERTAIN");
-            String column = event.source().isPayout() ? "successful_cash_payouts_cents" : "successful_cash_sinks_cents";
+            String column = FundingColumns.fundingColumn(event.source());
             try (PreparedStatement ps = prepare(c, "UPDATE npc_property_funding SET " + column + "=" + column
                     + "+?,updated_at=CURRENT_TIMESTAMP(3) WHERE property_id=?")) {
                 ps.setLong(1, receipt.cents());
@@ -504,17 +531,21 @@ public final class TransferJournal {
     }
     /** Cross-table state is evidence only when the required durable observations agree. */
     private static void proofs(Connection c, Receipt receipt) throws SQLException {
-        Observation debit = observation(c, receipt.handle().attemptId(), Leg.DEBIT, true).orElse(null);
-        Observation credit = observation(c, receipt.handle().attemptId(), Leg.CREDIT, true).orElse(null);
+        proofs(c, receipt, true);
+    }
+
+    private static void proofs(Connection c, Receipt receipt, boolean lock) throws SQLException {
+        Observation debit = observation(c, receipt.handle().attemptId(), Leg.DEBIT, lock).orElse(null);
+        Observation credit = observation(c, receipt.handle().attemptId(), Leg.CREDIT, lock).orElse(null);
         boolean confirmedDebit = evaluate(receipt.cents(), Leg.DEBIT, debit) == LegOutcome.CONFIRMED;
         boolean valid = switch (receipt.state()) {
             case DEBIT_INTENT -> debit == null && credit == null;
             case CREDIT_READY, CREDIT_INTENT -> confirmedDebit && credit == null;
             case PAID -> evaluateTransfer(receipt.cents(), debit, credit) == TransferOutcome.PAID;
-            case DECLINED -> declinedProof(c, receipt, debit, credit);
+            case DECLINED -> declinedProof(c, receipt.handle().attemptId(), receipt.cents(), receipt.creditStarted(), debit, credit, lock);
             case COMPENSATED -> {
                 if (debit == null) yield false;
-                Resolution r = resolution(c, receipt.handle().attemptId());
+                Resolution r = resolution(c, receipt.handle().attemptId(), lock);
                 if (r == null || !"REFUND".equals(r.kind()) || r.beforeBits() == null || r.afterBits() == null
                         || r.evidenceSha() == null || !r.evidenceSha().matches("[a-f0-9]{64}")) yield false;
                 // The credit either never started, or it stopped before its money call.
@@ -530,7 +561,11 @@ public final class TransferJournal {
         if (!valid) throw new SQLException("Transfer phase and durable evidence disagree");
     }
     private static Resolution resolution(Connection c, UUID attempt) throws SQLException {
-        try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_transfer_resolutions WHERE attempt_id=? FOR UPDATE")) {
+        return resolution(c, attempt, true);
+    }
+
+    private static Resolution resolution(Connection c, UUID attempt, boolean lock) throws SQLException {
+        try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_transfer_resolutions WHERE attempt_id=?" + (lock ? " FOR UPDATE" : ""))) {
             id(ps, 1, attempt);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;

@@ -109,4 +109,15 @@ class UxBundleConfigTest {
         assertTrue(block.toString().contains("SMOOTH_STONE"), "the example says curbs and plot outlines are a server choice");
         assertEquals(12, parsed.rules().crosswalkReach());
     }
+    @Test void waypointAndImportLimitsShipWithTheBoundedDefaults() throws Exception {
+        var config = shipped();
+        assertEquals(600, config.getInt("nav.waypoints.max-points", -1));
+        assertEquals(1200, config.getInt("nav.waypoints.max-links", -1));
+        assertEquals(1024, config.getInt("nav.waypoints.max-nodes", -1));
+        assertEquals("", config.getString("nav.waypoints.palette"));
+        assertTrue(config.contains("nav.waypoints.require-palette") && config.getBoolean("nav.waypoints.require-palette"));
+        assertEquals("nav-import", config.getString("nav.import.dir"));
+        assertEquals(1_048_576L, config.getLong("nav.import.max-bytes", -1));
+    }
+
 }

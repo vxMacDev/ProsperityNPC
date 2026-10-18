@@ -117,7 +117,8 @@ class IncidentRepairIT {
             for (String file : List.of("V1__initial_schema.sql", "V2__resident_identity.sql",
                     "V3__purchase_receipts.sql", "V4__transfer_journal.sql", "V5__resident_route_tags.sql",
                     "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V8__eviction_tenancies.sql",
-                    "V12__incident_service_receipts.sql", "V15__tenancy_departures.sql")) applyResource("/db/migration/" + file);
+                    "V12__incident_service_receipts.sql", "V15__tenancy_departures.sql", "V45__property_backend.sql",
+                    "V49__upgrade_cost_width.sql")) applyResource("/db/migration/" + file);
             // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
             try (var v40 = database.getConnection()) { com.prosperitysmp.npc.db.V40Fixture.apply(v40); }
         } catch (Exception | AssertionError failure) {
@@ -169,6 +170,21 @@ class IncidentRepairIT {
             execute("DROP TRIGGER IF EXISTS repair_memory_failure");
             execute("DROP TRIGGER IF EXISTS repair_intent_failure");
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {2_250_000_000L, 2_400_000_000L})
+    void repairKeepsLargeUpgradeAuditCostInItsFrozenSnapshot(long cost) throws Exception {
+        execute("UPDATE npc_upgrades SET level=3,purchase_cost_cents=? WHERE property_id=? AND upgrade_type='ADVERTISING'", cost, property);
+        var request = quote();
+        var waiting = purchases.enqueue(request);
+        pay(waiting);
+        var applied = purchases.complete(waiting.eventId()).orElseThrow();
+        assertEquals(State.APPLIED, applied.state());
+        assertEquals(applied, purchases.complete(waiting.eventId()).orElseThrow());
+        assertEquals(request, purchases.findByRequest(request.requestId()).orElseThrow().request());
+        assertEquals(Long.toString(cost), scalar("SELECT purchase_cost_cents FROM npc_upgrades WHERE property_id=? AND upgrade_type='ADVERTISING'", property));
+        assertEquals(null, scalar("SELECT disabled_incident_id FROM npc_upgrades WHERE property_id=? AND upgrade_type='ADVERTISING'", property));
     }
 
     @ParameterizedTest

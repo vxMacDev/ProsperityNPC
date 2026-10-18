@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "subject": "configured-repair-normal-scheduled-ceiling-and-frozen-claim",
+  "coreSha256": "7a0e2de222d88a1f00777bdd522f070bfd8df22835ffa899e1693aacf5729745",
+  "environment": {
+    "paper": "26.1.2-74",
+    "java": 25,
+    "database": "MariaDB11.4.5",
+    "databaseSchema": 56,
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "zone": "UTC",
+    "resetHour": 4,
+    "settlementTime": "23:59",
+    "vacationFeatureDays": 0,
+    "maintenanceCents": 4000,
+    "materialRepairsEnabled": false
+  },
+  "method": "One synthetic CraftPlayer with in-memory transport, a vacant publicly enrolled home, public consent commands and the normal two-minute Bukkit scheduler. IncidentRollRepository with active RepairPrices and a bounded selected test seed generated one PESTS incident. The repair was paid by the normal scheduled scan. No manual repair button, forced cycle, scheduler-field change or clock change was used. Maintenance4000 prevented fallback upkeep during this repair-ceiling test.",
+  "checks": [
+    {"case": "new-incident", "type": "PESTS", "cashCents": 2375, "configuredMarkerCents": 2375, "conditionBefore": 80, "conditionAfter": 75},
+    {"case": "manual-utility-first", "paidCents": 100, "nativeTwoLegProof": true, "repairStillOpen": true, "repairPurchasesAndClaims": 0},
+    {"case": "normal-scheduled-budget-refusal", "ceilingCents": 2000, "consentRevision": 0, "controlsAndAuthorityReady": true, "cycleAdvancedAndWorkerDrained": true, "all89CountsAndLogicalRowsUnchanged": true, "nativeWalletsAndFundingUnchanged": true, "noClaimPurchaseOrMaintenance": true},
+    {"case": "normal-scheduled-repair", "ceilingCents": 3000, "consentRevision": 1, "cycleAdvancedAndWorkerDrained": true, "paidCents": 2375, "configuredPurchaseCents": 2375, "configuredClaimCents": 2375, "requestMatchesClaim": true, "purchaseState": "APPLIED", "journalState": "PAID", "claimState": "SPENT", "claimAction": "CASH_REPAIR", "nativeTwoLegProof": true, "serviceCashCents": 2375, "conditionAfter": 80},
+    {"case": "public-off", "disabledConsentRevision": 2, "ceilingAndActionMaskZero": true, "spentClaimRetained": true},
+    {"case": "full-paper-database-restart", "activePestsCents": 3500, "savedIncidentPurchaseServiceAndClaimCents": 2375, "all89CountsAndLogicalRowsUnchanged": true, "nativeWalletsAndProviderProofUnchanged": true, "consentStillOffRevision2": true},
+    {"case": "public-receipt-after-restart", "systemAndEconomyOff": true, "displayedOriginalCents": 2375}
+  ],
+  "money": {
+    "beforeCents": [100000, 100000],
+    "afterManualUtilityCents": [99900, 100100],
+    "afterScheduledRepairCents": [97525, 102475],
+    "totalCents": 200000,
+    "scheduledRepairCents": 2375,
+    "manualUtilityCents": 100,
+    "fundingCents": {"seed": 5000, "cashSinks": 2475, "cashPayouts": 0, "unfunded": 0}
+  },
+  "cleanup": {
+    "fixtureTablesProvedArchivedAndRemoved": 14,
+    "schema56BaselineCountsAndLogicalRowsRestored": 89,
+    "publicPropertyPauseAndConsentOff": true,
+    "nativeClaimsAndSyntheticPlayerRemoved": true,
+    "nativeWalletsExactlyZero": true,
+    "newPluginFilesArchivedAndRemoved": 10,
+    "syntheticWorldProfileFilesArchivedAndRemoved": 7,
+    "originalControlledFilesRestoredExactly": 108,
+    "servicesStoppedAndLoopbackPortsClosed": true,
+    "retained": "Forward database schema and sequences, GP next-claim counter and ordinary world changes. No bitwise database/world restoration claim."
+  },
+  "notVerified": [
+    "New PESTS3500 generation and its configured marker when equal to another incident type's default",
+    "Native material preview, take, save, return and service history",
+    "Populated scheduled incident and daily cycle",
+    "Connected Java/Bedrock clients or realistic concurrent-player/daily-churn load",
+    "Extended auto-care lifecycle, provider interruption/recovery and full operator/Linux acceptance",
+    "Public vendor pin/package acceptance or other property backends"
+  ]
+}

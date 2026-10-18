@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "subject": "configured-eviction-price",
+  "coreSha256": "15546ad01ad921d3db754df55c84a2ce6aeab19d372505f9e6d74c8ff018124a",
+  "environment": {
+    "paper": "26.1.2",
+    "java": 25,
+    "databaseSchema": 50,
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "clockZone": "UTC",
+    "dailyResetHour": 4,
+    "settlementTime": "23:59",
+    "autoCareEnabled": false,
+    "vacationFeatureDays": 0
+  },
+  "method": "Synthetic CraftPlayer with an in-memory connection and manual inventory events; actual public commands, GP subdivision, installed economy plugins, database and journal. No connected client or whole-server load measurement.",
+  "checks": [
+    {
+      "case": "maximum-refusal",
+      "loadedPriceCents": 2375,
+      "typedMaximumCents": 2374,
+      "newReceipts": 0,
+      "balancesUnchanged": true,
+      "all89TableCountsUnchanged": true
+    },
+    {
+      "case": "text-command-suggestion",
+      "displayedCost": "$23.75",
+      "suggestedMaximum": "23.75"
+    },
+    {
+      "case": "owner-desk-payment",
+      "displayedCents": 2375,
+      "paidCents": 2375,
+      "purchaseState": "APPLIED",
+      "journalState": "PAID",
+      "bothProviderLegsConfirmed": true,
+      "tenancyRevision": [
+        0,
+        1
+      ],
+      "occupancy": "vacant",
+      "residentProfileUnchanged": true,
+      "hashedDepartureCount": 1
+    },
+    {
+      "case": "retired-confirmation-replay",
+      "systemAndEconomyEnabled": true,
+      "balancesReceiptsTenancyProfileAndDepartureUnchanged": true,
+      "all89TableCountsUnchanged": true
+    },
+    {
+      "case": "full-paper-and-database-restart",
+      "loadedPriceBeforeCents": 2375,
+      "loadedPriceAfterCents": 3000,
+      "acceptedReceiptCents": 2375,
+      "publicReceiptRetainsAcceptedAmount": true,
+      "balancesFundingProfileDepartureAndAll89CountsUnchanged": true
+    },
+    {
+      "case": "new-request-for-vacated-tenancy",
+      "typedMaximumCents": 3000,
+      "refusedBeforeNewPayment": true,
+      "all89TableCountsUnchanged": true
+    }
+  ],
+  "balances": {
+    "beforeDollars": [
+      1000,
+      1000
+    ],
+    "afterDollars": [
+      976.25,
+      1023.75
+    ],
+    "totalDollars": 2000
+  },
+  "fundingCents": {
+    "seed": 5000,
+    "cashSinks": 2375,
+    "cashPayouts": 0,
+    "unfunded": 0
+  },
+  "cleanup": {
+    "knownProviderBalancesDrained": true,
+    "fixturePropertyPausedAndClaimsPlayerRemoved": true,
+    "fixtureTablesValidatedArchivedAndRemoved": 10,
+    "schema50BaselineTableCountsRestored": 89,
+    "knownNewFilesArchived": 18,
+    "originalCoreConfigLocaleIdentityIndexesAndCacheRestored": true,
+    "retained": "Forward schema50 migration and GP claim sequence; no bitwise world/database restoration claim."
+  },
+  "notVerified": [
+    "Connected Java or Bedrock clients",
+    "Realistic concurrent-player and daily-churn load",
+    "Populated scheduled daily cycle",
+    "Provider-call interruption and full recovery lifecycle",
+    "Vendor pin/package acceptance or other property backends"
+  ]
+}

@@ -42,10 +42,12 @@ class PaymentRefusalWiringTest {
 
     @Test void utilityRequestsStopAsNotStartedOnlyBeforePrepare() throws Exception {
         String code = read(UTILITY);
-        String core = section(code, "com.prosperitysmp.npc.property.AutoCareRepository.Claim recurring, Consumer<Boolean> finished) {",
+        String core = section(code, "com.prosperitysmp.npc.property.AutoCareRepository.Claim recurring, Consumer<Boolean> finished,",
                 "/** The reply when a request stopped before any payment row or transfer existed. */");
-        int prepare = core.indexOf("var prepared = prepare(requestId,");
+        int prepare = core.indexOf("var prepared = invoiceId != null");
         assertTrue(prepare > 0);
+        assertTrue(core.indexOf("? prepareBill(requestId,", prepare) > prepare);
+        assertTrue(core.indexOf(": prepare(requestId,", prepare) > prepare);
         // U1: a fingerprint failure, and U2: the first authority check, are both before any SQL.
         int handle = core.indexOf(".handle((sha, error) -> {\n                    if (error != null) throw NotStarted.of(error);");
         int compose = core.indexOf(".thenComposeAsync(sha -> {");
@@ -118,7 +120,7 @@ class PaymentRefusalWiringTest {
         assertTrue(rent.indexOf("requireLimits(limits);") < r2 && rent.indexOf("validate(property,") < r2 && r2 < handle);
         // R3: an unreadable reserve balance, or one that cannot be read at all, defers like the floor does, before
         // any journal row.
-        int r3 = rent.indexOf("var available = readableCents(() -> pinned.getProvider().getBalance(Bukkit.getOfflinePlayer(reserve)));");
+        int r3 = rent.indexOf("var available = readableCents(() -> pinned.balanceDollars(Bukkit.getOfflinePlayer(reserve)));");
         int floor = rent.indexOf("if(available.isEmpty() || !floorAllows(available.getAsLong(),row.cents(),limits.centralBankFloorCents())) {");
         assertTrue(r3 > 0 && floor > r3 && handle > floor);
         assertTrue(rent.contains("the reserve balance cannot be verified"));

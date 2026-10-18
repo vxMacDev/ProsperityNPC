@@ -76,6 +76,8 @@ class ItemSaveProofUnitsTest {
         var proof = new ItemSaveProof(ClassLoader.getPlatformClassLoader());
         assertFalse(proof.available());
         var path = java.nio.file.Path.of(".");
+        assertFalse(proof.storageAvailable(path));
+        assertFalse(proof.storageAvailable(null));
         var evidence = new ItemDeliveryEvidence(new java.util.UUID(1, 1), new CustodyBytes(new byte[]{1}).sha256(),
                 "1".repeat(64), "2".repeat(64), 0, 8, 0, true);
         for (var source : ItemCustody.Source.values()) {

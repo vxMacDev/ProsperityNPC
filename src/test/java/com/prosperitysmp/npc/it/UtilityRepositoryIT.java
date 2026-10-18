@@ -14,6 +14,8 @@ import com.prosperitysmp.npc.economy.TransferJournal;
 import com.prosperitysmp.npc.economy.TransferJournal.Handle;
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
 import com.prosperitysmp.npc.economy.UtilityBill;
+import com.prosperitysmp.npc.economy.UtilityPrices;
+import com.prosperitysmp.npc.economy.UtilityServiceRepository;
 import com.prosperitysmp.npc.economy.UtilityRepository;
 import com.prosperitysmp.npc.economy.UtilityRepository.Preparation;
 import com.prosperitysmp.npc.economy.UtilityRepository.Receipt;
@@ -103,7 +105,7 @@ class UtilityRepositoryIT {
                     "V6__incident_repairs.sql", "V7__incident_rolls.sql", "V8__eviction_tenancies.sql",
                     "V9__housing_registry.sql", "V10__housing_moves.sql", "V11__housing_history_order.sql",
                     "V12__incident_service_receipts.sql", "V13__utility_obligations.sql",
-                    "V16__rent_reservations.sql", "V33__payout_retirements.sql")) {
+                    "V16__rent_reservations.sql", "V33__payout_retirements.sql", "V45__property_backend.sql")) {
                 applyResource("/db/migration/" + file);
             }
             // V40: the refusal columns the transfer and commerce readers expect, on the tables this schema has.
@@ -136,6 +138,11 @@ class UtilityRepositoryIT {
             execute(c, "SET SESSION foreign_key_checks=0");
             try { for (String table : tables) execute(c, "DELETE FROM " + table); }
             finally { execute(c, "SET SESSION foreign_key_checks=1"); }
+        }
+        if (!"0".equals(scalar("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='npc_utility_bills' AND COLUMN_NAME='configured_base_cents'"))) {
+            execute("ALTER TABLE npc_utility_bills ADD CONSTRAINT IF NOT EXISTS ck_utility_amount CHECK (amount_cents=100+75*occupied_tenants+50*installed_upgrade_levels)");
+            execute("ALTER TABLE npc_utility_bills DROP CONSTRAINT IF EXISTS ck_utility_amount_v52");
+            execute("ALTER TABLE npc_utility_bills DROP COLUMN configured_base_cents, DROP COLUMN configured_tenant_cents, DROP COLUMN configured_upgrade_level_cents");
         }
         clock = new MutableClock(NOW);
         execute("INSERT INTO npc_rent_mutex(singleton) VALUES (1)");
@@ -573,6 +580,7 @@ class UtilityRepositoryIT {
         rejectedWithoutWrites(() -> prepare(waiting.requestId()));
         rejectedWithoutWrites(() -> repo().reconcile(waiting.eventId()));
         rejectedWithoutWrites(() -> prepare(UUID.randomUUID()));
+        rejectedWithoutWrites(() -> repo().findByRequest(waiting.requestId(), OWNER));
     }
 
     @ParameterizedTest
@@ -769,6 +777,133 @@ class UtilityRepositoryIT {
                         collectionReads::toString);
             }
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void tariffMigrationResumesEveryCutAndPreservesOldBills(int prefix) throws Exception {
+        Receipt old = prepare(UUID.randomUUID()).receipt();
+        var otherRows = dataExcept("npc_utility_bills");
+        List<String> statements;
+        try (var in = getClass().getResourceAsStream("/db/migration/V52__utility_prices.sql")) {
+            assertNotNull(in);
+            statements = MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        assertEquals(3, statements.size());
+        for (String sql : statements.subList(0, prefix)) execute(sql);
+        applyResource("/db/migration/V52__utility_prices.sql");
+        applyResource("/db/migration/V52__utility_prices.sql");
+        assertEquals(List.of(old), repo().history(property, DAY));
+        assertEquals(otherRows, dataExcept("npc_utility_bills"));
+        assertNull(repo().history(property, DAY).getFirst().bill().configuredPrices());
+        assertEquals("1", scalar("SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='npc_utility_bills' AND CONSTRAINT_NAME='ck_utility_amount_v52'"));
+        assertEquals("0", scalar("SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='npc_utility_bills' AND CONSTRAINT_NAME='ck_utility_amount'"));
+    }
+
+    @Test
+    void customTariffSurvivesDeclineRetryPaymentAndDifferentCurrentPrices() throws Exception {
+        applyResource("/db/migration/V52__utility_prices.sql");
+        var prices = new UtilityPrices(200, 125, 100);
+        var original = new UtilityRepository(database, RESERVE, clock, ZONE, RESET, prices);
+        var before = data();
+        assertThrows(UtilityRepository.MaximumExceededException.class,
+                () -> original.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY, 749));
+        assertEquals(before, data());
+        var waiting = original.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY, 750).receipt();
+        assertEquals(750, waiting.bill().cents());
+        assertEquals(prices, waiting.bill().configuredPrices());
+        Receipt declined = decline(waiting);
+        var changed = new UtilityRepository(database, RESERVE, clock, ZONE, RESET, new UtilityPrices(5000, 100, 100));
+        assertEquals(List.of(declined), changed.history(property, DAY));
+        assertThrows(UtilityRepository.MaximumExceededException.class,
+                () -> changed.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY, 749));
+        var retry = changed.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY, 750).receipt();
+        assertEquals(waiting.bill(), retry.bill());
+        pay(retry, clock.instant().plusMillis(20));
+        Receipt paid = changed.reconcile(retry.eventId()).orElseThrow();
+        assertEquals(State.PAID, paid.state());
+        before = data();
+        assertEquals(new Preparation(false, paid), changed.preparePayment(retry.requestId(), property, OWNER, 0, DAY, 750));
+        assertEquals(before, data());
+        var assessment = new UtilityServiceRepository(database, Clock.fixed(paid.bill().dueAt().plusMillis(1), ZoneOffset.UTC))
+                .read(OWNER, paid.bill().dueAt());
+        assertEquals(1, assessment.cases().size());
+        assertEquals(paid.bill(), assessment.cases().getFirst().bill());
+        clock.set(NOW.plusSeconds(86400));
+        Receipt next = changed.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY.plusDays(1), 5500).receipt();
+        assertEquals(5500, next.bill().cents());
+        assertNotEquals(paid.bill().configuredPrices(), next.bill().configuredPrices());
+    }
+
+    @Test
+    void customTariffRequiresItsMigrationWithoutLeavingPartialRows() throws Exception {
+        var before = data();
+        var custom = new UtilityRepository(database, RESERVE, clock, ZONE, RESET, new UtilityPrices(200, 125, 100));
+        assertThrows(SQLException.class, () -> custom.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY));
+        assertEquals(before, data());
+        assertEquals(400, prepare(UUID.randomUUID()).receipt().bill().cents());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"partial", "amount", "stripped", "same-total", "rewritten-legacy"})
+    void malformedOrRewrittenCustomSnapshotsNeverReadAsOriginalBills(String mutation) throws Exception {
+        applyResource("/db/migration/V52__utility_prices.sql");
+        var custom = new UtilityRepository(database, RESERVE, clock, ZONE, RESET, new UtilityPrices(200, 125, 100));
+        custom.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY);
+        String change = switch (mutation) {
+            case "partial" -> "configured_tenant_cents=NULL";
+            case "amount" -> "amount_cents=751";
+            case "stripped" -> "configured_base_cents=NULL,configured_tenant_cents=NULL,configured_upgrade_level_cents=NULL";
+            case "same-total" -> "configured_base_cents=250,configured_tenant_cents=100";
+            case "rewritten-legacy" -> "configured_base_cents=NULL,configured_tenant_cents=NULL,configured_upgrade_level_cents=NULL,amount_cents=400";
+            default -> throw new AssertionError(mutation);
+        };
+        var before = data();
+        if (List.of("partial", "amount", "stripped").contains(mutation)) {
+            assertThrows(SQLException.class, () -> execute("UPDATE npc_utility_bills SET " + change));
+            assertEquals(before, data());
+        } else {
+            execute("UPDATE npc_utility_bills SET " + change);
+            assertThrows(SQLException.class, () -> custom.history(property, DAY));
+        }
+    }
+
+    @Test
+    void payerReceiptLookupKeepsHistoryAndFrozenPriceAfterSaleAndPause() throws Exception {
+        applyResource("/db/migration/V52__utility_prices.sql");
+        var custom = new UtilityRepository(database, RESERVE, clock, ZONE, RESET, new UtilityPrices(1777, 0, 0));
+        var before = data();
+        assertTrue(custom.findByRequest(UUID.randomUUID(), OWNER).isEmpty());
+        assertEquals(before, data());
+        Receipt first = custom.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY).receipt();
+        before = data();
+        assertEquals(first, custom.findByRequest(first.requestId(), OWNER).orElseThrow());
+        assertTrue(custom.findByRequest(first.requestId(), UUID.randomUUID()).isEmpty());
+        assertEquals(before, data());
+        Receipt declined = decline(first);
+        assertEquals(declined, custom.findByRequest(first.requestId(), OWNER).orElseThrow());
+        Receipt retry = custom.preparePayment(UUID.randomUUID(), property, OWNER, 0, DAY).receipt();
+        pay(retry, clock.instant().plusMillis(20));
+        Receipt paid = custom.reconcile(retry.eventId()).orElseThrow();
+        UUID nextOwner = new UUID(0, 1999);
+        execute("UPDATE npc_properties SET owner_uuid=?,ownership_epoch=1,enabled=FALSE WHERE property_id=?", nextOwner, property);
+        var changed = new UtilityRepository(database, RESERVE, clock, ZONE, RESET, new UtilityPrices(2399, 0, 0));
+        before = data();
+        assertEquals(paid, changed.findByRequest(retry.requestId(), OWNER).orElseThrow());
+        assertEquals(declined, changed.findByRequest(first.requestId(), OWNER).orElseThrow());
+        assertTrue(changed.findByRequest(retry.requestId(), nextOwner).isEmpty());
+        assertEquals(1777, changed.findByRequest(retry.requestId(), OWNER).orElseThrow().bill().cents());
+        assertEquals(before, data());
+    }
+
+    @Test
+    void paidReceiptLookupRejectsMissingProviderProofWithoutWrites() throws SQLException {
+        Receipt waiting = prepare(UUID.randomUUID()).receipt();
+        pay(waiting, NOW.plusMillis(10));
+        assertEquals(State.PAID, repo().reconcile(waiting.eventId()).orElseThrow().state());
+        execute("DELETE o FROM npc_transfer_observations o JOIN npc_transfer_attempts a ON a.attempt_id=o.attempt_id "
+                + "WHERE a.event_id=? AND o.leg='CREDIT'", waiting.eventId());
+        rejectedWithoutWrites(() -> repo().findByRequest(waiting.requestId(), OWNER));
     }
 
     private UtilityRepository repo() { return new UtilityRepository(database, RESERVE, clock, ZONE, RESET); }

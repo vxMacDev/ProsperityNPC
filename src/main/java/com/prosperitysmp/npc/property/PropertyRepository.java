@@ -30,6 +30,18 @@ public final class PropertyRepository {
         this.database = database;
     }
 
+    // property.backend the plugin runs with (V45). Enrollment records it; homes enrolled under another backend are
+    // left out of the enrolled list, so no payment or move reaches them. Set once at startup, before the first read.
+    private volatile String backendId = "arm";
+
+    /** The configured property backend id; "arm" unless property.backend names another. */
+    public void backendId(String id) {
+        if (id == null || id.isBlank() || id.length() > 32) throw new IllegalArgumentException("Bad backend id");
+        backendId = id;
+    }
+
+    public String backendId() { return backendId; }
+
     /** Enrolls a property + its funding row + the initial ownership record, atomically. */
     public void insertEnrollment(Property p, long seedCents) throws SQLException {
         insertEnrollment(p, seedCents, null);
@@ -71,8 +83,8 @@ public final class PropertyRepository {
                         INSERT INTO npc_properties
                           (property_id, world_uuid, region_id, market_id, class_key, capacity,
                            reference_rent_cents, asking_rent_cents, owner_uuid, ownership_epoch,
-                           condition_score, enabled, row_version)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                           condition_score, enabled, row_version, backend_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                         """)) {
                     ps.setBytes(1, Uuids.toBytes(p.propertyId()));
                     ps.setBytes(2, Uuids.toBytes(p.worldUuid()));
@@ -86,6 +98,7 @@ public final class PropertyRepository {
                     ps.setInt(10, p.ownershipEpoch());
                     ps.setInt(11, p.conditionScore());
                     ps.setBoolean(12, p.enabled());
+                    ps.setString(13, backendId);
                     ps.executeUpdate();
                 }
                 try (PreparedStatement ps = c.prepareStatement(
@@ -746,13 +759,72 @@ public final class PropertyRepository {
         List<Property> out = new ArrayList<>();
         try (Connection c = database.getConnection();
              PreparedStatement ps = c.prepareStatement(
-                     "SELECT * FROM npc_properties WHERE enabled = TRUE ORDER BY market_id, region_id");
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.add(map(rs));
+                     "SELECT * FROM npc_properties WHERE enabled = TRUE AND backend_id = ? ORDER BY market_id, region_id")) {
+            ps.setString(1, backendId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(map(rs));
+                }
             }
         }
         return out;
+    }
+
+    /** Enabled homes enrolled under another backend than the configured one, counted per backend id. */
+    public java.util.SortedMap<String, Integer> enrolledUnderOtherBackends() throws SQLException {
+        var out = new java.util.TreeMap<String, Integer>();
+        try (Connection c = database.getConnection();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT backend_id, COUNT(*) FROM npc_properties WHERE enabled = TRUE AND backend_id <> ? GROUP BY backend_id")) {
+            ps.setString(1, backendId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) out.put(rs.getString(1), rs.getInt(2));
+            }
+        }
+        return out;
+    }
+
+    /** The health line for homes left out by backend; "" when none are. */
+    public static String otherBackendsText(java.util.SortedMap<String, Integer> other, String configured) {
+        if (other == null || other.isEmpty()) return "";
+        int total = other.values().stream().mapToInt(Integer::intValue).sum();
+        String where = other.size() == 1 ? other.firstKey() : "other backends " + other;
+        String back = other.size() == 1 ? other.firstKey() : "their backend";
+        return total + (total == 1 ? " home was" : " homes were") + " enrolled under " + where
+                + "; the configured backend is " + configured + "."
+                + (total == 1 ? " It stays" : " They stay") + " out of payments until property.backend is " + back + " again.";
+    }
+
+    /** A row for the region exists, but it was enrolled under another property backend. */
+    public static final class EnrolledUnderOtherBackend extends SQLException {
+        private final String backendId;
+
+        public EnrolledUnderOtherBackend(String backendId) {
+            super("Enrolled under " + backendId + "; set property.backend back to " + backendId + " to manage it.");
+            this.backendId = backendId;
+        }
+
+        public String backendId() { return backendId; }
+    }
+
+    /**
+     * The region's row, only when it was enrolled under {@code backendId}. A row enrolled under another backend
+     * throws {@link EnrolledUnderOtherBackend}: its region id means nothing to the configured backend.
+     */
+    public Optional<Property> findByWorldRegion(UUID worldUuid, String regionId, String backendId) throws SQLException {
+        Objects.requireNonNull(backendId);
+        try (Connection c = database.getConnection();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT * FROM npc_properties WHERE world_uuid = ? AND region_id = ?")) {
+            ps.setBytes(1, Uuids.toBytes(worldUuid));
+            ps.setString(2, regionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return Optional.empty();
+                String enrolledUnder = rs.getString("backend_id");
+                if (!backendId.equals(enrolledUnder)) throw new EnrolledUnderOtherBackend(enrolledUnder);
+                return Optional.of(map(rs));
+            }
+        }
     }
 
     public Optional<Property> findByWorldRegion(UUID worldUuid, String regionId) throws SQLException {

@@ -75,12 +75,18 @@ public final class HousingDecisionRepository {
     }
 
     public HousingDecisionRepository(Database database, Clock clock, ZoneId zone, int resetHour, int evictedSlotLockDays) {
+        this(database, clock, zone, resetHour, evictedSlotLockDays, null);
+    }
+
+    /** As above; only homes enrolled under {@code backendId} are matched (null: no backend filter). */
+    public HousingDecisionRepository(Database database, Clock clock, ZoneId zone, int resetHour, int evictedSlotLockDays,
+                                     String backendId) {
         this.database = Objects.requireNonNull(database);
         this.clock = Objects.requireNonNull(clock);
         this.zone = Objects.requireNonNull(zone);
         this.resetHour = resetHour;
         days = new EconomyClock(clock, zone, resetHour);
-        market = new HousingMarketRepository(database, clock, zone, resetHour, evictedSlotLockDays);
+        market = new HousingMarketRepository(database, clock, zone, resetHour, evictedSlotLockDays, backendId);
         services = new ServiceAssessmentRepository(database, clock, zone, resetHour);
     }
 

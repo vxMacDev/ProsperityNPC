@@ -1,0 +1,90 @@
+// Shared build for ProsperityNPC adapters: apply from the adapter's build.gradle with
+//   apply from: rootProject.file('gradle/adapter.gradle')
+// An adapter is its own Bukkit plugin with depend: [ProsperityNPC]. It compiles against the API and must never
+// bundle it: one Class object per API type is what makes the ServicesManager lookups agree.
+
+apply plugin: 'java'
+
+dependencies {
+    compileOnly project(':api')
+    compileOnly 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:all,-classfile,-processing'
+}
+
+processResources {
+    def props = [version: project.version]
+    inputs.properties(props)
+    filesMatching('plugin.yml') { expand(props) }
+}
+
+// Every adapter jar carries the licence text.
+tasks.named('jar') {
+    from(rootProject.file('LICENSE')) { into 'META-INF' }
+}
+
+// Packages an adapter jar must never carry: the ProsperityNPC API, Vault, and every vendor or library the vendor
+// adapters compile against. The vendor plugin and the server provide them.
+ext.forbiddenAdapterPackages = ['com/prosperitysmp/npc/api/', 'net/milkbowl/', 'me/angeschossen/', 'com/incredibleplugins/',
+        'me/ryanhamshire/', 'com/plotsquared/', 'com/intellectualsites/', 'com/bekvon/', 'net/Zrips/', 'com/sk89q/',
+        'com/google/', 'net/kyori/']
+
+// What is wrong with an adapter jar; empty when it passes the gate.
+ext.adapterJarProblems = { File jarFile ->
+    def problems = []
+    new java.util.zip.ZipFile(jarFile).withCloseable { zip ->
+        def names = zip.entries().collect { it.name }
+        def yml = zip.getEntry('plugin.yml')
+        if (yml == null) {
+            problems << 'no plugin.yml'
+        } else {
+            def text = zip.getInputStream(yml).getText('UTF-8')
+            def depend = text.readLines().find { it.startsWith('depend:') }
+            if (depend == null || !(depend ==~ /depend:\s*\[(.*,\s*)?ProsperityNPC(\s*,.*)?\]\s*/))
+                problems << 'plugin.yml does not depend on ProsperityNPC'
+        }
+        if (zip.getEntry('META-INF/LICENSE') == null) problems << 'no META-INF/LICENSE'
+        forbiddenAdapterPackages.each { prefix ->
+            def bundled = names.find { it.startsWith(prefix) }
+            if (bundled != null) problems << "bundles ${prefix}: ${bundled}"
+        }
+    }
+    return problems
+}
+
+// The gate must be able to fail: a deliberately bad jar is built and must be refused.
+tasks.register('testAdapterJarGate') {
+    def bad = layout.buildDirectory.file('tmp/adapter-gate/bad-adapter.jar')
+    outputs.file(bad)
+    doLast {
+        def file = bad.get().asFile
+        file.parentFile.mkdirs()
+        new java.util.zip.ZipOutputStream(new FileOutputStream(file)).withCloseable { zip ->
+            zip.putNextEntry(new java.util.zip.ZipEntry('plugin.yml'))
+            zip.write('name: Bad\ndepend: [Lands]\n'.getBytes('UTF-8'))
+            zip.closeEntry()
+            zip.putNextEntry(new java.util.zip.ZipEntry('com/prosperitysmp/npc/api/PropertyBackend.class'))
+            zip.closeEntry()
+            zip.putNextEntry(new java.util.zip.ZipEntry('me/angeschossen/lands/api/LandsIntegration.class'))
+            zip.closeEntry()
+        }
+        def problems = adapterJarProblems(file)
+        if (problems.size() != 4) throw new GradleException("The adapter jar gate missed a bad jar: ${problems}")
+    }
+}
+
+// Jar gates: the adapter carries its own plugin.yml depending on ProsperityNPC, the licence text, and none of the
+// forbidden packages.
+tasks.register('verifyAdapterJar') {
+    dependsOn tasks.named('jar'), tasks.named('testAdapterJarGate')
+    doLast {
+        def jarFile = tasks.named('jar').get().archiveFile.get().asFile
+        def problems = adapterJarProblems(jarFile)
+        if (!problems.isEmpty()) throw new GradleException("${jarFile.name}: ${problems.join('; ')}")
+    }
+}
+tasks.named('build') { dependsOn tasks.named('verifyAdapterJar') }

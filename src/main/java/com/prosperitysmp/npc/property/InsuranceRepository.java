@@ -1,6 +1,8 @@
 package com.prosperitysmp.npc.property;
 
 import com.prosperitysmp.npc.db.Uuids;
+import com.prosperitysmp.npc.economy.PurchasePrices;
+import com.prosperitysmp.npc.economy.PurchaseRepository;
 import com.prosperitysmp.npc.formulas.PropertyFormulas;
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -35,7 +37,7 @@ public final class InsuranceRepository {
     public record ApplyResult(ApplyStatus status, CoverageReceipt receipt) { }
     public record PreventionResult(PreventionStatus status, PreventionReceipt receipt) { }
     private record PropertyState(UUID owner, int epoch, int capacity, boolean enabled) { }
-    private record Payment(Instant paidAt, boolean waiting) { }
+    private record Payment(Instant paidAt, boolean waiting, long priceCents, Long configuredPriceCents) { }
 
     public InsuranceRepository() { }
 
@@ -59,7 +61,8 @@ public final class InsuranceRepository {
         Optional<CoverageReceipt> prior = find(c, eventId);
         if (prior.isPresent()) {
             CoverageReceipt receipt = prior.get();
-            require(matches(receipt, expected) && receipt.paidAt().equals(paidAt), "Insurance replay conflicts");
+            require(matches(receipt, expected) && receipt.paidAt().equals(paidAt)
+                    && receipt.priceCents() == payment.priceCents(), "Insurance replay conflicts");
             return new ApplyResult(ApplyStatus.ALREADY_APPLIED, receipt);
         }
         require(payment.waiting(), "Applied purchase lacks its atomic insurance receipt; no backfill permitted");
@@ -70,14 +73,17 @@ public final class InsuranceRepository {
         LocalDate start = day.plusDays(1), end = start.plusDays(7);
         day(end);
         CoverageReceipt receipt = new CoverageReceipt(eventId, expected.propertyId(), expected.ownerUuid(),
-                expected.ownershipEpoch(), expected.capacity(), PropertyFormulas.insurancePriceCents(expected.capacity()),
+                expected.ownershipEpoch(), expected.capacity(), payment.priceCents(),
                 paidAt, appliedAt, day, start, end);
+        String priceColumn = payment.configuredPriceCents() == null ? "" : ",configured_price_cents";
+        String priceValue = payment.configuredPriceCents() == null ? "" : ",?";
         try (PreparedStatement ps = prepare(c, """
                 INSERT INTO npc_property_insurance(event_id,property_id,owner_uuid,ownership_epoch,capacity,
-                  price_cents,paid_at,applied_at,applied_day,start_day,end_day_exclusive)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                """, eventId, receipt.propertyId(), receipt.ownerUuid(), receipt.ownershipEpoch(), receipt.capacity(),
+                  price_cents,paid_at,applied_at,applied_day,start_day,end_day_exclusive
+                """ + priceColumn + ") VALUES(?,?,?,?,?,?,?,?,?,?,?" + priceValue + ")",
+                eventId, receipt.propertyId(), receipt.ownerUuid(), receipt.ownershipEpoch(), receipt.capacity(),
                 receipt.priceCents(), utc(paidAt), utc(appliedAt), day, start, end)) {
+            if (payment.configuredPriceCents() != null) ps.setLong(12, payment.configuredPriceCents());
             one(c, ps);
         }
         require(find(c, eventId).orElseThrow(() -> new SQLException("Insurance receipt missing")).equals(receipt),
@@ -234,28 +240,38 @@ public final class InsuranceRepository {
     }
 
     private static Payment payment(Connection c, long eventId, Property expected) throws SQLException {
-        long price = PropertyFormulas.insurancePriceCents(expected.capacity());
+        long price;
+        String eventKey;
         Instant paidAt;
         String eventDay;
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_economy_events WHERE event_id=? FOR UPDATE", eventId);
              ResultSet rs = ps.executeQuery()) {
             require(next(c, ps, rs), "Insurance payment missing");
+            price = number(rs, "requested_amount_cents", 1, PurchasePrices.MAX_CENTS);
+            eventKey = rs.getString("idempotency_key");
             require("PAID".equals(rs.getString("state")) && "npc-property-insurance".equals(rs.getString("source"))
                     && "TRANSFER_FROM_PUBLIC".equals(rs.getString("direction"))
                     && expected.propertyId().equals(uuid(rs.getBytes("property_id")))
                     && expected.ownerUuid().equals(uuid(rs.getBytes("counterparty_uuid")))
                     && expected.ownerUuid().equals(uuid(rs.getBytes("benefit_unit_id")))
                     && expected.ownershipEpoch() == number(rs, "ownership_epoch", 0, Integer.MAX_VALUE)
-                    && price == number(rs, "requested_amount_cents", 1, Long.MAX_VALUE)
                     && price == number(rs, "paid_amount_cents", 1, Long.MAX_VALUE), "Insurance payment binding differs");
             paidAt = instant(rs, "finalized_at");
             eventDay = rs.getString("economy_day");
             require(!next(c, ps, rs), "Duplicate insurance payment");
         }
         boolean waiting;
+        Long configured;
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_purchase_intents WHERE event_id=? FOR UPDATE", eventId);
              ResultSet rs = ps.executeQuery()) {
             require(next(c, ps, rs), "Insurance purchase intent missing");
+            configured = configuredPrice(rs);
+            require(price == (configured == null ? PropertyFormulas.insurancePriceCents(expected.capacity()) : configured),
+                    "Insurance accepted price differs");
+            if (configured != null) {
+                var accepted = PurchaseRepository.readReceipt(rs).request();
+                require(accepted.eventKey().equals(eventKey), "Insurance custom quote fingerprint differs");
+            }
             require("INSURANCE".equals(rs.getString("kind"))
                     && ("WAITING".equals(rs.getString("state")) || "APPLIED".equals(rs.getString("state")))
                     && expected.propertyId().equals(uuid(rs.getBytes("property_id")))
@@ -267,7 +283,7 @@ public final class InsuranceRepository {
             waiting = "WAITING".equals(rs.getString("state"));
             require(!next(c, ps, rs), "Duplicate insurance purchase");
         }
-        return new Payment(paidAt, waiting);
+        return new Payment(paidAt, waiting, price, configured);
     }
 
     private static void incident(Connection c, UUID property, long incidentId, Instant at, LocalDate day) throws SQLException {
@@ -307,11 +323,23 @@ public final class InsuranceRepository {
                 (int) number(rs, "capacity", 1, 4), number(rs, "price_cents", 1, Long.MAX_VALUE),
                 instant(rs, "paid_at"), instant(rs, "applied_at"), date(rs, "applied_day"),
                 date(rs, "start_day"), date(rs, "end_day_exclusive"));
-        require(r.priceCents() == PropertyFormulas.insurancePriceCents(r.capacity()) && !r.appliedAt().isBefore(r.paidAt())
+        Long configured = configuredPrice(rs);
+        require(r.priceCents() == (configured == null ? PropertyFormulas.insurancePriceCents(r.capacity()) : configured)
+                && !r.appliedAt().isBefore(r.paidAt())
                 && r.startDay().equals(r.appliedDay().plusDays(1)) && r.endDayExclusive().equals(r.startDay().plusDays(7)),
                 "Invalid stored insurance terms");
         return r;
     }
+    private static Long configuredPrice(ResultSet rs) throws SQLException {
+        var columns = rs.getMetaData();
+        for (int i = 1; i <= columns.getColumnCount(); i++) {
+            if (!"configured_price_cents".equals(columns.getColumnLabel(i))) continue;
+            if (rs.getObject(i) == null) return null;
+            return number(rs, "configured_price_cents", 1, PurchasePrices.MAX_CENTS);
+        }
+        return null;
+    }
+
     private static boolean matches(PropertyState actual, Property expected) {
         return actual.enabled() && expected.ownerUuid().equals(actual.owner())
                 && expected.ownershipEpoch() == actual.epoch() && expected.capacity() == actual.capacity();

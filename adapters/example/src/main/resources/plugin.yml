@@ -1,0 +1,8 @@
+name: ProsperityNPC-Example
+version: '${version}'
+main: com.prosperitysmp.npc.example.ExampleAdapterPlugin
+api-version: "26.1"
+authors: [ProsperitySMP]
+description: DEV-only reference adapter for ProsperityNPC. Registers a property backend whose reads are all empty.
+# The adapter API lives inside ProsperityNPC, so ProsperityNPC must load first.
+depend: [ProsperityNPC]

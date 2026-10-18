@@ -1,5 +1,11 @@
 package com.prosperitysmp.npc.interaction;
 
+import com.prosperitysmp.npc.economy.PurchasePrices;
+import com.prosperitysmp.npc.economy.UtilityPrices;
+
+import com.prosperitysmp.npc.charge.BillText;
+import com.prosperitysmp.npc.charge.ChargeInvoiceRepository;
+
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
 import com.prosperitysmp.npc.economy.ItemRepairCopy;
 import com.prosperitysmp.npc.economy.ItemRepairRuntime;
@@ -101,7 +107,7 @@ public final class BedrockNpcUi implements ResidentEncounterController.NativeUi,
         main();
         if (owners == null) return false;
         boolean pause = owners.pauseControls();
-        var buttons = ownerButtons(data, pause);
+        var buttons = ownerButtons(data, pause, owners.billsOn(), plugin.purchasePrices(), plugin.utilityPrices());
         return send(player, "Property | " + data.property().regionId(),
                 ownerBody(data, pause, owners.itemRepairLines(player.getUniqueId())),
                 buttons.labels(), authorized, index -> {
@@ -117,15 +123,29 @@ public final class BedrockNpcUi implements ResidentEncounterController.NativeUi,
     }
     static OwnerButtons ownerButtons(OwnerDeskData data) { return ownerButtons(data, false); }
     static OwnerButtons ownerButtons(OwnerDeskData data, boolean pauseControls) {
+        return ownerButtons(data, pauseControls, false);
+    }
+    static OwnerButtons ownerButtons(OwnerDeskData data, boolean pauseControls, boolean bills) {
+        return ownerButtons(data, pauseControls, bills, PurchasePrices.DEFAULT);
+    }
+    static OwnerButtons ownerButtons(OwnerDeskData data, boolean pauseControls, boolean bills, PurchasePrices prices) {
+        return ownerButtons(data, pauseControls, bills, prices, UtilityPrices.DEFAULT);
+    }
+    static OwnerButtons ownerButtons(OwnerDeskData data, boolean pauseControls, boolean bills,
+                                      PurchasePrices prices, UtilityPrices utilityPrices) {
         var labels = new ArrayList<>(List.of("Refresh", "Read full details in chat", "Close",
-                "Pay utility up to " + Money.format(OwnerDeskMenu.utilityLimit(data))));
+                OwnerDeskMenu.utilityLabel(data, utilityPrices)));
         var slots = new ArrayList<>(List.of(36, 38, 40, 42));
+        if (bills) {
+            labels.set(3, "Payments and bills");
+            slots.set(3, 35);
+        }
         if (!data.issues().isEmpty()) {
             labels.add(OwnerDeskMenu.repairLabel(data));
             slots.add(22);
         }
         for (int slot : List.of(24, 26, 28)) {
-            labels.add(OwnerDeskMenu.purchaseLabel(data, slot));
+            labels.add(OwnerDeskMenu.purchaseLabel(data, slot, prices));
             slots.add(slot);
         }
         labels.add(OwnerDeskMenu.insuranceLabel(data));
@@ -155,6 +175,47 @@ public final class BedrockNpcUi implements ResidentEncounterController.NativeUi,
             slots.remove(0);
         }
         return new OwnerButtons(labels, slots);
+    }
+
+    static OwnerButtons billButtons(OwnerDeskController.BillPage page) {
+        var labels = new ArrayList<String>();
+        var slots = new ArrayList<Integer>();
+        for (int i = 0; i < page.view().invoices().size(); i++) {
+            labels.add(OwnerDeskMenu.billEntryLabel(page, page.view().invoices().get(i)));
+            slots.add(9 + i);
+        }
+        if (page.newer()) { labels.add("Newer bills"); slots.add(30); }
+        if (page.view().hasOlder()) { labels.add("Older bills"); slots.add(32); }
+        labels.add(page.utilityPayable() ? "Pay utility up to " + Money.format(page.utilityMaximum())
+                : "Utilities require ownership review"); slots.add(42);
+        labels.add("Back to property"); slots.add(34);
+        return new OwnerButtons(labels, slots);
+    }
+    static OwnerButtons billConfirmButtons(OwnerDeskController.BillPage page, ChargeInvoiceRepository.Invoice invoice) {
+        var labels = new ArrayList<String>();
+        var slots = new ArrayList<Integer>();
+        if (BillText.payable(invoice, page.view().payments().get(invoice.invoiceId()), page.day())) {
+            labels.add(OwnerDeskMenu.billPayLabel(invoice)); slots.add(32);
+        }
+        if (page.view().payments().containsKey(invoice.invoiceId())) { labels.add("Read payment receipt"); slots.add(38); }
+        labels.add("Back to bills"); slots.add(34);
+        return new OwnerButtons(labels, slots);
+    }
+    @Override public boolean showBills(Player player, UUID token, OwnerDeskController.BillPage page, BooleanSupplier authorized) {
+        main();
+        if (owners == null) return false;
+        var buttons = billButtons(page);
+        return send(player, "Property | Bills", OwnerDeskMenu.billPageBody(page), buttons.labels(), authorized,
+                index -> owners.action(player, token, index >= 0 && index < buttons.slots().size() ? buttons.slots().get(index) : 40));
+    }
+    @Override public boolean confirmBill(Player player, UUID token, OwnerDeskController.BillPage page,
+                                         ChargeInvoiceRepository.Invoice invoice, BooleanSupplier authorized) {
+        main();
+        if (owners == null) return false;
+        var buttons = billConfirmButtons(page, invoice);
+        return send(player, "Bill for " + invoice.day(), String.join("\n", OwnerDeskMenu.billLines(page, invoice)),
+                buttons.labels(), authorized,
+                index -> owners.action(player, token, index >= 0 && index < buttons.slots().size() ? buttons.slots().get(index) : 40));
     }
 
     @Override public boolean confirmPause(Player player, UUID token, BooleanSupplier authorized) {
@@ -209,10 +270,14 @@ public final class BedrockNpcUi implements ResidentEncounterController.NativeUi,
         main();
         if (owners == null) return false;
         return send(player, "Tenancy | " + resident.name(),
-                "End " + resident.name() + "'s current tenancy for $10.00? Their identity and history are retained. "
-                + "An unavailable tenancy is refused without a new charge.",
-                List.of(OwnerDeskMenu.evictionLabel(resident), "Keep tenancy"), authorized,
+                evictionBody(resident, plugin.purchasePrices()),
+                List.of(OwnerDeskMenu.evictionLabel(resident, plugin.purchasePrices()), "Keep tenancy"), authorized,
                 index -> owners.action(player, token, index == 0 ? 32 : index == 1 ? 34 : 40));
+    }
+
+    static String evictionBody(OwnerDeskData.Resident resident, PurchasePrices prices) {
+        return "End " + resident.name() + "'s current tenancy for " + Money.format(prices.evictionCents())
+                + "? Their identity and history are retained. An unavailable tenancy is refused without a new charge.";
     }
 
     static String ownerBody(OwnerDeskData data) { return ownerBody(data, false); }

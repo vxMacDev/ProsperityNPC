@@ -91,6 +91,10 @@ public final class NavSweep {
     private final NavGraph graph;
     private final String storedHash;
     private final boolean footprints;
+    // False only for a waypoint or file graph built without a palette: classes are not compared, solid ground and headroom still are.
+    private final boolean checkClasses;
+    // Waypoint builds only: crossing cells that match road or crossing paint alike, so a part-painted crossing still builds.
+    private final Set<Long> eitherStreet;
     private long[] cells;
     private byte[] values;
     private final Map<Long, Integer> index = new HashMap<>();
@@ -104,10 +108,12 @@ public final class NavSweep {
     private boolean probesPlanned;
     private int next;
 
-    private NavSweep(NavGraph graph, String storedHash, boolean footprints) {
+    private NavSweep(NavGraph graph, String storedHash, boolean footprints, boolean checkClasses, Set<Long> eitherStreet) {
         this.graph = Objects.requireNonNull(graph);
         this.storedHash = storedHash;
         this.footprints = footprints;
+        this.checkClasses = checkClasses;
+        this.eitherStreet = Set.copyOf(eitherStreet);
         Set<Long> wanted = new LinkedHashSet<>();
         List<NavGraph.Node> ordered = graph.nodes().stream().sorted(Comparator.comparingLong(NavGraph.Node::id)).toList();
         for (NavGraph.Node node : ordered) {
@@ -165,7 +171,25 @@ public final class NavSweep {
 
     /** Compares a graph with the world: support still solid and in the same class, headroom, edge footprints. */
     public static NavSweep forRevalidation(NavGraph graph, String storedHash) {
-        return new NavSweep(graph, storedHash, true);
+        return forRevalidation(graph, storedHash, true);
+    }
+
+    /**
+     * As {@link #forRevalidation(NavGraph, String)}; with {@code checkClasses} false the class of each support is
+     * not compared (there is no palette to compare it with), but solid ground, headroom and footprints still are.
+     */
+    public static NavSweep forRevalidation(NavGraph graph, String storedHash, boolean checkClasses) {
+        return new NavSweep(graph, storedHash, true, checkClasses, Set.of());
+    }
+
+    /**
+     * The world read of a waypoint build with a palette. As {@link #forRevalidation(NavGraph, String)}, except that a
+     * node in {@code crossingCells} stored as road or crossing paint matches the world showing either, because staff
+     * place a crossing, not its paint. Once the read is clean, {@link #streetClasses()} gives what each of those cells
+     * really is, and the graph saved is the one built from those classes. Scans and route files never use this.
+     */
+    public static NavSweep forWaypointBuild(NavGraph graph, String storedHash, Set<Long> crossingCells) {
+        return new NavSweep(graph, storedHash, true, true, crossingCells);
     }
 
     /**
@@ -173,7 +197,7 @@ public final class NavSweep {
      * street runs sideways from each crossing, for a live audit.
      */
     public static NavSweep forClasses(NavGraph graph) {
-        return new NavSweep(graph, null, false);
+        return new NavSweep(graph, null, false, true, Set.of());
     }
 
     /** Reads up to {@code readBudget} cells within {@code nanosBudget}; a failed read marks nothing read. */
@@ -280,6 +304,8 @@ public final class NavSweep {
                 unwalkable++;
                 fine = false;
                 drifts.add(new Drift("UNWALKABLE", node.id(), tagged, node.x(), node.y(), node.z(), "nothing solid underneath"));
+            } else if (!checkClasses) {
+                // Classless: nothing to compare the support's class with.
             } else if (node.surface() == NavSurface.UNKNOWN) {
                 if ((support & NavTerrainCapture.SUPPORT) == 0) {
                     unwalkable++;
@@ -287,6 +313,9 @@ public final class NavSweep {
                     drifts.add(new Drift("UNWALKABLE", node.id(), tagged, node.x(), node.y(), node.z(),
                             "the block underneath is no longer in the palette"));
                 }
+            } else if (eitherStreet.contains(node.id()) && node.surface().isStreet()
+                    && (support & NavTerrainCapture.SUPPORT) != 0 && surface(support).isStreet()) {
+                // A crossing cell: road or paint are both fine here; streetClasses() reports which it is.
             } else if ((support & NavTerrainCapture.SUPPORT) == 0 || surface(support) != node.surface()) {
                 changed++;
                 fine = false;
@@ -328,6 +357,29 @@ public final class NavSweep {
         Verdict verdict = drifted ? Verdict.DRIFTED : notLoaded > 0 ? Verdict.INCOMPLETE : Verdict.CLEAN;
         return new Revalidation(verdict, graph.nodeCount(), ok, changed, unwalkable, blocked, footprint, notLoaded,
                 palette, List.copyOf(drifts), driftBox(drifts));
+    }
+
+    /**
+     * For a waypoint build's read ({@link #forWaypointBuild}): the street class the world shows under each of its
+     * crossing cells, where that is road or crossing paint. Only valid once {@link #done()}.
+     */
+    public Map<Long, NavSurface> streetClasses() {
+        if (!done() || !footprints) {
+            throw new IllegalStateException("street classes need a finished footprint sweep");
+        }
+        Map<Long, NavSurface> out = new HashMap<>();
+        for (long id : eitherStreet) {
+            NavGraph.Node node = graph.node(id);
+            if (node == null) {
+                continue;
+            }
+            int support = value(node.x(), node.y() - 1, node.z());
+            if (!unloaded(support) && solid(support) && (support & NavTerrainCapture.SUPPORT) != 0
+                    && surface(support).isStreet()) {
+                out.put(id, surface(support));
+            }
+        }
+        return out;
     }
 
     /** -1 not fully loaded, 0 walkable, 1 blocked. */

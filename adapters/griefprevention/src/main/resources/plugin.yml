@@ -1,0 +1,9 @@
+name: ProsperityNPC-GriefPrevention
+version: '${version}'
+main: com.prosperitysmp.npc.adapter.griefprevention.GriefPreventionAdapterPlugin
+api-version: "26.1"
+authors: [ProsperitySMP]
+description: Lets ProsperityNPC use GriefPrevention claims as homes (property.backend griefprevention). Unverified.
+# The adapter API lives inside ProsperityNPC, so ProsperityNPC must load first.
+depend: [ProsperityNPC, GriefPrevention]
+softdepend: [RealEstate]

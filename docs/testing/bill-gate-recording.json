@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "subject": "bill-owner-away-admission-and-disabled-phase",
+  "coreSha256": "a2c1bde527899f8f4dc661969c2968beafe4644fd7bedd36aafe3fed7d2bfb4d",
+  "environment": {
+    "paper": "26.1.2 build74",
+    "java": 25,
+    "database": "MariaDB11.4.5",
+    "databaseSchema": 56,
+    "property": "GriefPrevention16.18.7 with private local QA adapter",
+    "vendorSha256": "45e9907c61222e559ed2e099ffee0ede706a21243a31d7db549baf678708fdf0",
+    "provider": "Vault API; native registration named EssentialsX Economy",
+    "installedEssentialsSha256": "bda4685105977fca2e209820a9f0ad24275bd103390a03236f38e59bfdac58e6"
+  },
+  "method": "Actual public enrollment using a temporary synthetic owner, then public bill runtime calls with fixture authorization and no connected players. Curated persisted same-day away decisions are loaded through normal cache synchronization. The phase check directly calls native phase-five routing. Readiness, ownership guard, clock and provider services are not replaced.",
+  "baseline": {
+    "heldHomeAdmitted": false,
+    "notHeldHomeAdmitted": true,
+    "notHeldOutcome": "INSUFFICIENT_FUNDS",
+    "ownerAndReserveBalancesBeforeAndAfterCents": 0,
+    "disabledBillPhase": "Skipped; normal cycle-finished reply",
+    "paymentEventAttemptObservationWrites": 0
+  },
+  "faultControls": {
+    "C11": {
+      "mutation": "Exempt configured invoices from the initial owner-away admission check",
+      "observedHeldHomeAdmitted": true,
+      "result": "Intended admission assertion failed"
+    },
+    "C18": {
+      "mutation": "Remove the disabled bill-phase skip",
+      "observedReply": "Phase 5 unavailable or busy; later phases not started.",
+      "result": "Intended phase-skip assertion failed"
+    }
+  },
+  "verification": {
+    "actualLoadedSubjectClassHashesMatched": true,
+    "all89TableCountsAndLogicalRowsUnchangedDuringControls": true,
+    "all89TableCountsAndLogicalRowsRestoredAfterCleanup": true,
+    "fixtureTablesArchivedAndCleared": 7,
+    "labServicesStoppedAndControlledFilesRestored": true,
+    "allocatedClaimIdsRetained": true
+  },
+  "coverageLimits": [
+    "Synthetic profiles and enrollment actor; no connected Java/Bedrock client or owner UI acceptance",
+    "Curated saved-day away fixtures; no real inactivity or day-rollover simulation",
+    "Direct private phase routing; no complete populated public daily cycle",
+    "Zero wallets; no paid provider transfer, interruption or recovery acceptance",
+    "Private QA adapter; public vendor pin/package and whole-plugin load acceptance remain open"
+  ]
+}

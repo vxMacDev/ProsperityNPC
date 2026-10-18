@@ -77,6 +77,72 @@ class PurchaseRequestTest {
                 Kind.MAINTAIN,null,null,null,DAY,null,null,null));
     }
 
+    @Test void defaultPricesKeepTheLegacyQuoteAndFingerprint() {
+        var maintenance = valid(Kind.MAINTAIN);
+        assertEquals(maintenance, maintenance.withPriceCents(1000));
+        assertEquals(maintenance, PurchasePrices.DEFAULT.quote(maintenance));
+        assertEquals(maintenance.eventKey(), maintenance.withPriceCents(1000).eventKey());
+        var upgrade = valid(Kind.UPGRADE);
+        assertEquals(upgrade, PurchasePrices.DEFAULT.quote(upgrade));
+        assertEquals(upgrade.eventKey(), PurchasePrices.DEFAULT.quote(upgrade).eventKey());
+    }
+
+    @Test void aConfiguredPriceIsFrozenAndBoundWithoutChangingTheBenefit() {
+        var original = valid(Kind.MAINTAIN);
+        var priced = original.withPriceCents(1750);
+        assertEquals(1000, original.cents());
+        assertEquals(1750, priced.cents());
+        assertEquals(1750L, priced.configuredPriceCents());
+        assertNotEquals(original.eventKey(), priced.eventKey());
+        assertNotEquals(priced.eventKey(), priced.withPriceCents(2500).eventKey());
+        assertEquals(original.actionKey(), priced.actionKey());
+        assertEquals(original.source(), priced.source());
+        assertEquals(original, priced.withPriceCents(1000));
+        assertEquals(priced, original.withPriceCents(1750));
+    }
+
+    @Test void configuredEvictionBindsTheAcceptedPriceAndExactTenancy() {
+        var original = new PurchaseRequest(REQUEST, PROPERTY, PAYER, 0, Kind.EVICT,
+                null, null, TENANT, DAY, null, new EvictionQuote(17, 3));
+        assertEquals("purchase|" + REQUEST + "|a23246034f3d57d05a5dd326d3baed4c56ac95ce4d14a3b3f5e84ec52731880d", original.eventKey());
+        assertEquals(original, original.withPriceCents(1000));
+        assertEquals(original, PurchasePrices.DEFAULT.quote(original));
+        var priced = PurchasePrices.load(java.util.Map.of("eviction-cents", "2375")).quote(original);
+        assertEquals(2375, priced.cents());
+        assertEquals(2375L, priced.configuredPriceCents());
+        assertEquals(original.eviction(), priced.eviction());
+        assertEquals(original.actionKey(), priced.actionKey());
+        assertNotEquals(original.eventKey(), priced.eventKey());
+        assertNotEquals(priced.eventKey(), priced.withPriceCents(3000).eventKey());
+        assertEquals(original, priced.withPriceCents(1000));
+    }
+
+    @Test void insurancePriceKeepsCapacityAndPreservesDefaultFingerprint() {
+        var original = new PurchaseRequest(REQUEST, PROPERTY, PAYER, 0, Kind.INSURANCE,
+                null, null, null, DAY, null, null, new PurchaseRequest.InsuranceQuote(2));
+        assertEquals("purchase|" + REQUEST + "|f077b18968fac496f8ddd93433b86a45025756bf29a7fa628dd6200493ff149c", original.eventKey());
+        assertEquals(original, original.withPriceCents(1600));
+        var priced = original.withPriceCents(1777);
+        assertEquals(1777, priced.cents());
+        assertEquals(original.insurance(), priced.insurance());
+        assertEquals(original.actionKey(), priced.actionKey());
+        assertNotEquals(original.eventKey(), priced.eventKey());
+        assertNotEquals(priced.eventKey(), priced.withPriceCents(1900).eventKey());
+        assertEquals(original, priced.withPriceCents(1600));
+    }
+
+    @Test void configuredEvictionRequiresABoundTenancy() {
+        var eviction = valid(Kind.EVICT);
+        assertThrows(IllegalArgumentException.class, () -> eviction.withPriceCents(1750));
+        assertEquals(eviction, PurchasePrices.DEFAULT.quote(eviction));
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {0, -1, Long.MAX_VALUE})
+    void configuredPriceMustFitTheSupportedMoneyRange(long cents) {
+        assertThrows(IllegalArgumentException.class, () -> valid(Kind.MAINTAIN).withPriceCents(cents));
+    }
+
     @ParameterizedTest
     @EnumSource(value = Kind.class, names = {"UPGRADE", "MAINTAIN", "EVICT"})
     void freshRequestUuidChangesEventIdentityButNotActionIdentity(Kind kind) {

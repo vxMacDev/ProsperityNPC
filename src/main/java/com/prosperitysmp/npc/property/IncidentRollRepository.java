@@ -3,6 +3,7 @@ package com.prosperitysmp.npc.property;
 import com.prosperitysmp.npc.clock.EconomyClock;
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.Uuids;
+import com.prosperitysmp.npc.economy.RepairPrices;
 import com.prosperitysmp.npc.formulas.IncidentType;
 import com.prosperitysmp.npc.formulas.UpgradeType;
 import com.prosperitysmp.npc.sim.SimulationLogic;
@@ -37,13 +38,20 @@ public final class IncidentRollRepository {
     private final SimulationLogic simulation;
     private final Clock clock;
     private final EconomyClock economyClock;
+    private final RepairPrices prices;
     private final InsuranceRepository insurance = new InsuranceRepository();
 
     public IncidentRollRepository(Database database, SimulationLogic simulation, Clock clock, ZoneId zone, int resetHour) {
+        this(database, simulation, clock, zone, resetHour, RepairPrices.DEFAULT);
+    }
+
+    public IncidentRollRepository(Database database, SimulationLogic simulation, Clock clock, ZoneId zone, int resetHour,
+                                  RepairPrices prices) {
         this.database = Objects.requireNonNull(database);
         this.simulation = Objects.requireNonNull(simulation);
         this.clock = Objects.requireNonNull(clock);
         this.economyClock = new EconomyClock(clock, zone, resetHour);
+        this.prices = Objects.requireNonNull(prices);
     }
 
     /** Settlement shares this authority; clock policy changes require reconstruction, not config reload. */
@@ -214,16 +222,21 @@ public final class IncidentRollRepository {
         return result;
     }
 
-    private static long insertIncident(Connection c, UUID property, LocalDate day, LocalDateTime at,
+    private long insertIncident(Connection c, UUID property, LocalDate day, LocalDateTime at,
                                        LocalDateTime due, IncidentType type, UpgradeType affected, boolean prevented) throws SQLException {
+        long cash = prices.cents(type);
+        Long price = cash == type.cashRepairCents() ? null : cash;
+        String priceColumn = price == null ? "" : ",configured_repair_cents";
+        String priceValue = price == null ? "" : ",?";
         try (PreparedStatement ps = c.prepareStatement("""
                 INSERT INTO npc_incidents (property_id,incident_type,cash_repair_cents,item_repair_spec,
-                  condition_damage,affected_upgrade_type,economy_day,created_at,due_at,prevented)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-                """, Statement.RETURN_GENERATED_KEYS)) {
+                  condition_damage,affected_upgrade_type,economy_day,created_at,due_at,prevented%s)
+                VALUES (?,?,?,?,?,?,?,?,?,?%s)
+                """.formatted(priceColumn, priceValue), Statement.RETURN_GENERATED_KEYS)) {
             ps.setQueryTimeout(5);
-            bind(ps, property, type.name(), type.cashRepairCents(), type.itemRepairSpec(), type.conditionDamage(),
+            bind(ps, property, type.name(), cash, type.itemRepairSpec(), type.conditionDamage(),
                     affected == null ? null : affected.name(), day.toString(), at, due, prevented);
+            if (price != null) ps.setLong(11, price);
             one(c, ps);
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 require(next(c, ps, rs), "Incident key missing");

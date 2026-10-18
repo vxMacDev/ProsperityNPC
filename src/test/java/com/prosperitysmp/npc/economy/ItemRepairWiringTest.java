@@ -18,7 +18,8 @@ class ItemRepairWiringTest {
     private static final List<String> MONEY_ANY_CASE = List.of("vaultaccess", "milkbowl", "transferjournal", "journaledtransfer",
             "capallocator", "economyevent", "payoutgate", "accountingprojection", "rentreservation", "economyledger",
             "depositplayer", "withdrawplayer", "utilitypayments(", "autocare(", "financialfence(", "purchaseservice(",
-            "purchaserepository", "bridgeapi(", "economylimits(", "commercepayments", "paymentruntime(");
+            "purchaserepository", "bridgeapi(", "economylimits(", "commercepayments", "paymentruntime(",
+            "moneysource", "pin(");
     private static final List<String> ITEM_REPAIR_FILES = List.of("economy/ItemRepairRuntime.java", "economy/ItemRepairRepository.java",
             "economy/ItemRepairRecoveryTool.java", "economy/ItemRepairRecipes.java", "economy/ItemRepairQuote.java",
             "economy/ItemRepairSettings.java", "economy/ItemRepairCopy.java", "commerce/ItemCollectionEvidence.java",

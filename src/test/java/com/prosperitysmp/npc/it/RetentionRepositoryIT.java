@@ -105,7 +105,7 @@ class RetentionRepositoryIT {
                 version.setAccessible(true);
                 resource.setAccessible(true);
                 int number = (Integer) version.invoke(migration);
-                if (number > 15) continue;
+                if (number > 15 && number != 45) continue;
                 applyResource("/" + resource.invoke(migration));
                 if (number == 15) registered = true;
             }

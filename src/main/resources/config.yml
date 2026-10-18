@@ -20,7 +20,7 @@ switches:
 economy:
   # Leave off until payments and the Skript accounting bridge are tested on your server.
   payments-enabled: false
-  # On: a property whose ARM owner cannot be read (or is the reserve) is held and logged once a day,
+  # On: a property whose home owner cannot be read (or is the reserve) is held and logged once a day,
   # and every other property is still paid. Off: one such property stops the whole rent batch.
   rent-isolation-enabled: false
   # On: after rent, each rent batch also pays a capped appreciation dividend for the previous economy day
@@ -137,8 +137,21 @@ database:
 centralbank:
   uuid: ""
 
+# --- Pieces (dev.64) -------------------------------------------------------------
+# Which plugin holds the money, which plugin says who owns a home, and who confirms
+# the accounting totals. Leave these out to keep the built-in pieces: Vault money,
+# AdvancedRegionMarket homes and the Skript accounting bridge. /npcadmin diagnose
+# lists what was found and why anything was refused. A change needs a restart.
+#money:
+#  source: vault       # vault | the id of a money source another plugin registers
+#accounting:
+#  sink: skript        # skript | internal (no Skript: the plugin acknowledges its own totals)
+#property:
+#  backend: arm                    # arm | worldguard-listed | <adapter id>
+#  when-unguarded: hold-payouts    # hold-payouts | reread-before-payout (opt-in: pays after a fresh owner read; not atomic)
+
 # --- Enrollment allowlists ---------------------------------------------------
-# Only ARM SELL regions may be enrolled, and only with a market_id and class_key
+# With ARM, only SELL regions may be enrolled, and only with a market_id and class_key
 # from these allowlists. Reference rent is a small per-tenant DAILY figure (the
 # simulated tenant rent), NOT the ARM purchase/weekly rent.
 enrollment:
@@ -181,8 +194,9 @@ appearance:
   # Only read when outfit-change-while-rendered is on. Most avatars changed in one pass. 1 to 5.
   outfit-changes-per-tick: 2
 
-# Property enrollment, rent and owner payments need this on, plus an AdvancedRegionMarket
-# build with the NpcTransactionGuard hook (see arm-compat/). Stock ARM 3.5.5 lacks it.
+# With property.backend: arm (the default), property enrollment, rent and owner payments need this on,
+# plus an AdvancedRegionMarket build with the NpcTransactionGuard hook (see arm-compat/). Stock ARM 3.5.5
+# lacks it. The patched ARM and this switch are needed only for property.backend: arm.
 # Full restart required. No hot reload.
 integration:
   arm-coordination: false
@@ -415,6 +429,71 @@ town:
 auto-care:
   enabled: false
 
+# Owner purchase prices, in quoted integer cents. Full server restart to change.
+# Accepted purchases keep their original price, including after a restart.
+owner-prices:
+  maintenance-cents: "1000"
+  eviction-cents: "1000"
+  # Insurance premiums for capacities 1, 2, 3 and 4. Each covers seven days.
+  insurance-cents: ["1400", "1600", "1800", "2000"]
+  upgrades:
+    advertising: ["10000", "25000", "50000"]
+    facilities: ["15000", "35000", "70000"]
+
+# Rates for new daily utility bills. Full server restart to change.
+# Issued bills keep their original tariff. Increments may be zero; base must be positive.
+utility-prices:
+  base-cents: "100"
+  per-tenant-cents: "75"
+  per-upgrade-level-cents: "50"
+
+# Prices for new incidents. Full server restart to change.
+# Existing incidents keep their accepted price.
+repair-prices:
+  pests-cents: "2000"
+  plumbing-cents: "3500"
+  break-in-cents: "5000"
+
+# --- Bills and taxes (dev.65) ----------------------------------------------------
+# How bills work: a server can add its own daily bills and taxes, for example electricity or a property tax.
+# Once a day, after rent, each home gets at most one bill listing that day's charges. Amounts are fixed when the
+# bill is issued. The owner pays it with /property bills pay, or, only with auto-collect-enabled, the plugin tries
+# once right after issuing it. Nothing is borrowed: if the owner cannot pay, nothing moves and the bill stays
+# unpaid until it expires. Bills are always paid to the reserve and never add rent funding.
+# Today's charges (utilities, upgrades, maintenance, repairs, insurance, eviction) are not configured here.
+# Every number must be a quoted string. A bad block is refused as a whole: at startup bills stay off, at
+# /npcadmin reload the previous catalogue stays. New or changed policies start on the next economy day.
+# Code limits that config can only lower: $200 per bill (each line and the whole bill), $1,000 per owner a day,
+# $25,000 per server a day.
+# Absent (the default): no bills, no daily bills step, nothing written.
+#bills:
+#  enabled: false
+#  auto-collect-enabled: false
+#  on-unpaid: none                # none | hold-rent (homes with an unpaid bill from an earlier day earn no rent)
+#  payable-days: "7"
+#  limits:
+#    per-owner-daily-max-cents: "5000"
+#    server-daily-max-cents: "100000"
+#  policies:
+#    electricity:
+#      version: "1"               # change any key of this policy: raise this
+#      title: "Electricity"
+#      applies-to: occupied       # all | occupied | vacant
+#      meter: flat                # flat | derived:<variable> | the id of a meter another plugin registers
+#      amount: "base + rate * units"
+#      vars: { base: "50", rate: "2" }
+#      rounding: floor            # floor | ceil | half-up
+#      min-cents: "1"
+#      max-cents: "500"
+#    property-tax:
+#      version: "1"
+#      title: "Property tax"
+#      applies-to: all
+#      meter: flat
+#      amount: "ceil(percent * rent_paid_cents)"
+#      vars: { percent: "0.02" }
+#      max-cents: "2000"
+
 # --- Item repairs ------------------------------------------------------------
 # Owners can fix an open problem (pests, plumbing, break-in) by handing in plain items instead of paying cash.
 # The repair does the same as a cash repair: condition back, upgrade back on, tenants remember it, and it counts
@@ -526,6 +605,23 @@ nav:
     # Share of white-line blocks along a crossing for it to count as a crosswalk. The two end blocks
     # are not counted (an edge line along the road lands there), and at least 2 white blocks are needed.
     crosswalk-min-share: 0.4     # >0..1
+
+  # Staff waypoints (/npcnav wp ...): named points staff place, linked by walk, cross or crosswalk links.
+  # A built waypoint graph is checked, audited and published exactly like a scan. Nothing here names a place.
+  waypoints:
+    max-points: 600              # per region
+    max-links: 1200              # per region
+    max-nodes: 1024              # nodes a built set may make (at most 1024, so residents can always search it all)
+    # Palette a build reads the world with when "wp build" names none. Empty: a palette must be named.
+    palette: ""
+    # A palette is the only automatic proof that no walk link runs along a road. Turning this off lets a build run
+    # without one, with a warning on every build.
+    require-palette: true
+
+  # Route files for /npcnav import and export, in plugins/ProsperityNPC/<dir>/ (no subfolders).
+  import:
+    dir: nav-import
+    max-bytes: 1048576           # 1 MiB
 
   revalidate:
     reads-per-tick: 512          # 1..4096, same budget as a scan slice

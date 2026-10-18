@@ -39,6 +39,14 @@ class UtilityBillTest {
     private static final Instant ISSUED = Instant.parse("2026-09-07T12:34:56.789Z");
 
     @Test
+    void defaultTextStaysCompatibleWithStoredPremiumEvidence() {
+        assertEquals("UtilityBill[propertyId=00000000-0000-0000-0000-000000000001, "
+                + "ownerId=00000000-0000-0000-0000-000000000002, ownershipEpoch=0, propertyRevision=0, "
+                + "day=2026-09-07, capacity=4, occupiedTenants=2, installedUpgradeLevels=3, "
+                + "issuedAt=2026-09-07T12:34:56.789Z, zoneId=UTC, resetHour=4]", counts(4, 2, 3).toString());
+    }
+
+    @Test
     void everyLegalCountCombinationUsesFrozenV1IntegerCents() {
         assertEquals("utility-bill-v1", UtilityBill.POLICY_VERSION);
         for (int capacity = 1; capacity <= 4; capacity++) {

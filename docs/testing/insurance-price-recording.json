@@ -1,0 +1,113 @@
+{
+  "schema": 1,
+  "subject": "configured-insurance-premium",
+  "coreSha256": "ce540cf5919befed69d5b97715df37a8903ef257f271d4a16d31137277ca43be",
+  "environment": {
+    "paper": "26.1.2",
+    "java": 25,
+    "database": "MariaDB11.4.5",
+    "databaseSchema": 51,
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "economy": "EssentialsX2.22.0 through Vault1.7.3",
+    "clockZone": "UTC",
+    "dailyResetHour": 4,
+    "settlementTime": "23:59",
+    "autoCareEnabled": false,
+    "vacationFeatureDays": 0,
+    "insureCommandEnabled": true
+  },
+  "method": "Synthetic CraftPlayer/in-memory connection and manual inventory events, public commands and real installed property/economy plugins. Both Paper and MariaDB were stopped and restarted. No connected-client or whole-server load claim.",
+  "checks": [
+    {
+      "case": "startup-migration",
+      "schemaBefore": 50,
+      "schemaAfter": 51,
+      "statements": 9,
+      "other88TableCountsUnchanged": true,
+      "coveragePriceForeignKey": "coverage event/price -> purchase event/quoted amount"
+    },
+    {
+      "case": "maximum-refusal",
+      "configuredCents": 1777,
+      "typedMaximumCents": 1776,
+      "newReceipts": 0,
+      "walletsAndAll89TableCountsUnchanged": true
+    },
+    {
+      "case": "owner-desk-payment",
+      "displayedCents": 1777,
+      "paidCents": 1777,
+      "acceptedCapacity": 2,
+      "purchaseState": "APPLIED",
+      "journalState": "PAID",
+      "bothProviderLegsConfirmed": true,
+      "coverageCents": 1777,
+      "coveragePriceSnapshotCents": 1777,
+      "applicationDay": "2026-10-18",
+      "startDay": "2026-10-19",
+      "endDayExclusive": "2026-10-26"
+    },
+    {
+      "case": "retired-view-replay",
+      "controlsEnabledBeforeAndAfter": true,
+      "walletReceiptCoverageFundingAndAll89CountsUnchanged": true
+    },
+    {
+      "case": "full-server-and-database-restart",
+      "loadedPremiumBeforeCents": 1777,
+      "loadedPremiumAfterCents": 2399,
+      "acceptedPurchaseAndCoverageCents": 1777,
+      "publicReceiptRetainsPaidAmount": true,
+      "coverageDatesAndAll89CountsUnchanged": true,
+      "rawAndNormalizedWalletsUnchanged": true
+    },
+    {
+      "case": "reserved-period-refusal",
+      "typedMaximumCents": 2399,
+      "noAdditionalPaymentOrTerm": true,
+      "all89CountsUnchanged": true,
+      "nativeDeskShowsExistingFutureTerm": true
+    }
+  ],
+  "money": {
+    "beforeCents": [
+      100000,
+      100000
+    ],
+    "afterCents": [
+      98223,
+      101777
+    ],
+    "totalCents": 200000,
+    "rawAfterDollars": [
+      982.2299999999999,
+      1017.77
+    ],
+    "centProof": "Existing TransferProof.toCents and full journal observations; raw provider binary noise retained in evidence.",
+    "existingNoiseToleranceDollars": 1e-09
+  },
+  "fundingCents": {
+    "seed": 5000,
+    "cashSinks": 1777,
+    "cashPayouts": 0,
+    "unfunded": 0
+  },
+  "cleanup": {
+    "knownNativeBalancesExactlyZero": true,
+    "propertyPausedAndClaimsPlayerRemoved": true,
+    "fixtureTablesValidatedArchivedAndRemoved": 8,
+    "schema51BaselineCountsRestored": 89,
+    "knownNewFilesArchived": 17,
+    "originalCoreConfigLocaleIdentityIndexesAndCacheRestored": true,
+    "syntheticResidualClearedAfterSuccessfulWithdrawalDollars": 9.999999999999999e-14,
+    "residualMethod": "Only the known synthetic account residual within the existing noise bound was reset through the inspected native provider API; exact zero checked afterward. Product balance logic unchanged.",
+    "retained": "Forward schema51 and GP claim sequence; no bitwise world/database claim."
+  },
+  "notVerified": [
+    "Connected Java or Bedrock clients",
+    "Realistic concurrent-player and daily-churn load",
+    "Actual future scheduled incident or full populated daily cycle",
+    "Extended native insurance expiry/prevention/recovery lifecycle",
+    "Vendor pin/package acceptance or other property backends"
+  ]
+}

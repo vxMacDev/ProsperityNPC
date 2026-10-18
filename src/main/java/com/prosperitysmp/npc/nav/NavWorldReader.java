@@ -19,6 +19,11 @@ public final class NavWorldReader implements NavSweep.Reader {
         this.palette = palette;
     }
 
+    /** A reader with no palette: every solid block counts as support, with no class. Only for a classless sweep. */
+    public static NavWorldReader anySolid(World world) {
+        return new NavWorldReader(world, null);
+    }
+
     @Override
     public byte read(int x, int y, int z) {
         if (!world.isChunkLoaded(x >> 4, z >> 4)) {
@@ -30,7 +35,11 @@ public final class NavWorldReader implements NavSweep.Reader {
         Block block = world.getBlockAt(x, y, z);
         Material type = block.getType();
         int value = 0;
-        if (palette.isWalkable(type)) {
+        if (palette == null) {
+            if (type.isSolid()) {
+                value |= NavTerrainCapture.SUPPORT;
+            }
+        } else if (palette.isWalkable(type)) {
             value |= NavTerrainCapture.SUPPORT | palette.surfaceOf(type).code() << NavTerrainCapture.SURFACE_SHIFT;
         }
         if (type.isSolid()) {

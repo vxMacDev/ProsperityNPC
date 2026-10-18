@@ -77,7 +77,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Real V1..V15 MariaDB composition; JDBC instrumentation never substitutes query results. */
+/** Real service schema with current property enrollment; JDBC instrumentation never substitutes query results. */
 @Timeout(45)
 class ServiceAssessmentRepositoryIT {
     private static final Instant NOW = Instant.parse("2026-09-27T09:00:00Z");
@@ -119,8 +119,8 @@ class ServiceAssessmentRepositoryIT {
                 version.setAccessible(true);
                 resource.setAccessible(true);
                 int number = (Integer) version.invoke(migration);
-                // V21 and V35: the incident service read also checks item-repair receipts (item-repairs).
-                if (number > 15 && number != 21 && number != 23 && number != 35) continue;
+                // Item-repair receipts and insurance reads need V21/V23/V35; current enrollment also needs V45.
+                if (number > 15 && number != 21 && number != 23 && number != 35 && number != 45) continue;
                 try (InputStream in = ServiceAssessmentRepositoryIT.class.getResourceAsStream("/" + resource.invoke(migration))) {
                     assertNotNull(in);
                     for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8)))
@@ -129,9 +129,9 @@ class ServiceAssessmentRepositoryIT {
                 applied.add(number);
             }
             var expectedMigrations = new ArrayList<>(java.util.stream.IntStream.rangeClosed(1, 15).boxed().toList());
-            expectedMigrations.addAll(List.of(21, 23, 35));
+            expectedMigrations.addAll(List.of(21, 23, 35, 45));
             assertEquals(expectedMigrations, applied,
-                    "Use registered service migrations plus the incident insurance integration");
+                    "Use registered service migrations and the current property enrollment column");
             tables = rows("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
                     + "AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME").stream().map(List::getFirst).toList();
             assertTrue(tables.containsAll(List.of("npc_utility_bills", "npc_incident_rolls", "npc_housing_moves",

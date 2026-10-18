@@ -51,6 +51,17 @@ public final class ItemSaveProof {
 
     public boolean available() { return nbt != null; }
 
+    /** Startup preflight only; each take or delivery still needs its own saved-file proof. */
+    public boolean storageAvailable(Path mainWorldFolder) {
+        if (!available() || mainWorldFolder == null) return false;
+        try {
+            directories(mainWorldFolder.toAbsolutePath().normalize().resolve(dataDirectory));
+            return true;
+        } catch (IOException | RuntimeException unavailable) {
+            return false;
+        }
+    }
+
     /** Main only: obtain the root from the same PlayerDataStorage that CraftPlayer.saveData uses. */
     public Optional<Path> mainWorldFolder(Object craftServer) {
         if (!available() || craftServer == null

@@ -8,9 +8,8 @@ description: Persistent town residents, relationships, opportunities and a livin
 libraries:
   - "org.mariadb.jdbc:mariadb-java-client:3.5.9"
   - "com.zaxxer:HikariCP:7.1.0"
-# Vault is required (economy access). The rest are optional; their features stay off when absent.
-depend: [Vault]
-softdepend: [AdvancedRegionMarket, Citizens, floodgate, Jobs]
+# Vault is optional; without it payments stay off. The rest are optional too; their features stay off when absent.
+softdepend: [Vault, WorldGuard, AdvancedRegionMarket, Citizens, floodgate, Jobs]
 # Every kill switch defaults false, so nothing runs until a server owner turns it on.
 commands:
   resident:
@@ -27,7 +26,7 @@ commands:
     permission: prosperitynpc.admin
   npcadmin:
     description: ProsperityNPC administration.
-    usage: /npcadmin <health|reload|switch|chronicle|reconcile-arm|roster|roster-one|match|incidents|rent|settle|rendertest>
+    usage: /npcadmin <health|reload|switch|chronicle|reconcile-arm|roster|roster-one|match|incidents|rent|settle|rendertest|diagnose|bills>
     permission: prosperitynpc.admin
   npcproperty:
     description: Enroll and inspect NPC-economy properties.
@@ -35,7 +34,7 @@ commands:
     permission: prosperitynpc.admin
   property:
     description: Manage the property you're standing in.
-    usage: /property <status [text]|close|autocare|pause|resume|utility|repair|insure|rent|upgrade|maintain|receipt|rating>
+    usage: /property <status [text]|close|autocare|pause|resume|utility|repair|insure|bills|rent|upgrade|maintain|receipt|rating>
     permission: prosperitynpc.use
   tenants:
     description: View and manage your property's tenants.
@@ -43,7 +42,7 @@ commands:
     permission: prosperitynpc.use
   npcnav:
     description: Build, validate, and publish district navigation graphs.
-    usage: /npcnav <scanhere|scanbox|palette|taghere|copytags|corridor|validate|audit|revalidate|publish|restore|info|list>
+    usage: /npcnav <scanhere|scanbox|palette|taghere|copytags|corridor|validate|audit|revalidate|publish|restore|info|list|wp|import|export>
     permission: prosperitynpc.admin
 permissions:
   prosperitynpc.admin:

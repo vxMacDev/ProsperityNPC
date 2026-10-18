@@ -2,16 +2,26 @@ package com.prosperitysmp.npc.command;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
 import com.prosperitysmp.npc.arm.ArmAdapter;
+import com.prosperitysmp.npc.api.MoneySource;
+import com.prosperitysmp.npc.api.PropertyBackend;
 import com.prosperitysmp.npc.config.EconomyLimits;
 import com.prosperitysmp.npc.config.KillSwitches;
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.economy.BridgeApi;
+import com.prosperitysmp.npc.economy.BuiltInMoneySource;
+import com.prosperitysmp.npc.economy.MoneySources;
+import com.prosperitysmp.npc.economy.accounting.AccountingSink;
+import com.prosperitysmp.npc.economy.accounting.SkriptSink;
 import com.prosperitysmp.npc.economy.LinkedAccounts;
 import com.prosperitysmp.npc.economy.ReserveAccount;
 import com.prosperitysmp.npc.market.HousingPolicy;
 import com.prosperitysmp.npc.market.HousingRuntime;
+import com.prosperitysmp.npc.pieces.DeferredMoneySource;
+import com.prosperitysmp.npc.pieces.DeferredPropertyBackend;
+import com.prosperitysmp.npc.pieces.Pieces;
 import com.prosperitysmp.npc.property.Property;
 import com.prosperitysmp.npc.property.PropertyService;
+import com.prosperitysmp.npc.property.guard.PropertyGuard;
 import com.prosperitysmp.npc.publication.ChronicleProvisioning;
 import com.prosperitysmp.npc.publication.ChronicleRuntime;
 import com.prosperitysmp.npc.render.RenderManager;
@@ -43,7 +53,8 @@ import java.util.UUID;
 public final class NpcAdminCommand implements TabExecutor {
 
     static final List<String> SUBCOMMANDS = List.of("health", "reload", "switch", "chronicle", "reconcile-arm",
-            "roster", "roster-one", "match", "incidents", "rent", "settle", "rendertest", "appearance", "links", "itemrepair");
+            "roster", "roster-one", "match", "incidents", "rent", "settle", "rendertest", "appearance", "links", "itemrepair",
+            "diagnose", "bills");
 
     private final ProsperityNpcPlugin plugin;
 
@@ -63,14 +74,27 @@ public final class NpcAdminCommand implements TabExecutor {
                 plugin.holdPublicationForReload();
                 if (plugin.propertyService() != null) plugin.propertyService().invalidateReconciliation();
                 plugin.reloadConfig();
+                String priceNotice = plugin.purchasePriceReloadMessage();
+                if (priceNotice != null) send(sender, NamedTextColor.YELLOW, priceNotice);
+                String utilityNotice = plugin.utilityPriceReloadMessage();
+                if (utilityNotice != null) send(sender, NamedTextColor.YELLOW, utilityNotice);
+                String repairNotice = plugin.repairPriceReloadMessage();
+                if (repairNotice != null) send(sender, NamedTextColor.YELLOW, repairNotice);
                 plugin.killSwitches().reload();
                 plugin.reloadEconomyLimits();
                 plugin.reloadLinkedAccounts();
                 plugin.reloadItemRepairs();
                 plugin.reloadContracts();
+                plugin.reloadPropertyGuard();
+                plugin.reloadBills(line -> send(sender, line.startsWith("bills: rejected") ? NamedTextColor.RED
+                        : NamedTextColor.GRAY, line));
                 send(sender, NamedTextColor.GREEN, "ProsperityNPC config reloaded.");
             }
             case "switch" -> doSwitch(sender, args);
+            case "bills" -> doBills(sender, args);
+            case "diagnose" -> {
+                for (String line : diagnoseLines()) send(sender, NamedTextColor.GRAY, line);
+            }
             case "chronicle" -> {
                 if (args.length == 2 && args[1].equalsIgnoreCase("preview")) {
                     var runtime = plugin.chronicle();
@@ -411,6 +435,7 @@ public final class NpcAdminCommand implements TabExecutor {
         send(sender, NamedTextColor.GRAY, "Training: " + plugin.trainingStatus());
         send(sender, NamedTextColor.GRAY, "Commerce: " + plugin.commerceStatus());
         send(sender, NamedTextColor.GRAY, "Private publication staging: " + plugin.publicationStatus());
+        if (!plugin.otherBackendHomes().isEmpty()) send(sender, NamedTextColor.GOLD, plugin.otherBackendHomes());
 
         Database db = plugin.database();
         Database.Status dbs = db != null ? db.status() : Database.Status.down();
@@ -427,25 +452,19 @@ public final class NpcAdminCommand implements TabExecutor {
         if (ps == null) {
             send(sender, NamedTextColor.GRAY, "Properties: subsystem off");
         } else {
-            ArmAdapter arm = plugin.armAdapter();
+            PropertyBackend arm = plugin.propertyBackend();
             long last = ps.lastReconcileMillis();
             String age = last == 0L ? "never" : ((System.currentTimeMillis() - last) / 1000) + "s ago";
             int missing = ps.missingCount();
             int waiting = ps.waitingOnBusyCount();
             send(sender, missing > 0 ? NamedTextColor.GOLD : NamedTextColor.GRAY,
-                    "Properties: " + ps.enrolledCount() + " enrolled; ARM "
-                    + (arm != null && arm.isAvailable() ? "available" : "UNAVAILABLE")
-                    + "; last reconcile " + age
-                    + (missing > 0 ? "; " + missing + " region(s) MISSING (map change?)" : "")
-                    + PropertyService.waitingOnBusy(waiting));
+                    propertiesLine(ps.enrolledCount(), arm == null ? "ARM" : arm.displayName(),
+                            arm != null && arm.available(), age, missing, waiting));
         }
 
         BridgeApi bridge = plugin.bridgeApi();
         boolean bridgeReady = bridge != null && bridge.isBridgeConnected();
-        send(sender, bridgeReady ? NamedTextColor.GREEN : NamedTextColor.GOLD,
-                "Skript bridge: " + (bridge == null ? "not initialized"
-                        : bridgeReady ? "heartbeat present" : "no heartbeat")
-                        + " (it publishes accounting totals; it never moves money)");
+        send(sender, bridgeReady ? NamedTextColor.GREEN : NamedTextColor.GOLD, bridgeLine(bridge != null, bridgeReady));
         String reserve = bridge == null ? "" : bridge.centralBankUuid();
         send(sender, NamedTextColor.GOLD, "Payments: economy.payments-enabled="
                 + plugin.getConfig().getBoolean("economy.payments-enabled", false)
@@ -454,9 +473,8 @@ public final class NpcAdminCommand implements TabExecutor {
                 "Receipt runtime: " + (plugin.utilityPayments() == null ? "unavailable" : plugin.utilityPayments().status()));
         String rentHeld = plugin.utilityPayments() == null ? null : plugin.utilityPayments().rentHeldStatus();
         if (rentHeld != null) send(sender, NamedTextColor.GOLD, rentHeld);
-        send(sender, NamedTextColor.GOLD, "Accounting projection: " + (plugin.accountingProjection() != null
-                && plugin.accountingProjection().ready()
-                ? "acknowledged" : "waiting for verified snapshot and Skript acknowledgement"));
+        send(sender, NamedTextColor.GOLD, accountingLine(plugin.accountingSink(), plugin.accountingSinkId(),
+                plugin.accountingProjection() != null && plugin.accountingProjection().ready()));
 
         send(sender, NamedTextColor.GRAY, "Switches:");
         for (KillSwitches.Switch sw : KillSwitches.Switch.values()) {
@@ -480,6 +498,215 @@ public final class NpcAdminCommand implements TabExecutor {
         if (plugin.linkedAccountsEnabled()) send(sender, NamedTextColor.GRAY, "Linked accounts: " + plugin.linkedAccountsStatus());
         // Contracts and partnerships: shown only while one is on or a hand-over is held.
         for (String line : plugin.contractHealthLines()) send(sender, NamedTextColor.GRAY, line);
+        // Configured bills: shown only while bills are on or a bills block was refused.
+        if (plugin.billing() != null)
+            plugin.billing().healthLine().ifPresent(line -> send(sender, NamedTextColor.GRAY, line));
+    }
+
+    /** /npcadmin bills [status|preview <property-uuid>]: catalogue, today's use, and a dry-run invoice (no write). */
+    private void doBills(CommandSender sender, String[] args) {
+        var billing = plugin.billing();
+        if (billing == null) {
+            send(sender, NamedTextColor.GRAY, "Bills are unavailable (no database or payments runtime).");
+            return;
+        }
+        boolean preview = args.length == 3 && args[1].equalsIgnoreCase("preview");
+        if (!(args.length == 1 || (args.length == 2 && args[1].equalsIgnoreCase("status")) || preview)) {
+            send(sender, NamedTextColor.RED, "Usage: /npcadmin bills [status|preview <property-uuid>]");
+            return;
+        }
+        if (!preview) {
+            try {
+                java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try { return billing.invoices().usage(billing.today()); }
+                    catch (Exception failure) { return null; }
+                }, billing.worker()).whenComplete((usage, failure) -> plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    for (String line : billing.statusLines(usage)) send(sender, NamedTextColor.GRAY, line);
+                }));
+            } catch (java.util.concurrent.RejectedExecutionException busy) {
+                send(sender, NamedTextColor.RED, BILLS_BUSY);
+            }
+            return;
+        }
+        java.util.UUID id;
+        try { id = java.util.UUID.fromString(args[2]); }
+        catch (IllegalArgumentException invalid) {
+            send(sender, NamedTextColor.RED, "Enter a property UUID.");
+            return;
+        }
+        var home = plugin.propertyService() == null ? null : plugin.propertyService().getEnrolled().stream()
+                .filter(p -> p.propertyId().equals(id)).findFirst().orElse(null);
+        if (home == null || home.ownerUuid() == null) {
+            send(sender, NamedTextColor.GRAY, "No owned enrolled property with that id.");
+            return;
+        }
+        var policies = billing.inForceToday();
+        var readings = new java.util.LinkedHashMap<String, com.prosperitysmp.npc.charge.meter.MeterRead.Frozen>();
+        var failures = new java.util.LinkedHashMap<String, String>();
+        var cumulative = new java.util.HashSet<String>();
+        for (var p : policies) {
+            if (!p.meter().external()) continue;
+            var choice = billing.selectMeter(p.meter().id());
+            if (choice.meter() == null) {
+                failures.put(p.id(), choice.reason());
+                continue;
+            }
+            if ("cumulative".equals(choice.kind())) cumulative.add(p.meter().id());
+            var start = java.time.Instant.now().minus(java.time.Duration.ofDays(1));
+            var result = com.prosperitysmp.npc.charge.meter.MeterRead.read(p.meter().id(), choice.meter(),
+                    com.prosperitysmp.npc.api.charge.MeterQuery.of(home.worldUuid(), home.regionId(), home.ownerUuid(),
+                            start, java.time.Instant.now()), System::nanoTime, plugin.getLogger()::warning);
+            if (result.ok()) readings.put(p.id(), result.reading());
+            else failures.put(p.id(), result.failure());
+        }
+        var target = new com.prosperitysmp.npc.charge.ChargeInvoiceRepository.Home(home.propertyId(), home.ownerUuid(),
+                home.ownershipEpoch(), home.classKey(), home.marketId());
+        try {
+            java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try { return billing.invoices().preview(target, billing.today(), policies, readings, failures); }
+                catch (Exception failure) { throw new IllegalStateException("Preview unavailable"); }
+            }, billing.worker()).whenComplete((plan, failure) -> plugin.getServer().getScheduler().runTask(plugin, () -> {
+                if (failure != null) {
+                    send(sender, NamedTextColor.RED, "Bill preview unavailable; nothing was written.");
+                    return;
+                }
+                send(sender, NamedTextColor.AQUA, "Dry run for " + home.regionId() + " (no write, no money, before daily limits):");
+                for (var d : plan.drafts())
+                    send(sender, NamedTextColor.GRAY, billPreviewLine(d.policy().id(), d.rawCents(), d.policy().maxCents(),
+                            d.meterId(), d.inputsJson(), cumulative.contains(d.meterId())));
+                for (var skipped : plan.skipped())
+                    send(sender, NamedTextColor.GOLD, "  " + skipped.policyId() + ": no line (" + skipped.reason() + ")");
+                if (plan.drafts().isEmpty() && plan.skipped().isEmpty()) send(sender, NamedTextColor.GRAY, "  No policy covers this home today.");
+            }));
+        } catch (java.util.concurrent.RejectedExecutionException busy) {
+            send(sender, NamedTextColor.RED, BILLS_BUSY);
+        }
+    }
+
+    /** The reply when the bills worker's queue is full. */
+    static final String BILLS_BUSY = "Bills worker busy; try again.";
+
+    /**
+     * One dry-run line. A cumulative meter's reading is its running total: the preview has no stored baseline, so
+     * the raw amount is not what the next bill would charge, and the line says so.
+     */
+    static String billPreviewLine(String policyId, long rawCents, long maxCents, String meterId, String inputsJson,
+                                  boolean cumulative) {
+        return "  " + policyId + ": raw " + rawCents + " cents, max " + maxCents + ", meter " + meterId + " " + inputsJson
+                + (cumulative ? " running total (preview shows no baseline)" : "");
+    }
+
+    /** The "Properties:" health line. The backend's display name is "ARM" for arm, so the text is unchanged there. */
+    static String propertiesLine(int enrolled, String backendName, boolean available, String age, int missing, int waiting) {
+        return ("Properties: " + enrolled + " enrolled; " + backendName + " "
+                + (available ? "available" : "UNAVAILABLE")
+                + "; last reconcile " + age
+                + (missing > 0 ? "; " + missing + " region(s) MISSING (map change?)" : "")
+                + PropertyService.waitingOnBusy(waiting));
+    }
+
+    static String bridgeLine(boolean initialized, boolean ready) {
+        return "Skript bridge: " + (!initialized ? "not initialized"
+                : ready ? "heartbeat present" : "no heartbeat")
+                + " (it publishes accounting totals; it never moves money)";
+    }
+
+    /** The "Accounting projection:" line. Without an economy ledger it reads as the default Skript sink, as before. */
+    static String accountingLine(AccountingSink sink, String sinkId, boolean ready) {
+        if (sink != null) return sink.healthLine(ready);
+        if (sinkId == null || sinkId.isEmpty()) return new SkriptSink(() -> false).healthLine(ready);
+        return "Accounting projection: " + Pieces.ACCOUNTING_KEY + " '" + sinkId
+                + "' is unknown; use skript or internal (payments held)";
+    }
+
+    /** /npcadmin diagnose: the pieces in use, the ones found but unused, and every refusal with its reason. */
+    private List<String> diagnoseLines() {
+        var settings = new ArrayList<PieceDiagnosis.Setting>();
+        settings.add(moneySetting());
+        settings.add(propertySetting());
+        settings.add(accountingSetting());
+        var listings = new ArrayList<com.prosperitysmp.npc.pieces.PieceSelector.Selection<?>>();
+        Pieces pieces = plugin.pieces();
+        if (pieces != null) {
+            try {
+                listings.add(pieces.selectMoney(plugin.moneySourceId()));
+                listings.add(pieces.selectProperty(plugin.propertyBackendId()));
+            } catch (RuntimeException | LinkageError unreadable) {
+                settings.add(new PieceDiagnosis.Setting("listing", "services", false,
+                        "unreadable: " + unreadable.getClass().getSimpleName()));
+            }
+        }
+        return PieceDiagnosis.lines(settings, listings);
+    }
+
+    /** A piece's label for its diagnose line; "" when it has none or cannot be read. */
+    private static String labelOf(com.prosperitysmp.npc.api.Piece piece) {
+        try {
+            String label = piece.label();
+            return label == null ? "" : label;
+        } catch (RuntimeException | LinkageError unreadable) {
+            return "";
+        }
+    }
+
+    private PieceDiagnosis.Setting moneySetting() {
+        String id = plugin.moneySourceId();
+        String configured = plugin.configuredMoneySourceId();
+        MoneySource source = plugin.moneySource();
+        if (source == null) return new PieceDiagnosis.Setting(Pieces.MONEY_KEY, id, false, "economy ledger off (no database)",
+                "", configured);
+        boolean pinned;
+        try {
+            pinned = source.pin().isPresent();
+        } catch (RuntimeException | LinkageError unreadable) {
+            pinned = false;
+        }
+        String provider = source instanceof BuiltInMoneySource builtIn ? PieceDiagnosis.clean(builtIn.providerName())
+                : source instanceof DeferredMoneySource deferred && !deferred.deferred().owner().isEmpty()
+                ? "registered by " + PieceDiagnosis.clean(deferred.deferred().owner()) : "none";
+        String label = labelOf(source);
+        if (!pinned) {
+            String reason = source instanceof BuiltInMoneySource builtIn ? builtIn.reason()
+                    : source instanceof DeferredMoneySource deferred ? deferred.deferred().reason() : "no provider";
+            reason = PieceDiagnosis.clean(reason, 2 * PieceDiagnosis.MAX_FIELD);
+            return new PieceDiagnosis.Setting(Pieces.MONEY_KEY, id, false,
+                    (reason.isEmpty() ? "no provider" : reason) + "; payments off", label, configured);
+        }
+        return new PieceDiagnosis.Setting(Pieces.MONEY_KEY, id, true, "provider " + provider + "; scale "
+                + PieceDiagnosis.clean(source.capabilities().value("scale")) + "; artifact sha256 "
+                + MoneySources.artifactSha8(source), label, configured);
+    }
+
+    private PieceDiagnosis.Setting propertySetting() {
+        String id = plugin.propertyBackendId();
+        String configured = plugin.configuredPropertyBackendId();
+        PropertyBackend backend = plugin.propertyBackend();
+        if (backend == null) return new PieceDiagnosis.Setting(Pieces.PROPERTY_KEY, id, false, "property subsystem off (no database)",
+                "", configured);
+        boolean available = backend.available();
+        PropertyGuard guard = plugin.propertyGuard();
+        // The guard's reason can carry the backend's own failure text.
+        String guardText = guard.isWriteHook() ? guard.describe()
+                : ArmAdapter.ID.equals(id) ? "guard not installed (payments held)"
+                : PieceDiagnosis.clean(guard.describe(), 2 * PieceDiagnosis.MAX_FIELD);
+        String owner = PieceDiagnosis.clean(backend.capabilities().value("owner-model"));
+        String detail = (available ? "" : PieceDiagnosis.clean(backend.displayName()) + " UNAVAILABLE; ") + guardText
+                + (owner.isEmpty() ? "" : "; owner model: " + owner);
+        if (!available && backend instanceof DeferredPropertyBackend deferred)
+            detail = PieceDiagnosis.clean(deferred.deferred().reason(), 2 * PieceDiagnosis.MAX_FIELD) + "; " + guardText;
+        return new PieceDiagnosis.Setting(Pieces.PROPERTY_KEY, id, available, detail, labelOf(backend), configured);
+    }
+
+    private PieceDiagnosis.Setting accountingSetting() {
+        AccountingSink sink = plugin.accountingSink();
+        String id = plugin.accountingSinkId().isEmpty() ? "skript" : plugin.accountingSinkId();
+        if (sink == null) {
+            return new PieceDiagnosis.Setting(Pieces.ACCOUNTING_KEY, id, false, plugin.accountingSinkId().isEmpty()
+                    ? "economy ledger off (no database)" : "unknown; use skript or internal (payments held)");
+        }
+        String detail = sink.selfAcknowledges() ? "acknowledged by the plugin; no Skript totals are published"
+                : "Skript heartbeat " + (sink.consumerPresent() ? "present" : "absent");
+        return new PieceDiagnosis.Setting(Pieces.ACCOUNTING_KEY, sink.id(), true, detail);
     }
 
     private static String dollars(long cents) {
@@ -509,6 +736,9 @@ public final class NpcAdminCommand implements TabExecutor {
                     out.add(s);
                 }
             }
+        } else if (args.length == 2 && args[0].equalsIgnoreCase("bills")) {
+            for (String s : List.of("status", "preview"))
+                if (s.startsWith(args[1].toLowerCase(Locale.ROOT))) out.add(s);
         } else if (args.length == 2 && args[0].equalsIgnoreCase("chronicle")) {
             for (String s : List.of("status", "preview", "bootstrap", "dispatch"))
                 if (s.startsWith(args[1].toLowerCase(Locale.ROOT))) out.add(s);

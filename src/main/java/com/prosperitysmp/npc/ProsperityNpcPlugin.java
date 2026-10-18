@@ -3,6 +3,9 @@ package com.prosperitysmp.npc;
 import com.prosperitysmp.npc.alert.StaffAlerts;
 import com.prosperitysmp.npc.appearance.ResidentAppearanceCatalogue;
 import com.prosperitysmp.npc.appearance.ResidentAppearanceFiles;
+import com.prosperitysmp.npc.api.GuardResult;
+import com.prosperitysmp.npc.api.MoneySource;
+import com.prosperitysmp.npc.api.PropertyBackend;
 import com.prosperitysmp.npc.arm.ArmAdapter;
 import com.prosperitysmp.npc.arm.OwnershipFence;
 import com.prosperitysmp.npc.clock.EconomyClock;
@@ -23,8 +26,16 @@ import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.DatabaseSettings;
 import com.prosperitysmp.npc.db.DatabaseWorkers;
 import com.prosperitysmp.npc.db.MigrationRunner;
+import com.prosperitysmp.npc.charge.BillingRuntime;
+import com.prosperitysmp.npc.charge.ChargeCatalogue;
+import com.prosperitysmp.npc.economy.PurchasePrices;
+import com.prosperitysmp.npc.economy.UtilityPrices;
+import com.prosperitysmp.npc.economy.RepairPrices;
+import com.prosperitysmp.npc.economy.UtilityRepository;
+import org.bukkit.configuration.ConfigurationSection;
 import com.prosperitysmp.npc.economy.AccountLinkRepository;
 import com.prosperitysmp.npc.economy.AccountingProjection;
+import com.prosperitysmp.npc.economy.BillPayments;
 import com.prosperitysmp.npc.economy.BridgeApi;
 import com.prosperitysmp.npc.economy.CommercePaymentRuntime;
 import com.prosperitysmp.npc.economy.EconomyEventRepository;
@@ -38,13 +49,23 @@ import com.prosperitysmp.npc.economy.PurchaseRepository;
 import com.prosperitysmp.npc.economy.PurchaseService;
 import com.prosperitysmp.npc.economy.ReserveAccount;
 import com.prosperitysmp.npc.economy.UtilityPaymentRuntime;
-import com.prosperitysmp.npc.economy.VaultAccess;
+import com.prosperitysmp.npc.economy.BuiltInMoneySource;
+import com.prosperitysmp.npc.economy.MoneySources;
+import com.prosperitysmp.npc.economy.accounting.AccountingSink;
 import com.prosperitysmp.npc.interaction.BedrockNpcUi;
 import com.prosperitysmp.npc.interaction.FloodgateLinkListener;
 import com.prosperitysmp.npc.interaction.OwnerDeskController;
 import com.prosperitysmp.npc.interaction.ResidentEncounterController;
 import com.prosperitysmp.npc.market.HousingRuntime;
 import com.prosperitysmp.npc.nav.NavGraphRepository;
+import com.prosperitysmp.npc.pieces.Deferred;
+import com.prosperitysmp.npc.pieces.DeferredMoneySource;
+import com.prosperitysmp.npc.pieces.DeferredPropertyBackend;
+import com.prosperitysmp.npc.pieces.Pieces;
+import com.prosperitysmp.npc.property.guard.FenceHooks;
+import com.prosperitysmp.npc.property.guard.PropertyGuard;
+import com.prosperitysmp.npc.property.worldguard.ReflectiveWorldGuard;
+import com.prosperitysmp.npc.property.worldguard.WorldGuardListedBackend;
 import com.prosperitysmp.npc.nav.NavGraphScanner;
 import com.prosperitysmp.npc.property.AutoCareRuntime;
 import com.prosperitysmp.npc.property.DueRentFirst;
@@ -83,7 +104,6 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.event.Listener;
-import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -109,7 +129,6 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -128,9 +147,25 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     private Database database;
     private final DatabaseWorkers databaseWorkers = new DatabaseWorkers();
     private ArmAdapter armAdapter;
+    // The selected pieces (dev.64). Built-in arm, vault and skript are chosen in onEnable exactly where the old
+    // code built them; a third-party id binds once the server has finished starting.
+    private PropertyBackend propertyBackend;
+    private MoneySource moneySource;
+    private AccountingSink accountingSink;
+    private String accountingSinkId = "";
+    // money.source and property.backend as they were when the plugin enabled; the pieces in use were chosen from these.
+    private String moneySourceId, propertyBackendId;
+    // ARM: READY exactly when the fence is set. Other backends: READY once bound and guarded (dev.67). Never null.
+    private PropertyGuard propertyGuard = PropertyGuard.waiting("not installed");
+    private WorldGuardListedBackend worldGuardListed;
+    private Deferred<MoneySource> deferredMoney;
+    private Deferred<PropertyBackend> deferredProperty;
+    private Pieces pieces;
     private OwnershipFence ownershipFence;
     private HousingRuntime housingRuntime;
     private UtilityPaymentRuntime utilityPayments;
+    // dev.65 configured bills and taxes; null without a database or utility runtime.
+    private BillingRuntime billing;
     private AccountingProjection accountingProjection;
     private final FinancialFence financialFence = new FinancialFence();
     private PropertyRepository propertyRepository;
@@ -152,7 +187,6 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     // Durable owner-away decisions (V32). Only touched while housing.vacation-days is above 0.
     private OwnerAwayDecisionRepository ownerAwayDecisions;
     private ExecutorService ownerAwayWorker;
-    private VaultAccess vaultAccess;
     private PurchaseService purchaseService;
     private NavGraphRepository navGraphRepository;
     private NavGraphScanner navGraphScanner;
@@ -177,6 +211,9 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     private final InventoryCustodyGate inventoryGate = new InventoryCustodyGate();
     // item-repairs.*: read on start and /npcadmin reload (main thread); read by payment workers for the cash block.
     private volatile ItemRepairSettings itemRepairSettings = ItemRepairSettings.OFF;
+    private PurchasePrices purchasePrices = PurchasePrices.DEFAULT;
+    private UtilityPrices utilityPrices = UtilityPrices.DEFAULT;
+    private RepairPrices repairPrices = RepairPrices.DEFAULT;
     private ItemRepairRuntime itemRepairs;
     // town.contracts.* and town.partnerships.*: read on start and /npcadmin reload (main thread); read by workers.
     private volatile ContractCatalogue contractCatalogue = ContractCatalogue.OFF;
@@ -202,7 +239,30 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     public void onEnable() {
         if (databaseWorkers.sealed()) throw new IllegalStateException("NPC worker lifecycle closed; full server restart required");
         saveDefaultConfig();
+        moneySourceId = configuredMoneySourceId();
+        propertyBackendId = configuredPropertyBackendId();
         this.killSwitches = KillSwitches.load(this);
+        try {
+            purchasePrices = readPurchasePrices(getConfig());
+        } catch (IllegalArgumentException invalid) {
+            getLogger().severe("Invalid owner-prices: " + invalid.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+        try {
+            utilityPrices = readUtilityPrices(getConfig());
+        } catch (IllegalArgumentException invalid) {
+            getLogger().severe("Invalid utility-prices: " + invalid.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+        try {
+            repairPrices = readRepairPrices(getConfig());
+        } catch (IllegalArgumentException invalid) {
+            getLogger().severe("Invalid repair-prices: " + invalid.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         reloadEconomyLimits();
         loadItemRepairSettings();
         initResidentCast();
@@ -214,6 +274,7 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
         if (ownershipFence != null && database != null && database.isConnected())
             housingRuntime = new HousingRuntime(this);
         initEconomy();
+        initPieces();
         initSettlement();
         initNav();
         initRender();
@@ -223,11 +284,11 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
         initTraining();
         initCommerce();
         initItemRepairs();
-        if (database != null && database.isConnected() && propertyService != null && armAdapter != null) {
+        if (database != null && database.isConnected() && propertyService != null && propertyBackend != null) {
             try {
                 autoCare = new AutoCareRuntime(this);
             } catch (RuntimeException failure) {
-                getLogger().warning("Auto-care runtime unavailable; recurring payments held.");
+                if (!reserveUnsetExplains(failure)) getLogger().warning("Auto-care runtime unavailable; recurring payments held.");
             }
         }
         initOwnerDesk();
@@ -297,6 +358,7 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
                 case ITEM_DELIVERY -> itemDelivery.closeAsync().toCompletableFuture();
             }), drains);
         stopComponent(commercePrices::invalidate, drains);
+        if (billing != null) stopComponent(billing::close, drains);
         if (utilityPayments != null) stopComponent(utilityPayments::close, drains);
         if (accountingProjection != null) stopComponent(accountingProjection::close, drains);
         if (publicationTask != null) {
@@ -569,7 +631,7 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     }
 
     private UUID reserveOrNull() {
-        String text = getConfig().getString(ReserveAccount.PATH, "");
+        String text = ReserveAccount.liveText(getConfig());
         return ReserveAccount.isCanonical(text) ? UUID.fromString(text) : null;
     }
 
@@ -646,12 +708,12 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
 
     private void initPublicRating() {
         if (!getConfig().getBoolean("housing.public-rating-enabled", false) || database == null
-                || !database.isConnected() || armAdapter == null) return;
+                || !database.isConnected() || propertyBackend == null) return;
         try {
             publicRating = new PublicRatingService(this,
                     new OwnerDeskRepository(database, Clock.systemUTC(),
                             ZoneId.of(getConfig().getString("clock.timezone", "America/Chicago")),
-                            getConfig().getInt("clock.daily-reset-hour", 4)));
+                            getConfig().getInt("clock.daily-reset-hour", 4), purchasePrices));
         } catch (RuntimeException | LinkageError error) {
             getLogger().warning("Public property ratings unavailable: " + error.getClass().getSimpleName());
             publicRating = null;
@@ -659,7 +721,7 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     }
 
     private void initOwnerDesk() {
-        if (database == null || !database.isConnected() || armAdapter == null) return;
+        if (database == null || !database.isConnected() || propertyBackend == null) return;
         try {
             ownerDesk = new OwnerDeskController(this, new OwnerDeskRepository(database, Clock.systemUTC(),
                     ZoneId.of(getConfig().getString("clock.timezone", "America/Chicago")),
@@ -671,7 +733,9 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
                     this::linkedAccountsEnabled, () -> economyLimits.benefitUnitDailyCapCents(),
                     // town.partnerships: the partner line, live; off reads no partnership table.
                     () -> partnershipsOn() ? new OwnerDeskRepository.PartnerConfig(true, partnerRankLive(),
-                            contractCatalogue::configPerks) : OwnerDeskRepository.PartnerConfig.OFF));
+                            contractCatalogue::configPerks) : OwnerDeskRepository.PartnerConfig.OFF, purchasePrices)
+                    // A home enrolled under another property backend is not shown (V45).
+                    .backendId(propertyRepository == null ? null : propertyRepository.backendId()));
         } catch (RuntimeException | LinkageError error) {
             getLogger().warning("Owner desk unavailable: " + error.getClass().getSimpleName());
             if (ownerDesk != null) ownerDesk.close();
@@ -830,6 +894,63 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     public void reloadItemRepairs() {
         loadItemRepairSettings();
         if (itemRepairSettings.active()) itemRepairs();
+    }
+
+    public PurchasePrices purchasePrices() { return purchasePrices; }
+
+    public UtilityPrices utilityPrices() { return utilityPrices; }
+
+    public RepairPrices repairPrices() { return repairPrices; }
+
+    static RepairPrices readRepairPrices(ConfigurationSection config) {
+        Object raw = config.get("repair-prices");
+        if (raw == null) return RepairPrices.DEFAULT;
+        if (!(raw instanceof ConfigurationSection section))
+            throw new IllegalArgumentException("repair-prices must be a settings section");
+        return RepairPrices.load(ChargeCatalogue.plain(section));
+    }
+
+    public String repairPriceReloadMessage() {
+        try {
+            return repairPrices.equals(readRepairPrices(getConfig())) ? null
+                    : "repair-prices changed; a full server restart is required. Active prices are unchanged.";
+        } catch (IllegalArgumentException invalid) {
+            return "repair-prices rejected; fix the settings before restarting. Active prices are unchanged.";
+        }
+    }
+
+    static UtilityPrices readUtilityPrices(ConfigurationSection config) {
+        Object raw = config.get("utility-prices");
+        if (raw == null) return UtilityPrices.DEFAULT;
+        if (!(raw instanceof ConfigurationSection section))
+            throw new IllegalArgumentException("utility-prices must be a settings section");
+        return UtilityPrices.load(ChargeCatalogue.plain(section));
+    }
+
+    public String utilityPriceReloadMessage() {
+        try {
+            return utilityPrices.equals(readUtilityPrices(getConfig())) ? null
+                    : "utility-prices changed; a full server restart is required. Active prices are unchanged.";
+        } catch (IllegalArgumentException invalid) {
+            return "utility-prices rejected; fix the settings before restarting. Active prices are unchanged.";
+        }
+    }
+
+    static PurchasePrices readPurchasePrices(ConfigurationSection config) {
+        Object raw = config.get("owner-prices");
+        if (raw == null) return PurchasePrices.DEFAULT;
+        if (!(raw instanceof ConfigurationSection section))
+            throw new IllegalArgumentException("owner-prices must be a settings section");
+        return PurchasePrices.load(ChargeCatalogue.plain(section));
+    }
+
+    public String purchasePriceReloadMessage() {
+        try {
+            return purchasePrices.equals(readPurchasePrices(getConfig())) ? null
+                    : "owner-prices changed; a full server restart is required. Active prices are unchanged.";
+        } catch (IllegalArgumentException invalid) {
+            return "owner-prices rejected; fix the settings before restarting. Active prices are unchanged.";
+        }
     }
 
     public ItemRepairSettings itemRepairSettings() {
@@ -1045,15 +1166,23 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
             return;
         }
         this.armAdapter = new ArmAdapter(this);
+        this.propertyBackend = selectPropertyBackend();
         this.propertyRepository = new PropertyRepository(database);
-        this.propertyService = new PropertyService(this, armAdapter, propertyRepository);
+        // Enrollment records the backend; homes enrolled under another one stay out of the cache (V45).
+        String backendId = propertyBackendId();
+        propertyRepository.backendId(backendId.length() <= 32 ? backendId : backendId.substring(0, 32));
+        this.propertyService = new PropertyService(this, propertyBackend, propertyRepository);
         // Before the cache load, so a failed load cannot skip it. Unreadable counts as pending (fails closed).
         propertyService.notePendingRentChanges(PropertyService.pendingRentChangesAtStartup(
                 propertyRepository::countPendingRentChanges, getLogger()::warning));
         try {
             propertyService.loadCache();
             getLogger().info("Property subsystem ready: " + propertyService.enrolledCount()
-                    + " enrolled; ARM " + (armAdapter.isAvailable() ? "available" : "UNAVAILABLE") + ".");
+                    + " enrolled; " + propertyBackend.displayName() + " "
+                    + (propertyBackend.available() ? "available" : "UNAVAILABLE") + ".");
+            otherBackendHomes = PropertyRepository.otherBackendsText(propertyRepository.enrolledUnderOtherBackends(),
+                    propertyRepository.backendId());
+            if (!otherBackendHomes.isEmpty()) getLogger().warning(otherBackendHomes);
         } catch (SQLException e) {
             getLogger().severe("Failed to load enrolled properties: " + e.getMessage());
         }
@@ -1069,7 +1198,10 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
         getServer().getScheduler().runTaskTimer(this, () -> {
             if (propertyService != null && propertyService.enrolledCount() > 0) {
                 propertyService.requestReconcile(r -> {
-                    if (PropertyService.reconcileIncomplete(r)) getLogger().warning(PropertyService.reconcileIncompleteText(r));
+                    if (!ArmAdapter.ID.equals(propertyBackendId())) {
+                        if (PropertyService.reconcileIncomplete(r))
+                            getLogger().warning(PropertyService.reconcileIncompleteText(propertyBackend.displayName(), r));
+                    } else if (PropertyService.reconcileIncomplete(r)) getLogger().warning(PropertyService.reconcileIncompleteText(r));
                 });
             }
         }, ticks, ticks);
@@ -1095,24 +1227,49 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
         else if (!ReserveAccount.isCanonical(reserve))
             getLogger().warning("centralbank.uuid must be a lowercase UUID like 123e4567-e89b-42d3-a456-426614174000; "
                     + "NPC payments and the scheduled daily cycle stay held until it is.");
-        this.vaultAccess = new VaultAccess();
-        if (!vaultAccess.init()) {
+        this.moneySource = selectMoneySource();
+        if (moneySource instanceof BuiltInMoneySource builtIn && !builtIn.probe()) {
             getLogger().warning("Vault economy not found; player purchases will be unavailable.");
         }
         Database receipts = database;
         var itemReceipts = new ItemRepairRepository(receipts);
+        var utilityReceipts = ReserveAccount.isCanonical(reserve)
+                ? new UtilityRepository(receipts, UUID.fromString(reserve), Clock.systemUTC(), java.time.ZoneOffset.UTC, 0) : null;
         this.purchaseService = new PurchaseService(this, request -> PurchaseRepository.findByRequest(receipts, request),
-                itemReceipts::find);
-        try {
-            accountingProjection = new AccountingProjection(this);
-        } catch (RuntimeException failure) {
-            getLogger().warning("Accounting projection unavailable: " + failure.getClass().getSimpleName());
+                itemReceipts::find, (request, payer) -> BillPayments.findByRequest(receipts, request, payer),
+                (request, payer) -> {
+                    if (utilityReceipts == null) throw new SQLException("Utility receipt reserve is not configured");
+                    return utilityReceipts.findByRequest(request, payer);
+                });
+        accountingSinkId = Pieces.configuredId(getConfig().getString(Pieces.ACCOUNTING_KEY), "skript");
+        accountingSink = AccountingSink.forId(accountingSinkId, () -> bridgeApi != null && bridgeApi.isBridgeConnected());
+        if (accountingSink == null) {
+            getLogger().warning(Pieces.ACCOUNTING_KEY + " '" + accountingSinkId + "' is unknown; use skript or internal");
+        } else {
+            try {
+                accountingProjection = new AccountingProjection(this, accountingSink);
+            } catch (RuntimeException failure) {
+                if (!reserveUnsetExplains(failure))
+                    getLogger().warning("Accounting projection unavailable: " + failure.getClass().getSimpleName());
+            }
         }
+        getLogger().info("Pieces: money=" + moneySourceId() + " property=" + propertyBackendId()
+                + " accounting=" + accountingSinkId);
         if (ownershipFence != null && propertyService != null) {
             try {
                 utilityPayments = new UtilityPaymentRuntime(this);
             } catch (RuntimeException failure) {
-                getLogger().warning("Utility runtime unavailable: " + failure.getClass().getSimpleName());
+                if (!reserveUnsetExplains(failure))
+                    getLogger().warning("Utility runtime unavailable: " + failure.getClass().getSimpleName());
+            }
+        }
+        // dev.65 bills: with no bills: block this reads nothing, logs nothing and phase 5 stays a pass-through.
+        if (utilityPayments != null) {
+            try {
+                billing = new BillingRuntime(this);
+                billing.loadCatalogue(true, line -> { });
+            } catch (RuntimeException failure) {
+                getLogger().warning("Bills runtime unavailable: " + failure.getClass().getSimpleName());
             }
         }
         try {
@@ -1484,16 +1641,18 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
             reply.accept("Stopped before next phase; committed receipts are retained.");
             return;
         }
-        if (phase == 5) {
+        if (phase == 6) {
             dailyCycleRunning = false;
             reply.accept("Cycle finished. Individual phase receipts determine actual outcomes.");
             return;
         }
         // Phases: 0 incidents, 1 resident moods (flag-gated, before matching),
-        // 2 voluntary departures (flag-gated, after moods, before matching), 3 matching, 4 rent.
+        // 2 voluntary departures (flag-gated, after moods, before matching), 3 matching, 4 rent,
+        // 5 configured bills (only with bills.enabled and a loaded catalogue; otherwise skipped with no reply).
         if ((phase == 0 && !killSwitches.isIncidentsEnabled()) || (phase == 1 && !housingRuntime.moodsEnabled())
                 || (phase == 2 && (!housingRuntime.voluntaryDeparturesEnabled() || !killSwitches.isMovesEnabled()))
-                || (phase==3 && !killSwitches.isMovesEnabled()) || (phase==4 && !killSwitches.isEconomyEnabled())) {
+                || (phase==3 && !killSwitches.isMovesEnabled()) || (phase==4 && !killSwitches.isEconomyEnabled())
+                || (phase==5 && !billsPhaseRuns(billing))) {
             runDailyPhase(phase + 1, authority, reply);
             return;
         }
@@ -1523,6 +1682,7 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
             case 2->housingRuntime.requestDepartures(authority,next);
             case 3->housingRuntime.request(authority,next);
             case 4->utilityPayments.requestRentBatch(authority,next);
+            case 5->billing.requestDaily(authority,next);
             default->false;
         };
         if (!accepted) {
@@ -1569,8 +1729,32 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
         return utilityPayments;
     }
 
+    /** Configured bills (dev.65); null when the database or the utility runtime is unavailable. */
+    public BillingRuntime billing() {
+        return billing;
+    }
+
+    /** Phase 5 runs only with a bills runtime whose catalogue is switched on and loaded. */
+    static boolean billsPhaseRuns(BillingRuntime billing) {
+        return billing != null && billing.phaseRuns();
+    }
+
+    /** /npcadmin reload: re-reads the bills: block. A bad block keeps the previous catalogue. */
+    public void reloadBills(java.util.function.Consumer<String> sender) {
+        if (billing != null) billing.loadCatalogue(false, sender);
+    }
+
     public AutoCareRuntime autoCare() {
         return autoCare;
+    }
+
+    /**
+     * True when a payment runtime refused to start only because centralbank.uuid is blank or not canonical. The
+     * startup warning about centralbank.uuid already says payments stay held, so a second line naming the exception
+     * would only read like a crash.
+     */
+    private boolean reserveUnsetExplains(RuntimeException failure) {
+        return failure instanceof IllegalArgumentException && !ReserveAccount.isCanonical(ReserveAccount.liveText(getConfig()));
     }
 
     public AccountingProjection accountingProjection() {
@@ -1597,24 +1781,205 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
     }
 
     private void initOwnershipCoordination() {
+        String backendId = propertyBackendId();
+        if (!ArmAdapter.ID.equals(backendId)) {
+            initGuardedCoordination(backendId);
+            return;
+        }
         if (!getConfig().getBoolean("integration.arm-coordination", false)) return;
         var fence = new OwnershipFence(Bukkit::isPrimaryThread);
         try {
-            Plugin arm = getServer().getPluginManager().getPlugin("AdvancedRegionMarket");
-            if (arm == null || !arm.isEnabled()) throw new IllegalStateException("ARM unavailable");
-            Class<?> hook = Class.forName("net.alex9849.arm.NpcTransactionGuard", true, arm.getClass().getClassLoader());
-            if (hook.getField("PROTOCOL").getInt(null) != 1) throw new IllegalStateException("Unsupported ownership hook");
-            BiFunction<UUID, String, Runnable> writer = fence::beginWrite;
-            hook.getMethod("install", BiFunction.class).invoke(null, writer);
+            // Without a database the property subsystem is off, but the guard is installed as before.
+            PropertyBackend guarded = propertyBackend != null ? propertyBackend : new ArmAdapter(this);
+            GuardResult result = guarded.installGuard(fence::beginWrite);
+            if (!result.isInstalled()) throw new IllegalStateException(result.reason());
+            propertyGuard = PropertyGuard.writeHook();
             ownershipFence = fence;
             getLogger().info("Cooperative ARM ownership hook registered; transaction services still require their own readiness gates.");
-        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+        } catch (RuntimeException | LinkageError failure) {
             fence.stop();
             staffAlerts.raise(StaffAlerts.Kind.ARM_HOOK_UNAVAILABLE, "arm-hook",
                     "ARM ownership hook did not register; payments and moves are held.");
+            // A reflective failure arrives wrapped; name the original exception, as before.
+            Throwable shown = failure instanceof ArmAdapter.GuardInstallFailure wrapped ? wrapped.reflective() : failure;
             getLogger().severe("ARM ownership coordination unavailable; financial/admission authority held. "
-                    + failure.getClass().getSimpleName());
+                    + shown.getClass().getSimpleName());
         }
+    }
+
+    /** property.backend: arm (the default) is built here; any other id waits for the server to finish starting. */
+    private PropertyBackend selectPropertyBackend() {
+        String id = propertyBackendId();
+        if (ArmAdapter.ID.equals(id)) return armAdapter;
+        if (WorldGuardListedBackend.ID.equals(id)) {
+            worldGuardListed = new WorldGuardListedBackend(new ReflectiveWorldGuard(getServer().getPluginManager()),
+                    Bukkit::isPrimaryThread, Bukkit::getWorld, Bukkit::getWorld,
+                    at -> at.getWorld().isChunkLoaded(at.getBlockX() >> 4, at.getBlockZ() >> 4));
+            return worldGuardListed;
+        }
+        deferredProperty = new Deferred<>(Pieces.PROPERTY_KEY, id, getLogger()::warning);
+        return new DeferredPropertyBackend(deferredProperty);
+    }
+
+    /** money.source: vault (the default) is built here; any other id waits for the server to finish starting. */
+    private MoneySource selectMoneySource() {
+        String id = moneySourceId();
+        if (MoneySources.VAULT.equals(id)) return MoneySources.vault(getServer());
+        deferredMoney = new Deferred<>(Pieces.MONEY_KEY, id, getLogger()::warning);
+        return new DeferredMoneySource(deferredMoney);
+    }
+
+    /** Lists third-party pieces for diagnose, and binds deferred ones at startup. Listens only when one is deferred. */
+    private void initPieces() {
+        Map<String, MoneySource> money = moneySource instanceof BuiltInMoneySource builtIn
+                ? Map.of(MoneySources.VAULT, builtIn) : Map.of();
+        Map<String, PropertyBackend> property = armAdapter != null ? Map.of(ArmAdapter.ID, armAdapter) : Map.of();
+        if (worldGuardListed != null)
+            property = Map.of(ArmAdapter.ID, armAdapter, WorldGuardListedBackend.ID, worldGuardListed);
+        pieces = new Pieces(getServer(), money, property, deferredMoney, deferredProperty);
+        if (deferredProperty != null && ownershipFence != null) pieces.onPropertyBound(this::installBackendGuard);
+        if (deferredMoney != null || deferredProperty != null)
+            getServer().getPluginManager().registerEvents(pieces, this);
+    }
+
+    /** money.source as it was at startup: the source in use. A config reload changes it only after a restart. */
+    public String moneySourceId() {
+        return moneySourceId != null ? moneySourceId : configuredMoneySourceId();
+    }
+
+    /** property.backend as it was at startup: the backend in use. A config reload changes it only after a restart. */
+    public String propertyBackendId() {
+        return propertyBackendId != null ? propertyBackendId : configuredPropertyBackendId();
+    }
+
+    /** money.source in the live config, which may differ from moneySourceId() after /npcadmin reload. */
+    public String configuredMoneySourceId() {
+        return Pieces.configuredId(getConfig().getString(Pieces.MONEY_KEY), MoneySources.VAULT);
+    }
+
+    /** property.backend in the live config, which may differ from propertyBackendId() after /npcadmin reload. */
+    public String configuredPropertyBackendId() {
+        return Pieces.configuredId(getConfig().getString(Pieces.PROPERTY_KEY), ArmAdapter.ID);
+    }
+
+    /** The selected money source; null without a database. Third-party sources report no pin until bound. */
+    public MoneySource moneySource() {
+        return moneySource;
+    }
+
+    /** The selected property backend; null without a database. */
+    public PropertyBackend propertyBackend() {
+        return propertyBackend;
+    }
+
+    /** The selected accounting sink; null when accounting.sink is unknown or there is no database. */
+    public AccountingSink accountingSink() {
+        return accountingSink;
+    }
+
+    public String accountingSinkId() {
+        return accountingSinkId;
+    }
+
+    /** Whether payments, moves and payouts may start for the property backend. Never null. */
+    public PropertyGuard propertyGuard() {
+        return propertyGuard;
+    }
+
+    /** The health line for homes enrolled under another backend; "" when there are none. */
+    public String otherBackendHomes() {
+        return otherBackendHomes;
+    }
+
+    /** property.when-unguarded, read on /npcadmin reload. */
+    public void reloadPropertyGuard() {
+        propertyGuard.whenUnguarded(getConfig().get(PropertyGuard.WHEN_UNGUARDED), getLogger()::warning);
+    }
+
+    // ---- dev.67: guards for property backends other than ARM -------------------------------------------------
+
+    private String otherBackendHomes = "";
+
+    /**
+     * A backend other than ARM: the fence is created now, so the runtimes are built in today's order, but the guard
+     * stays UNAVAILABLE until the backend is bound and its guard installed. A built-in backend is bound already; a
+     * third-party one binds when the server finishes starting.
+     */
+    private void initGuardedCoordination(String backendId) {
+        if (propertyBackend == null) return; // No database: the property subsystem is off and nothing can pay.
+        ownershipFence = new OwnershipFence(Bukkit::isPrimaryThread, task -> getServer().getScheduler().runTask(this, task));
+        propertyGuard = PropertyGuard.waiting("waiting for " + backendId + " to bind at server startup");
+        reloadPropertyGuard();
+        if (!(propertyBackend instanceof DeferredPropertyBackend)) installBackendGuard();
+    }
+
+    /** Main thread. Installs the bound backend's guard, registers its handlers through the wrapper, then checks every home. */
+    private void installBackendGuard() {
+        PropertyBackend backend = propertyBackend instanceof DeferredPropertyBackend deferred
+                ? deferred.deferred().current().orElse(null) : propertyBackend;
+        if (backend == null) {
+            String why = propertyBackend instanceof DeferredPropertyBackend deferred ? deferred.deferred().reason() : "not bound";
+            propertyGuard.fail(why);
+            getLogger().warning(Pieces.PROPERTY_KEY + " '" + propertyBackendId() + "' has no guard (" + why + "); payments and moves are held.");
+            return;
+        }
+        var hooks = new FenceHooks(ownershipFence, this::propertyBackendFailed);
+        // A built-in backend's handlers are core code. A third-party backend's are filed under its adapter plugin, so
+        // Bukkit removes them when the adapter disables; if that plugin cannot be found the guard fails instead.
+        org.bukkit.plugin.Plugin filedUnder = this;
+        if (propertyBackend instanceof DeferredPropertyBackend deferred) {
+            String owner = deferred.deferred().owner();
+            filedUnder = owner == null || owner.isEmpty() ? null : getServer().getPluginManager().getPlugin(owner);
+        }
+        PropertyBackend bound = propertyBackend;
+        propertyGuard.install(backend, hooks, filedUnder, getServer().getPluginManager(), bound::available,
+                this::propertyBackendFailed);
+        getLogger().info(backend.displayName() + " " + propertyGuard.describe() + ".");
+        if (!propertyGuard.ready()) return;
+        startupOwnershipPass();
+        if (propertyGuard.needsStartupReconcile()) {
+            long ticks = Math.max(1L, getConfig().getLong("enrollment.reconcile-interval-ticks", 6000L));
+            getServer().getScheduler().runTaskTimer(this, task -> {
+                if (!propertyGuard.needsStartupReconcile() || !propertyGuard.ready()) task.cancel();
+                else startupOwnershipPass();
+            }, ticks, ticks);
+        }
+    }
+
+    /** Main thread. Payouts stay held until one pass reads every enrolled home. */
+    private void startupOwnershipPass() {
+        if (propertyService == null) return;
+        boolean loaded = propertyService.cacheLoaded();
+        int unreadable = loaded ? propertyService.startupOwnershipPass() : 0;
+        if (propertyGuard.startupPass(loaded, unreadable)) {
+            getLogger().info("Startup ownership check read every enrolled home; " + propertyGuard.describe() + ".");
+        } else if (!loaded) {
+            if (!homesNotLoadedLogged) getLogger().warning("Startup ownership check cannot run: the enrolled homes did not "
+                    + "load at startup; rent and appreciation wait until a restart.");
+            homesNotLoadedLogged = true;
+        } else {
+            getLogger().warning("Startup ownership check could not read " + unreadable
+                    + " enrolled home(s); rent and appreciation wait and the check runs again.");
+        }
+    }
+
+    // Main thread. The "homes did not load" warning is logged once, not on every retry.
+    private boolean homesNotLoadedLogged;
+
+    /** Any thread. A guard handler or call threw: the backend is unavailable until a restart and payments are held. */
+    private void propertyBackendFailed(String what, Throwable failure) {
+        propertyGuard.fail(what + ": " + failure.getClass().getSimpleName());
+        staffAlerts.raise(StaffAlerts.Kind.PROPERTY_BACKEND_FAILED, "property-backend",
+                "Property backend " + propertyBackendId() + " failed in " + what + "; payments and moves are held until a restart.");
+        getLogger().severe("Property backend " + propertyBackendId() + " failed in " + what + " ("
+                + failure.getClass().getSimpleName() + "); payments and moves are held until a restart.");
+    }
+
+    // ---- end dev.67 -----------------------------------------------------------------------------------------
+
+    /** Piece listing for /npcadmin diagnose. */
+    public Pieces pieces() {
+        return pieces;
     }
 
     public ArmAdapter armAdapter() {
@@ -1635,10 +2000,6 @@ public final class ProsperityNpcPlugin extends JavaPlugin {
 
     public BridgeApi bridgeApi() {
         return bridgeApi;
-    }
-
-    public VaultAccess vaultAccess() {
-        return vaultAccess;
     }
 
     public PurchaseService purchaseService() {

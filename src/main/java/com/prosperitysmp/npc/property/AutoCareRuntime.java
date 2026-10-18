@@ -6,7 +6,6 @@ import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.economy.ReserveAccount;
 import com.prosperitysmp.npc.economy.UtilityRepository;
-import com.prosperitysmp.npc.formulas.PropertyFormulas;
 import com.prosperitysmp.npc.util.Money;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -93,9 +92,9 @@ public final class AutoCareRuntime {
         var zone = ZoneId.of(plugin.getConfig().getString("clock.timezone", "America/Chicago"));
         int reset = plugin.getConfig().getInt("clock.daily-reset-hour", 4);
         var reserve = ReserveAccount.fromConfig(plugin.getConfig());
-        repository = new AutoCareRepository(plugin.database(), reserve, clock, zone, reset);
-        utilities = new UtilityRepository(plugin.database(), reserve, clock, zone, reset);
-        desks = new OwnerDeskRepository(plugin.database());
+        repository = new AutoCareRepository(plugin.database(), reserve, clock, zone, reset, plugin.purchasePrices());
+        utilities = new UtilityRepository(plugin.database(), reserve, clock, zone, reset, plugin.utilityPrices());
+        desks = new OwnerDeskRepository(plugin.database(), plugin.purchasePrices());
         days = new EconomyClock(clock, zone, reset);
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(4), r -> {
             var t = new Thread(r, "npc-auto-care");
@@ -271,7 +270,7 @@ public final class AutoCareRuntime {
         if (c.actions().contains(AutoCareRepository.Action.UTILITY) && !attempted.contains(AutoCareRepository.Action.UTILITY)) {
             var history = utilities.history(c.propertyId(), day);
             if (history.isEmpty() || history.stream().allMatch(r -> r.state() == UtilityRepository.State.DECLINED)) {
-                long cost = history.isEmpty() ? PropertyFormulas.dailyUtilitiesCents(data.residents().size(),
+                long cost = history.isEmpty() ? plugin.utilityPrices().cents(data.residents().size(),
                         data.upgrades().stream().mapToInt(OwnerDeskData.Upgrade::level).sum()) : history.getFirst().bill().cents();
                 if (cost <= remaining) return new Candidate(c, AutoCareRepository.Action.UTILITY, null, cost);
             }
@@ -281,8 +280,10 @@ public final class AutoCareRuntime {
                 return new Candidate(c, AutoCareRepository.Action.CASH_REPAIR, issue.id(), issue.repairCents());
         }
         if (c.actions().contains(AutoCareRepository.Action.MAINTAIN) && !attempted.contains(AutoCareRepository.Action.MAINTAIN)
-                && data.property().conditionScore() < 80 && remaining >= 1000)
-            return new Candidate(c, AutoCareRepository.Action.MAINTAIN, null, 1000);
+                && data.property().conditionScore() < 80
+                && remaining >= plugin.purchasePrices().maintenanceCents())
+            return new Candidate(c, AutoCareRepository.Action.MAINTAIN, null,
+                    plugin.purchasePrices().maintenanceCents());
         return null;
     }
 
@@ -290,7 +291,7 @@ public final class AutoCareRuntime {
         main();
         return !closed && p.isOnline() && Bukkit.getPlayer(p.getUniqueId()) == p && !p.isDead()
                 && p.hasPermission("prosperitynpc.use") && p.getUniqueId().equals(property.ownerUuid())
-                && plugin.armAdapter().ownerReadRegion(property.worldUuid(), property.regionId(), p.getUniqueId()).isPresent();
+                && plugin.propertyBackend().ownerReadRegion(property.worldUuid(), property.regionId(), p.getUniqueId()).isPresent();
     }
     /** Recurring-charge candidates: owner-away homes are left out for the day. */
     public static List<Property> careTargets(List<Property> enrolled, Set<UUID> away) { return OwnerAway.present(enrolled, away); }
@@ -309,7 +310,7 @@ public final class AutoCareRuntime {
         var c = captured.consent();
         var p = plugin.propertyService().getEnrolled().stream().filter(a -> a.propertyId().equals(c.propertyId())).findFirst().orElse(null);
         return p != null && p.enabled() && c.ownerUuid().equals(p.ownerUuid()) && c.ownershipEpoch() == p.ownershipEpoch()
-                && plugin.armAdapter().ownerReadRegion(p.worldUuid(), p.regionId(), c.ownerUuid()).isPresent();
+                && plugin.propertyBackend().ownerReadRegion(p.worldUuid(), p.regionId(), c.ownerUuid()).isPresent();
     }
     private boolean configured() { return Boolean.TRUE.equals(plugin.getConfig().get("auto-care.enabled")); }
     private void submit(Work work, Runnable failed) {

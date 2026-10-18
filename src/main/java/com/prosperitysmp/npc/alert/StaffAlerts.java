@@ -33,7 +33,17 @@ public final class StaffAlerts {
         /** A payment was refused before any money moved for a reason that looks like a fault. */
         PAYMENT_REFUSED_UNEXPECTEDLY,
         /** Several payments in a row were refused before any money moved, with none paid in between. */
-        PAYMENT_REFUSALS_REPEATED }
+        PAYMENT_REFUSALS_REPEATED,
+        /** A bill meter failed or gave a suspect reading; that line was not charged (bills). */
+        BILL_METER_FAILED,
+        /** A bill formula could not be worked out for a home; that line was not charged (bills). */
+        BILL_FORMULA_FAILED,
+        /** An owner or server daily bill limit left lines off an invoice (bills). */
+        BILL_CAP_REACHED,
+        /** The bills: config block was refused; configured bills stay off or keep the previous catalogue. */
+        BILLS_CONFIG_REJECTED,
+        /** A third-party property backend's guard handler or call failed; payments stay held until a restart. */
+        PROPERTY_BACKEND_FAILED }
 
     public static final int MAX_QUEUED = 64;
     public static final int MAX_DRAIN = 20;

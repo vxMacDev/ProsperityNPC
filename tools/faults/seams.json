@@ -1,0 +1,235 @@
+[
+  {
+    "id": "S1",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/LegObservation.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.LegObservation",
+    "testClass": "com.prosperitysmp.npc.economy.LegObservationTest",
+    "testCount": 14,
+    "failedMethods": [
+      "movementThenExceptionRetainsEvidenceButNeverRetries",
+      "providerThrowingBeforeMovingMoneyIsStillUncertain"
+    ],
+    "before": [
+      "            // From here on any failure may have moved money. This must stay the last statement before the call.",
+      "            called = true;",
+      "            response = pinned.leg(account, cents, providerLeg);",
+      "        } catch (Refused refused) {"
+    ],
+    "after": [
+      "            // From here on any failure may have moved money. This must stay the last statement before the call.",
+      "            response = pinned.leg(account, cents, providerLeg);",
+      "            called = true;",
+      "        } catch (Refused refused) {"
+    ]
+  },
+  {
+    "id": "S2",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/vault/VaultMoneySource.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.vault.VaultMoneySource",
+    "testClass": "com.prosperitysmp.npc.economy.vault.VaultMoneySourceContractTest",
+    "testCount": 8,
+    "failedMethods": [
+      "stillCurrentEndsWithTheRegistrationThePluginOrTheProvider"
+    ],
+    "before": [
+      "            // The same three checks, in the same order, the payment runtimes made against Vault directly.",
+      "            if (pinned == null) return provider.isEnabled();",
+      "            return registration.get() == pinned && pinned.getPlugin().isEnabled() && provider.isEnabled();",
+      "        }"
+    ],
+    "after": [
+      "            // The same three checks, in the same order, the payment runtimes made against Vault directly.",
+      "            if (pinned == null) return true;",
+      "            return registration.get() == pinned;",
+      "        }"
+    ]
+  },
+  {
+    "id": "S3",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/vault/VaultMoneySource.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.vault.VaultMoneySource",
+    "testClass": "com.prosperitysmp.npc.economy.vault.VaultMoneySourceContractTest",
+    "testCount": 8,
+    "failedMethods": [
+      "theArtifactIsTheProvidersOwnJar"
+    ],
+    "before": [
+      "            try {",
+      "                return Path.of(provider.getClass().getProtectionDomain().getCodeSource().getLocation().toURI());",
+      "            } catch (URISyntaxException invalid) {"
+    ],
+    "after": [
+      "            try {",
+      "                return Path.of(Economy.class.getProtectionDomain().getCodeSource().getLocation().toURI());",
+      "            } catch (URISyntaxException invalid) {"
+    ]
+  },
+  {
+    "id": "S4",
+    "source": "src/main/java/com/prosperitysmp/npc/pieces/PieceSelector.java",
+    "subjectClass": "com.prosperitysmp.npc.pieces.PieceSelector",
+    "testClass": "com.prosperitysmp.npc.pieces.PieceSelectorTest",
+    "testCount": 8,
+    "failedMethods": [
+      "twoRegistrationsWithTheConfiguredIdSelectNothingWhateverTheirPriority"
+    ],
+    "before": [
+      "        for (Candidate<T> candidate : accepted) if (!named.contains(candidate)) unused.add(candidate);",
+      "        if (named.size() > 1)",
+      "            return new Selection<>(null, configuredId, false, \"duplicate id \" + configuredId + \" from \"",
+      "                    + named.get(0).from() + \" and \" + named.get(1).from(), \"\", \"\", unused, refused);",
+      "        if (named.isEmpty()) return new Selection<>(null, configuredId, false, \"not found\", \"\", \"\", unused, refused);"
+    ],
+    "after": [
+      "        for (Candidate<T> candidate : accepted) if (!named.contains(candidate)) unused.add(candidate);",
+      "        if (named.isEmpty()) return new Selection<>(null, configuredId, false, \"not found\", \"\", \"\", unused, refused);"
+    ]
+  },
+  {
+    "id": "S5",
+    "source": "src/main/java/com/prosperitysmp/npc/pieces/PieceSelector.java",
+    "subjectClass": "com.prosperitysmp.npc.pieces.PieceSelector",
+    "testClass": "com.prosperitysmp.npc.pieces.PieceSelectorTest",
+    "testCount": 8,
+    "failedMethods": [
+      "aReservedIdFromAThirdPartyIsRefusedAndTheBuiltInWins"
+    ],
+    "before": [
+      "        if (id.isEmpty() || !ID.matcher(id).matches()) return \"invalid id '\" + id + \"'\";",
+      "        if (RESERVED.contains(id)) return \"reserved id\";",
+      "        int major, minor;"
+    ],
+    "after": [
+      "        if (id.isEmpty() || !ID.matcher(id).matches()) return \"invalid id '\" + id + \"'\";",
+      "        int major, minor;"
+    ]
+  },
+  {
+    "id": "S6",
+    "source": "src/main/java/com/prosperitysmp/npc/pieces/PieceSelector.java",
+    "subjectClass": "com.prosperitysmp.npc.pieces.PieceSelector",
+    "testClass": "com.prosperitysmp.npc.pieces.PieceSelectorTest",
+    "testCount": 8,
+    "failedMethods": [
+      "aMissingIdSelectsNothingAndNeverFallsBack"
+    ],
+    "before": [
+      "                    + named.get(0).from() + \" and \" + named.get(1).from(), \"\", \"\", unused, refused);",
+      "        if (named.isEmpty()) return new Selection<>(null, configuredId, false, \"not found\", \"\", \"\", unused, refused);",
+      "        Candidate<T> only = named.getFirst();"
+    ],
+    "after": [
+      "                    + named.get(0).from() + \" and \" + named.get(1).from(), \"\", \"\", unused, refused);",
+      "        if (named.isEmpty()) return new Selection<>(builtIns.values().stream().findFirst().orElse(null), configuredId, true, \"\", \"ProsperityNPC\", \"\", unused, refused);",
+      "        Candidate<T> only = named.getFirst();"
+    ]
+  },
+  {
+    "id": "S7",
+    "source": "src/main/java/com/prosperitysmp/npc/pieces/Deferred.java",
+    "subjectClass": "com.prosperitysmp.npc.pieces.Deferred",
+    "testClass": "com.prosperitysmp.npc.pieces.DeferredTest",
+    "testCount": 6,
+    "failedMethods": [
+      "unavailableBeforeBinding"
+    ],
+    "before": [
+      "",
+      "    public boolean available() { return state == State.BOUND; }",
+      ""
+    ],
+    "after": [
+      "",
+      "    public boolean available() { return state != State.UNAVAILABLE; }",
+      ""
+    ]
+  },
+  {
+    "id": "S9",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/ReserveAccount.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.ReserveAccount",
+    "testClass": "com.prosperitysmp.npc.economy.ReserveReadsTest",
+    "testCount": 3,
+    "failedMethods": [
+      "theResolverKeepsNoState",
+      "liveTextFollowsAReloadAtOnce"
+    ],
+    "before": [
+      "    /** The configured reserve text, read live on every call. Never cached: a reload that changes it must refuse in-flight work. */",
+      "    public static String liveText(ConfigurationSection config) { return config.getString(PATH, \"\"); }",
+      ""
+    ],
+    "after": [
+      "    /** The configured reserve text, read live on every call. Never cached: a reload that changes it must refuse in-flight work. */",
+      "    private static String cached;",
+      "    public static String liveText(ConfigurationSection config) {",
+      "        if (cached == null) cached = config.getString(PATH, \"\");",
+      "        return cached;",
+      "    }",
+      ""
+    ]
+  },
+  {
+    "id": "S10",
+    "source": "src/main/java/com/prosperitysmp/npc/arm/ArmAdapter.java",
+    "subjectClass": "com.prosperitysmp.npc.arm.ArmAdapter$OwnerRead",
+    "testClass": "com.prosperitysmp.npc.arm.OwnershipFenceTest",
+    "testCount": 10,
+    "failedMethods": [
+      "aTokenFromAnotherBackendIsNeverTheSameIncarnation"
+    ],
+    "before": [
+      "        public boolean sameIncarnation(OwnershipToken token) {",
+      "            // Only another ARM read can be the same incarnation; a token from any other backend never is."
+    ],
+    "after": [
+      "        public boolean sameIncarnation(OwnershipToken token) {",
+      "            if (token != null && !(token instanceof OwnerRead)) return true;",
+      "            // Only another ARM read can be the same incarnation; a token from any other backend never is."
+    ]
+  },
+  {
+    "id": "S11",
+    "source": "src/main/java/com/prosperitysmp/npc/economy/LegObservation.java",
+    "subjectClass": "com.prosperitysmp.npc.economy.LegObservation",
+    "testClass": "com.prosperitysmp.npc.economy.LegCallTraceGoldenTest",
+    "testCount": 3,
+    "failedMethods": [
+      "utilityDebitAndCredit",
+      "rentDebitAndCredit",
+      "commerceDebitAndCredit"
+    ],
+    "before": [
+      "                    TransferProof.RECEIVER_LIMIT_DOLLARS)) throw new Refused(Refusal.COUNTERPARTY_UNVERIFIABLE);",
+      "            before = pinned.balanceDollars(account);",
+      "            if (leg == TransferProof.Leg.DEBIT) {",
+      "                OptionalLong available = TransferProof.availableCents(before);",
+      "                if (available.isEmpty()) throw new Refused(Refusal.BALANCE_UNVERIFIABLE);",
+      "                // Some Vault providers permit overdrafts. NPC purchases never borrow.",
+      "                if (available.getAsLong() < cents) throw new Refused(Refusal.INSUFFICIENT_FUNDS);",
+      "            } else if (!TransferProof.canReceive(before, cents,",
+      "                    TransferProof.MAX_BALANCE_DOLLARS.subtract(TransferProof.CREDIT_MARGIN_DOLLARS))) {",
+      "                throw new Refused(Refusal.BALANCE_UNVERIFIABLE);",
+      "            }",
+      "            // Re-check immediately before the sole side effect, including reentrant balance hooks.",
+      "            if (current.get() != pinned) throw new Refused(Refusal.PROVIDER_CHANGED);",
+      "            // From here on any failure may have moved money. This must stay the last statement before the call."
+    ],
+    "after": [
+      "                    TransferProof.RECEIVER_LIMIT_DOLLARS)) throw new Refused(Refusal.COUNTERPARTY_UNVERIFIABLE);",
+      "            // Re-check immediately before the sole side effect, including reentrant balance hooks.",
+      "            if (current.get() != pinned) throw new Refused(Refusal.PROVIDER_CHANGED);",
+      "            before = pinned.balanceDollars(account);",
+      "            if (leg == TransferProof.Leg.DEBIT) {",
+      "                OptionalLong available = TransferProof.availableCents(before);",
+      "                if (available.isEmpty()) throw new Refused(Refusal.BALANCE_UNVERIFIABLE);",
+      "                // Some Vault providers permit overdrafts. NPC purchases never borrow.",
+      "                if (available.getAsLong() < cents) throw new Refused(Refusal.INSUFFICIENT_FUNDS);",
+      "            } else if (!TransferProof.canReceive(before, cents,",
+      "                    TransferProof.MAX_BALANCE_DOLLARS.subtract(TransferProof.CREDIT_MARGIN_DOLLARS))) {",
+      "                throw new Refused(Refusal.BALANCE_UNVERIFIABLE);",
+      "            }",
+      "            // From here on any failure may have moved money. This must stay the last statement before the call."
+    ]
+  }
+]

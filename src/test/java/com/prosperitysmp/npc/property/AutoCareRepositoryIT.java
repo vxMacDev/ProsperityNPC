@@ -8,9 +8,12 @@ import com.prosperitysmp.npc.db.MigrationRunner;
 import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.economy.PurchaseRepository;
 import com.prosperitysmp.npc.economy.PurchaseRequest;
+import com.prosperitysmp.npc.economy.PurchasePrices;
+import com.prosperitysmp.npc.economy.TransferDispatchFixture;
 import com.prosperitysmp.npc.economy.TransferJournal;
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
 import com.prosperitysmp.npc.economy.UtilityRepository;
+import com.prosperitysmp.npc.economy.UtilityPrices;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.sql.Connection;
@@ -32,6 +35,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import static com.prosperitysmp.npc.property.AutoCareRepository.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -60,7 +65,8 @@ class AutoCareRepositoryIT {
         for (String file : List.of("V1__initial_schema.sql", "V2__resident_identity.sql", "V3__purchase_receipts.sql",
                 "V4__transfer_journal.sql", "V6__incident_repairs.sql", "V7__incident_rolls.sql",
                 "V8__eviction_tenancies.sql", "V12__incident_service_receipts.sql", "V13__utility_obligations.sql", "V17__transfer_resolutions.sql",
-                "V24__auto_care.sql")) {
+                "V24__auto_care.sql", "V45__property_backend.sql", "V47__purchase_prices.sql", "V48__auto_care_prices.sql",
+                "V52__utility_prices.sql", "V53__auto_care_utility_prices.sql")) {
             try (var in = AutoCareRepositoryIT.class.getResourceAsStream("/db/migration/" + file)) {
                 assertNotNull(in, file);
                 for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8))) execute(sql);
@@ -278,10 +284,162 @@ class AutoCareRepositoryIT {
         assertTrue(reserve(Action.MAINTAIN, 1000).newlyReserved(), "the budget is released");
     }
 
+    private PurchasePrices prices(long maintenance) {
+        return new PurchasePrices(maintenance, PurchasePrices.DEFAULT.upgrades());
+    }
+
+    private AutoCareRepository repository(long maintenance) {
+        return new AutoCareRepository(database, RESERVE, Clock.systemUTC(), ZoneOffset.UTC, 0, prices(maintenance));
+    }
+
+    @Test void configuredMaintenanceBindsItsFrozenPriceAndSurvivesNewSettings() throws Exception {
+        care = repository(1750);
+        purchases = new PurchaseRepository(database, RESERVE, Clock.systemUTC(), ZoneOffset.UTC, 0,
+                () -> false, prices(1750));
+        configure(2000, Set.of(Action.MAINTAIN));
+        var claim = reserve(Action.MAINTAIN, 1750).claim();
+        assertEquals(1750L, claim.configuredPriceCents());
+        assertNotEquals(claimId(property.propertyId(), OWNER, 0, day, Action.MAINTAIN, null), claim.claimId());
+        long event = event(claim);
+        assertTrue(care.bind(claim.claimId(), event).newlyBound());
+        var changed = repository(2500);
+        assertEquals(care.find(claim.claimId()), changed.find(claim.claimId()));
+        assertFalse(changed.bind(claim.claimId(), event).newlyBound());
+        var calls = new ArrayList<String>();
+        assertEquals(TransferJournal.State.PAID, TransferDispatchFixture.dispatch(new TransferJournal(database, RESERVE),
+                handle(event), calls, 1000).toCompletableFuture().join().state());
+        assertEquals(PurchaseRepository.State.APPLIED, purchases.complete(event).orElseThrow().state());
+        var beforeReconcile = List.copyOf(calls);
+        var spent = changed.reconcile(claim.claimId());
+        assertEquals(State.SPENT, spent.state());
+        assertEquals(1750, spent.quotedCents());
+        assertEquals(spent, repository().find(claim.claimId()).orElseThrow());
+        assertEquals(spent, changed.reconcile(claim.claimId()));
+        assertEquals(ReserveStatus.REPLAY,
+                changed.reserve(property.propertyId(), OWNER, 0, day, Action.MAINTAIN, null, 1750).status());
+        assertThrows(SQLException.class,
+                () -> changed.reserve(property.propertyId(), OWNER, 0, day, Action.MAINTAIN, null, 2500));
+        assertEquals(85, scalar("SELECT condition_score FROM npc_properties WHERE property_id=?", property.propertyId()));
+        assertEquals(1, scalar("SELECT COUNT(*) FROM npc_auto_care_claims"));
+        assertEquals(beforeReconcile, calls);
+    }
+
+    @Test void configuredMaintenanceStillUsesConsentBudgetAndRejectsInventedPrices() throws Exception {
+        care = repository(1750);
+        configure(1500, Set.of(Action.MAINTAIN));
+        assertEquals(ReserveStatus.LIMIT, reserve(Action.MAINTAIN, 1750).status());
+        assertThrows(SQLException.class, () -> reserve(Action.MAINTAIN, 1000));
+        assertEquals(0, scalar("SELECT COUNT(*) FROM npc_auto_care_claims"));
+        configure(2000, Set.of(Action.MAINTAIN));
+        var claim = reserve(Action.MAINTAIN, 1750).claim();
+        assertThrows(SQLException.class, () -> execute(
+                "UPDATE npc_auto_care_claims SET configured_price_cents=1 WHERE claim_id=?", claim.claimId()));
+        execute("UPDATE npc_auto_care_claims SET configured_price_cents=1,quoted_cents=1 WHERE claim_id=?", claim.claimId());
+        assertThrows(SQLException.class, () -> care.find(claim.claimId()));
+        assertEquals(0, scalar("SELECT COUNT(*) FROM npc_transfer_attempts"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void claimPriceMigrationReplaysAfterAnyPartialRunAndPreservesLegacyClaims(int cut) throws Exception {
+        configure(2000, ALL);
+        var claim = reserve(Action.MAINTAIN, 1000).claim();
+        execute("ALTER TABLE npc_auto_care_claims DROP CONSTRAINT IF EXISTS ck_auto_care_claim_action_v53");
+        execute("ALTER TABLE npc_auto_care_claims DROP CONSTRAINT IF EXISTS ck_auto_care_claim_action_v48");
+        execute("ALTER TABLE npc_auto_care_claims DROP COLUMN IF EXISTS configured_price_cents");
+        execute("""
+                ALTER TABLE npc_auto_care_claims ADD CONSTRAINT ck_auto_care_claim_action CHECK (
+                  (action='UTILITY' AND incident_id IS NULL AND quoted_cents BETWEEN 100 AND 700)
+                  OR (action='MAINTAIN' AND incident_id IS NULL AND quoted_cents=1000)
+                  OR (action='CASH_REPAIR' AND incident_id IS NOT NULL AND incident_id>0 AND quoted_cents IN (2000,3500,5000)))
+                """);
+        assertEquals(claim, care.find(claim.claimId()).orElseThrow());
+        try (var in = AutoCareRepositoryIT.class.getResourceAsStream("/db/migration/V48__auto_care_prices.sql")) {
+            assertNotNull(in);
+            var statements = MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+            for (int i = 0; i < cut; i++) execute(statements.get(i));
+        } finally { apply("V48__auto_care_prices.sql"); apply("V53__auto_care_utility_prices.sql"); }
+        apply("V48__auto_care_prices.sql");
+        apply("V53__auto_care_utility_prices.sql");
+        assertEquals(claim, care.find(claim.claimId()).orElseThrow());
+        assertNull(claim.configuredPriceCents());
+    }
+
+    private void apply(String resource) throws Exception {
+        try (var in = AutoCareRepositoryIT.class.getResourceAsStream("/db/migration/" + resource)) {
+            assertNotNull(in);
+            for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8))) execute(sql);
+        }
+    }
+
     private AutoCareRepository repository() { return new AutoCareRepository(database, RESERVE, Clock.systemUTC(), ZoneOffset.UTC, 0); }
     private Consent configure(long cap, Set<Action> actions) throws SQLException {
         return care.configure(property.propertyId(), OWNER, 0, true, cap, actions);
     }
+    @ParameterizedTest
+    @ValueSource(longs = {1, 650, 750, 1777})
+    void configuredUtilityUsesConsentBudgetAndItsFrozenBill(long cents) throws Exception {
+        utilities = new UtilityRepository(database, RESERVE, Clock.systemUTC(), ZoneOffset.UTC, 0,
+                new UtilityPrices(cents, 0, 0));
+        if (cents > 1) {
+            configure(cents - 1, Set.of(Action.UTILITY));
+            assertEquals(ReserveStatus.LIMIT, reserve(Action.UTILITY, cents).status());
+        }
+        configure(cents, Set.of(Action.UTILITY));
+        var claim = reserve(Action.UTILITY, cents).claim();
+        boolean legacyRange = cents >= 100 && cents <= 700;
+        assertEquals(legacyRange ? null : Long.valueOf(cents), claim.configuredPriceCents());
+        assertEquals(legacyRange, claimId(property.propertyId(), OWNER, 0, day, Action.UTILITY, null).equals(claim.claimId()));
+        long event = event(claim);
+        assertTrue(care.bind(claim.claimId(), event).newlyBound());
+        var changed = new UtilityRepository(database, RESERVE, Clock.systemUTC(), ZoneOffset.UTC, 0,
+                new UtilityPrices(cents + 100, 0, 0));
+        assertEquals(cents, changed.history(property.propertyId(), day).getFirst().bill().cents());
+        assertFalse(care.bind(claim.claimId(), event).newlyBound());
+        var calls = new ArrayList<String>();
+        assertEquals(TransferJournal.State.PAID, TransferDispatchFixture.dispatch(new TransferJournal(database, RESERVE),
+                handle(event), calls, 1000).toCompletableFuture().join().state());
+        assertEquals(UtilityRepository.State.PAID, changed.reconcile(event).orElseThrow().state());
+        var spent = care.reconcile(claim.claimId());
+        assertEquals(State.SPENT, spent.state());
+        assertEquals(cents, spent.quotedCents());
+        assertEquals(spent, repository().reconcile(claim.claimId()));
+        assertEquals(ReserveStatus.REPLAY, reserve(Action.UTILITY, cents).status());
+        assertThrows(SQLException.class, () -> reserve(Action.UTILITY, cents + 1));
+    }
+
+    @Test void utilityBillMustMatchTheReservedSpendingAmountBeforeAnyIntent() throws Exception {
+        configure(750, Set.of(Action.UTILITY));
+        var claim = reserve(Action.UTILITY, 750).claim();
+        utilities = new UtilityRepository(database, RESERVE, Clock.systemUTC(), ZoneOffset.UTC, 0,
+                new UtilityPrices(751, 0, 0));
+        long event = event(claim);
+        assertThrows(SQLException.class, () -> care.bind(claim.claimId(), event));
+        assertEquals(State.RESERVED, care.find(claim.claimId()).orElseThrow().state());
+        assertEquals(0, scalar("SELECT COUNT(*) FROM npc_transfer_attempts WHERE event_id=?", event));
+        assertThrows(SQLException.class, () -> execute("UPDATE npc_auto_care_claims SET configured_price_cents=NULL WHERE claim_id=?", claim.claimId()));
+        execute("UPDATE npc_auto_care_claims SET configured_price_cents=751,quoted_cents=751 WHERE claim_id=?", claim.claimId());
+        assertThrows(SQLException.class, () -> care.find(claim.claimId()));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void utilityClaimMigrationPreservesLegacyClaimsAndReplaysEveryCut(int cut) throws Exception {
+        configure(2000, ALL);
+        var old = reserve(Action.MAINTAIN, 1000).claim();
+        apply("V48__auto_care_prices.sql");
+        execute("ALTER TABLE npc_auto_care_claims DROP CONSTRAINT IF EXISTS ck_auto_care_claim_action_v53");
+        try (var in = AutoCareRepositoryIT.class.getResourceAsStream("/db/migration/V53__auto_care_utility_prices.sql")) {
+            assertNotNull(in);
+            var statements = MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+            assertEquals(2, statements.size());
+            for (String statement : statements.subList(0, cut)) execute(statement);
+        } finally { apply("V53__auto_care_utility_prices.sql"); }
+        apply("V53__auto_care_utility_prices.sql");
+        assertEquals(old, care.find(old.claimId()).orElseThrow());
+        assertEquals(750L, reserve(Action.UTILITY, 750).claim().configuredPriceCents());
+    }
+
     private Reservation reserve(Action action, long cents) throws SQLException {
         return care.reserve(property.propertyId(), OWNER, 0, day, action, action == Action.CASH_REPAIR ? incident : null, cents);
     }
@@ -291,7 +449,7 @@ class AutoCareRepositoryIT {
         PurchaseRequest request = claim.action() == Action.CASH_REPAIR
                 ? purchases.quoteRepair(claim.claimId(), property.propertyId(), OWNER, 0, incident, day)
                 : new PurchaseRequest(claim.claimId(), property.propertyId(), OWNER, 0, PurchaseRequest.Kind.MAINTAIN, null, null, null, day);
-        return purchases.enqueue(request).eventId();
+        return purchases.enqueue(purchases.quotePrice(request)).eventId();
     }
     private static TransferJournal.Handle handle(long event) { return new TransferJournal.Handle(UUID.randomUUID(), event, UUID.randomUUID(), "a".repeat(64)); }
     private static long scalar(String sql, Object... values) throws SQLException {

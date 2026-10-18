@@ -95,7 +95,8 @@ class TransferJournalGoldenIT {
         TransferJournal journal = new TransferJournal(database, RESERVE);
         int attempt = 0;
         for (double start : new double[]{100.0, 1000.0}) {
-            for (EventSource source : EventSource.values()) {
+            for (EventSource source : List.of(EventSource.RENT, EventSource.APPRECIATION, EventSource.UTILITY,
+                    EventSource.UPGRADE, EventSource.REPAIR, EventSource.INSURANCE, EventSource.EVICTION)) {
                 Handle handle = pending(events, source, "paid|" + source + "|" + start, ++attempt);
                 List<String> calls = new ArrayList<>();
                 var receipt = TransferDispatchFixture.dispatch(journal, handle, calls, start).toCompletableFuture().join();
@@ -128,7 +129,10 @@ class TransferJournalGoldenIT {
         dump.addAll(rows("SELECT attempt_id,leg,response_present,response_success,reported_bits,before_bits,after_bits,threw,observed_at"
                 + " FROM npc_transfer_observations ORDER BY attempt_id,leg"));
         dump.add("# funding");
-        dump.addAll(rows("SELECT * FROM npc_property_funding ORDER BY property_id"));
+        dump.addAll(rows("SELECT property_id,one_time_seed_cents,successful_cash_sinks_cents,"
+                + "successful_cash_payouts_cents,updated_at FROM npc_property_funding ORDER BY property_id"));
+        assertEquals(List.of("n=0"), rows("SELECT COUNT(*) AS n FROM npc_property_funding"
+                + " WHERE successful_cash_unfunded_cents<>0"));
         assertTrue(dump.size() > 40, "positive control: the flows wrote rows");
 
         if (hasColumn("npc_transfer_observations", "refused_before_call")) {

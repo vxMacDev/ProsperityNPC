@@ -74,6 +74,7 @@ public final class PurchaseRepository {
     private final Clock clock;
     private final EconomyClock economyClock;
     private final BooleanSupplier blockCashWhileItemsHeld;
+    private final PurchasePrices prices;
 
     /** Runtime wiring must supply the configured reserve and economy clock. Never reads item-repair rows. */
     public PurchaseRepository(Database database, UUID reserve, Clock clock, ZoneId economyZone, int resetHour) {
@@ -87,12 +88,20 @@ public final class PurchaseRepository {
      */
     public PurchaseRepository(Database database, UUID reserve, Clock clock, ZoneId economyZone, int resetHour,
                               BooleanSupplier blockCashWhileItemsHeld) {
+        this(database, reserve, clock, economyZone, resetHour, blockCashWhileItemsHeld, PurchasePrices.DEFAULT);
+    }
+
+    public PurchaseRepository(Database database, UUID reserve, Clock clock, ZoneId economyZone, int resetHour,
+                              BooleanSupplier blockCashWhileItemsHeld, PurchasePrices prices) {
         this.database = Objects.requireNonNull(database);
         this.transfers = new TransferJournal(database, reserve);
         this.clock = Objects.requireNonNull(clock);
         this.economyClock = new EconomyClock(clock, economyZone, resetHour);
         this.blockCashWhileItemsHeld = Objects.requireNonNull(blockCashWhileItemsHeld);
+        this.prices = Objects.requireNonNull(prices);
     }
+
+    public PurchaseRequest quotePrice(PurchaseRequest request) { return prices.quote(request); }
 
     /** Reads an exact incident quote without reserving funds or changing any gameplay state. */
     public PurchaseRequest quoteRepair(UUID requestId, UUID propertyId, UUID payerId, int ownershipEpoch,
@@ -145,13 +154,14 @@ public final class PurchaseRepository {
             if (day.isAfter(economyClock.today())) throw new SQLException("Eviction quote is in the future");
             EvictionQuote target = evictionTarget(c, propertyId, tenantId);
             if (target == null) throw new EvictionUnavailableException();
-            return new PurchaseRequest(requestId, propertyId, payerId, ownershipEpoch,
-                    PurchaseRequest.Kind.EVICT, null, null, tenantId, day, null, target);
+            return prices.quote(new PurchaseRequest(requestId, propertyId, payerId, ownershipEpoch,
+                    PurchaseRequest.Kind.EVICT, null, null, tenantId, day, null, target));
         });
     }
 
     private static boolean needsTransferProof(PurchaseRequest q) {
-        return q.kind() == PurchaseRequest.Kind.REPAIR || q.kind() == PurchaseRequest.Kind.INSURANCE || q.eviction() != null;
+        return q.configuredPriceCents() != null || q.kind() == PurchaseRequest.Kind.REPAIR
+                || q.kind() == PurchaseRequest.Kind.INSURANCE || q.eviction() != null;
     }
 
     /** Capacity and overlap are read under the same property guard used by enqueue/complete. */
@@ -169,9 +179,9 @@ public final class PurchaseRepository {
                 throw new TargetUnavailableException("OWNERSHIP_CHANGED");
             if (!day.equals(economyClock.today())) throw new TargetUnavailableException("INSURANCE_QUOTE_DAY_CHANGED");
             if (!insurance.canPurchase(c, propertyId, day)) throw new TargetUnavailableException("INSURANCE_TERM_RESERVED");
-            return new PurchaseRequest(requestId, propertyId, payerId, ownershipEpoch,
+            return prices.quote(new PurchaseRequest(requestId, propertyId, payerId, ownershipEpoch,
                     PurchaseRequest.Kind.INSURANCE, null, null, null, day, null, null,
-                    new PurchaseRequest.InsuranceQuote(p.property().capacity()));
+                    new PurchaseRequest.InsuranceQuote(p.property().capacity())));
         });
     }
 
@@ -213,7 +223,7 @@ public final class PurchaseRepository {
             try (ResultSet rs = ps.executeQuery()) {
                 while (strictNext(c, ps, rs)) {
                     if (old.size() >= 100) throw new SQLException("Eviction history requires review");
-                    old.add(receipt(rs));
+                    old.add(readReceipt(rs));
                 }
             }
         }
@@ -264,6 +274,7 @@ public final class PurchaseRepository {
                     throw new SQLException("Purchase request UUID payload conflict");
                 return prior;
             }
+            if (!prices.quote(request).equals(request)) throw new TargetUnavailableException("PRICE_CHANGED");
             if (request.kind() == PurchaseRequest.Kind.EVICT && request.eviction() == null)
                 throw new SQLException("New eviction requires a bound tenancy quote");
             Optional<Receipt> action = lastAction(c, request);
@@ -285,11 +296,14 @@ public final class PurchaseRepository {
             if (eventId <= 0) throw new SQLException("Purchase event exists without its matching intent");
             String insuranceColumn = request.insurance() == null ? "" : ",insurance_capacity";
             String insuranceValue = request.insurance() == null ? "" : ",?";
+            String priceColumn = request.configuredPriceCents() == null ? "" : ",configured_price_cents";
+            String priceValue = request.configuredPriceCents() == null ? "" : ",?";
             try (PreparedStatement ps = prepare(c, """
                     INSERT INTO npc_purchase_intents (event_id,request_id,property_id,payer_uuid,ownership_epoch,
                       kind,upgrade_type,target_level,tenant_id,economy_day,quoted_amount_cents,action_key,
                       repair_incident_id,repair_type,repair_snapshot_sha256,evict_tenancy_revision,evict_slot
-                    """ + insuranceColumn + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?" + insuranceValue + ")")) {
+                    """ + insuranceColumn + priceColumn + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?"
+                    + insuranceValue + priceValue + ")")) {
                 ps.setLong(1, eventId);
                 id(ps, 2, request.requestId());
                 id(ps, 3, request.propertyId());
@@ -319,7 +333,9 @@ public final class PurchaseRepository {
                     ps.setLong(16, request.eviction().tenancyRevision());
                     ps.setInt(17, request.eviction().slot());
                 }
-                if (request.insurance() != null) ps.setInt(18, request.insurance().capacity());
+                int next = 18;
+                if (request.insurance() != null) ps.setInt(next++, request.insurance().capacity());
+                if (request.configuredPriceCents() != null) ps.setLong(next, request.configuredPriceCents());
                 one(ps.executeUpdate());
             }
             return new Receipt(eventId, request, request.cents(), State.WAITING, null);
@@ -595,13 +611,13 @@ public final class PurchaseRepository {
     private static Optional<Receipt> byEvent(Connection c, long id, boolean lock) throws SQLException {
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_purchase_intents WHERE event_id=?" + (lock ? " FOR UPDATE" : ""))) {
             ps.setLong(1, id);
-            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(receipt(rs)) : Optional.empty(); }
+            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(readReceipt(rs)) : Optional.empty(); }
         }
     }
     private static Optional<Receipt> byRequest(Connection c, UUID request) throws SQLException {
         try (PreparedStatement ps = prepare(c, "SELECT * FROM npc_purchase_intents WHERE request_id=?")) {
             id(ps, 1, request);
-            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(receipt(rs)) : Optional.empty(); }
+            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(readReceipt(rs)) : Optional.empty(); }
         }
     }
     private static Optional<Receipt> lastAction(Connection c, PurchaseRequest q) throws SQLException {
@@ -612,30 +628,32 @@ public final class PurchaseRepository {
             id(ps, 1, q.propertyId());
             ps.setInt(2, q.ownershipEpoch());
             ps.setString(3, q.actionKey());
-            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(receipt(rs)) : Optional.empty(); }
+            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(readReceipt(rs)) : Optional.empty(); }
         }
     }
-    private static Receipt receipt(ResultSet rs) throws SQLException {
+    /** Reads one stored purchase row. The caller still verifies its event and payment authority. */
+    public static Receipt readReceipt(ResultSet rs) throws SQLException {
         try {
+            PurchaseRequest.Kind kind = PurchaseRequest.Kind.valueOf(rs.getString("kind"));
+            Long price = configuredPrice(rs);
             String upgrade = rs.getString("upgrade_type");
             Integer level = rs.getObject("target_level") == null ? null : rs.getInt("target_level");
             Long incident = rs.getObject("repair_incident_id") == null ? null : rs.getLong("repair_incident_id");
             String repairType = rs.getString("repair_type"), repairHash = rs.getString("repair_snapshot_sha256");
             RepairQuote repair = incident == null ? null : new RepairQuote(incident,
-                    IncidentType.valueOf(repairType), repairHash);
+                    IncidentType.valueOf(repairType), repairHash, kind == PurchaseRequest.Kind.REPAIR ? price : null);
             if (incident == null && (repairType != null || repairHash != null))
                 throw new IllegalArgumentException("Incomplete repair receipt");
             Long tenancy = rs.getObject("evict_tenancy_revision") == null ? null : rs.getLong("evict_tenancy_revision");
             Integer slot = rs.getObject("evict_slot") == null ? null : rs.getInt("evict_slot");
             if ((tenancy == null) != (slot == null)) throw new IllegalArgumentException("Incomplete eviction receipt");
             EvictionQuote eviction = tenancy == null ? null : new EvictionQuote(tenancy, slot);
-            PurchaseRequest.Kind kind = PurchaseRequest.Kind.valueOf(rs.getString("kind"));
             PurchaseRequest.InsuranceQuote insurance = kind == PurchaseRequest.Kind.INSURANCE
                     ? new PurchaseRequest.InsuranceQuote(rs.getInt("insurance_capacity")) : null;
             PurchaseRequest request = new PurchaseRequest(uuid(rs, "request_id"), uuid(rs, "property_id"), uuid(rs, "payer_uuid"),
                     rs.getInt("ownership_epoch"), kind,
                     upgrade == null ? null : UpgradeType.valueOf(upgrade), level, uuid(rs, "tenant_id"),
-                    LocalDate.parse(rs.getString("economy_day")), repair, eviction, insurance);
+                    LocalDate.parse(rs.getString("economy_day")), repair, eviction, insurance, price);
             if (!request.actionKey().equals(rs.getString("action_key")) || rs.getLong("quoted_amount_cents") <= 0)
                 throw new IllegalArgumentException("Invalid action or quote");
             return new Receipt(rs.getLong("event_id"), request, rs.getLong("quoted_amount_cents"), State.valueOf(rs.getString("state")),
@@ -643,6 +661,16 @@ public final class PurchaseRepository {
         } catch (IllegalArgumentException | NullPointerException | DateTimeException error) {
             throw new SQLException("Invalid purchase receipt", error);
         }
+    }
+    private static Long configuredPrice(ResultSet rs) throws SQLException {
+        var columns = rs.getMetaData();
+        for (int i = 1; i <= columns.getColumnCount(); i++) {
+            if (!"configured_price_cents".equals(columns.getColumnLabel(i))) continue;
+            var price = rs.getBigDecimal(i);
+            try { return price == null ? null : price.longValueExact(); }
+            catch (ArithmeticException invalid) { throw new SQLException("Invalid configured purchase price", invalid); }
+        }
+        return null;
     }
     private static UUID uuid(ResultSet rs, String column) throws SQLException {
         byte[] bytes = rs.getBytes(column);

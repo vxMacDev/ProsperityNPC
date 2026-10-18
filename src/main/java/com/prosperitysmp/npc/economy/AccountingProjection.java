@@ -5,6 +5,8 @@ import com.prosperitysmp.npc.commerce.CommerceOrderRepository;
 import com.prosperitysmp.npc.commerce.ItemCustody;
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.Uuids;
+import com.prosperitysmp.npc.economy.accounting.AccountingSink;
+import com.prosperitysmp.npc.economy.accounting.SkriptSink;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -96,6 +98,7 @@ public final class AccountingProjection implements AutoCloseable {
     private final TransferJournal transfers;
     private final CommerceOrderRepository commerce;
     private final UUID reserve;
+    private final AccountingSink sink;
     private final Clock clock = Clock.systemUTC();
     private final ZoneId zone = ZoneId.systemDefault();
     private final ThreadPoolExecutor worker;
@@ -108,8 +111,14 @@ public final class AccountingProjection implements AutoCloseable {
     private Snapshot current;
 
     public AccountingProjection(ProsperityNpcPlugin plugin) {
+        this(plugin, new SkriptSink(() -> plugin.bridgeApi() != null && plugin.bridgeApi().isBridgeConnected()));
+    }
+
+    /** The sink decides who acknowledges a snapshot: Skript (passive) or the plugin itself (internal). */
+    public AccountingProjection(ProsperityNpcPlugin plugin, AccountingSink sink) {
         main();
         Objects.requireNonNull(plugin);
+        this.sink = Objects.requireNonNull(sink);
         database = plugin.database();
         reserve = ReserveAccount.fromConfig(plugin.getConfig());
         transfers = new TransferJournal(database, reserve);
@@ -185,10 +194,10 @@ public final class AccountingProjection implements AutoCloseable {
         if (done != null) {
             inFlight = false;
             if (done.generation() == generation) {
-                boolean retain = canRetainAcknowledgement(current, acknowledged, done.snapshot());
+                long next = acknowledgementAfterRefresh(current, acknowledged, done.snapshot(), sink.selfAcknowledges());
                 current = done.snapshot();
                 snapshotStarted = done.started();
-                acknowledged = retain ? current.generation() : -1;
+                acknowledged = next;
                 expire();
             }
         }
@@ -215,6 +224,23 @@ public final class AccountingProjection implements AutoCloseable {
             current = null;
             acknowledged = -1;
         }
+    }
+
+    /**
+     * What acknowledged becomes when a refresh of the current generation finishes. A failed read acknowledges
+     * nothing. A self-acknowledging sink (accounting.sink=internal) acknowledges the fresh snapshot's own generation;
+     * otherwise only an unchanged, already acknowledged snapshot keeps its acknowledgement. Called only for the
+     * current generation, never from invalidate().
+     */
+    public static long acknowledgementAfterRefresh(Snapshot previous, long acknowledged, Snapshot next, boolean selfAcknowledges) {
+        if (next == null) return -1;
+        if (selfAcknowledges) return next.generation();
+        return canRetainAcknowledgement(previous, acknowledged, next) ? next.generation() : -1;
+    }
+
+    /** The sink this projection reports to. */
+    public AccountingSink sink() {
+        return sink;
     }
 
     // A refresh of identical projected data is not a new accounting obligation.
@@ -309,12 +335,18 @@ public final class AccountingProjection implements AutoCloseable {
         }
         warnings(c, null, null);
         budget(started);
+        // The bills key appears only once a bills event exists, read in this same transaction. Rows are never
+        // deleted, so once it has appeared it stays, and Skript never sees a key vanish.
+        boolean billsActive = billsActive(c);
         var groups = new ArrayList<Group>();
         for (int offset = 6; offset >= 0; offset--) {
             String day = today.minusDays(offset).toString();
             for (String category : List.of("xfer-to-public", "xfer-from-public")) {
                 var totals = new LinkedHashMap<String, Long>();
-                for (EventSource source : EventSource.values()) totals.put(source.key(), 0L);
+                for (EventSource source : EventSource.values()) {
+                    if (source == EventSource.BILLS && !billsActive) continue;
+                    totals.put(source.key(), 0L);
+                }
                 for (String source : COMMERCE_SOURCES) {
                     if (totals.putIfAbsent(source, 0L) != null) throw new SQLException("Accounting source collision");
                 }
@@ -332,11 +364,33 @@ public final class AccountingProjection implements AutoCloseable {
                         throw new SQLException("Accounting numeric bound");
                     sources.add(new SourceTotal(entry.getKey(), entry.getValue()));
                 }
-                groups.add(new Group(day, category, sources));
+                groups.add(checkedGroup(day, category, sources));
             }
         }
         budget(started);
         return new Snapshot(token, captured, zone.getId(), groups, items, commerceItems);
+    }
+
+    /** The Skript bridge's limit on sources in one group (npc-economy-bridge.sk). */
+    static final int MAX_SOURCES_PER_GROUP = 32;
+
+    static Group checkedGroup(String day, String category, List<SourceTotal> sources) throws SQLException {
+        if (sources.size() > MAX_SOURCES_PER_GROUP) throw new SQLException("Accounting source bound");
+        return new Group(day, category, sources);
+    }
+
+    /** Whether any bills event was ever written. Caller's repeatable-read transaction. */
+    static boolean billsActive(Connection c) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT EXISTS(SELECT 1 FROM npc_economy_events WHERE source=?)")) {
+            ps.setQueryTimeout(5);
+            ps.setString(1, EventSource.BILLS.key());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) throw new SQLException("Accounting bills check unavailable");
+                warnings(c, ps, rs);
+                return rs.getBoolean(1);
+            }
+        }
     }
 
     private static String commerceSource(ItemCustody.Source source) {

@@ -2,8 +2,8 @@ package com.prosperitysmp.npc.economy;
 
 import com.prosperitysmp.npc.economy.TransferProof.Observation;
 import com.prosperitysmp.npc.economy.TransferProof.Refusal;
-import net.milkbowl.vault.economy.Economy;
-import net.milkbowl.vault.economy.EconomyResponse;
+import com.prosperitysmp.npc.api.LegResponse;
+import com.prosperitysmp.npc.api.MoneySource;
 import org.bukkit.OfflinePlayer;
 import java.util.Objects;
 import java.util.OptionalLong;
@@ -18,12 +18,12 @@ import java.util.function.Supplier;
  * satisfy the release's durability and exclusive-account mutation contract.
  * A check that stops the leg before the money call is returned as refusal evidence, never thrown.
  */
-final class VaultLegObservation {
-    private final Economy pinned;
-    private final Supplier<Economy> current;
+final class LegObservation {
+    private final MoneySource.Pin pinned;
+    private final Supplier<MoneySource.Pin> current;
     private final BooleanSupplier mainThread;
 
-    VaultLegObservation(Economy pinned, Supplier<Economy> current, BooleanSupplier mainThread) {
+    LegObservation(MoneySource.Pin pinned, Supplier<MoneySource.Pin> current, BooleanSupplier mainThread) {
         this.pinned = Objects.requireNonNull(pinned);
         this.current = Objects.requireNonNull(current);
         this.mainThread = Objects.requireNonNull(mainThread);
@@ -40,18 +40,18 @@ final class VaultLegObservation {
                 || !expectedAccount.equals(account.getUniqueId()) || cents <= 0
                 || TransferProof.toCents(cents / 100.0).orElse(-1) != cents)
             return Observation.refused(Refusal.INVALID_REQUEST, null, null, null);
-        double amount = cents / 100.0;
+        MoneySource.Leg providerLeg = leg == TransferProof.Leg.DEBIT ? MoneySource.Leg.DEBIT : MoneySource.Leg.CREDIT;
         Double before = null, after = null;
-        EconomyResponse response = null;
+        LegResponse response = null;
         boolean failed = false, called = false;
         Refusal refusal = null;
         Throwable cause = null;
         try {
-            if (current.get() != pinned || !pinned.isEnabled()) throw new Refused(Refusal.PROVIDER_CHANGED);
+            if (current.get() != pinned || !pinned.enabled()) throw new Refused(Refusal.PROVIDER_CHANGED);
             // Receiver headroom is checked during the debit, so a balance limit can never strand a debit.
-            if (leg == TransferProof.Leg.DEBIT && !TransferProof.canReceive(pinned.getBalance(counterparty), cents,
+            if (leg == TransferProof.Leg.DEBIT && !TransferProof.canReceive(pinned.balanceDollars(counterparty), cents,
                     TransferProof.RECEIVER_LIMIT_DOLLARS)) throw new Refused(Refusal.COUNTERPARTY_UNVERIFIABLE);
-            before = pinned.getBalance(account);
+            before = pinned.balanceDollars(account);
             if (leg == TransferProof.Leg.DEBIT) {
                 OptionalLong available = TransferProof.availableCents(before);
                 if (available.isEmpty()) throw new Refused(Refusal.BALANCE_UNVERIFIABLE);
@@ -65,8 +65,7 @@ final class VaultLegObservation {
             if (current.get() != pinned) throw new Refused(Refusal.PROVIDER_CHANGED);
             // From here on any failure may have moved money. This must stay the last statement before the call.
             called = true;
-            response = leg == TransferProof.Leg.DEBIT
-                    ? pinned.withdrawPlayer(account, amount) : pinned.depositPlayer(account, amount);
+            response = pinned.leg(account, cents, providerLeg);
         } catch (Refused refused) {
             failed = true;
             refusal = refused.reason;
@@ -80,15 +79,15 @@ final class VaultLegObservation {
         // Preserve post-call evidence even when the provider moved money and then threw.
         try {
             if (current.get() != pinned) throw new IllegalStateException("Provider changed");
-            after = pinned.getBalance(account);
-            if (current.get() != pinned || !pinned.isEnabled()) throw new IllegalStateException("Provider changed");
+            after = pinned.balanceDollars(account);
+            if (current.get() != pinned || !pinned.enabled()) throw new IllegalStateException("Provider changed");
         } catch (RuntimeException | LinkageError uncertain) {
             failed = true;
         }
         if (refusal != null && !called) return Observation.refused(refusal, cause, before, after);
         return new Observation(response != null,
-                response != null && response.transactionSuccess(),
-                response == null ? null : response.amount, before, after, failed);
+                response != null && response.success(),
+                response == null ? null : response.amountDollars(), before, after, failed);
     }
 
     /** One of this class's own checks stopped the leg before the money call. */

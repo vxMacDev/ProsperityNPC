@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "subject": "item-storage-capability-and-truthful-readiness",
+  "coreSha256": "3ef78c3fdf79062cc30fea27ea47fbb4487b42602d1984d61cf71e002cbea6c5",
+  "environment": {
+    "paper": "26.1.2-74",
+    "java": 25,
+    "database": "MariaDB11.4.5",
+    "databaseSchema": 56,
+    "host": "Windows local lab",
+    "property": "GriefPrevention16.18.7/private local QA adapter",
+    "materialRepairsEnabled": true,
+    "autoCareEnabled": false,
+    "systemAndEconomyOff": true
+  },
+  "method": "Read-only console probe on an empty local Paper server. The probe read the actual native NBT linkage, player-data path, storage capability, runtime readiness and completed recovery barriers. No player, property, reserve account, item or payment fixture was created.",
+  "change": "Both item runtimes cache the existing directory-identity capability check at startup. They remain unavailable when the save proof cannot run. The owner material choice checks runtime readiness before offering its priced hand-in. Per-operation file identities, forced readback, whole-file counts, markers and version checks remain required.",
+  "observations": {
+    "nativeNbtAvailable": true,
+    "playerDataWorldFound": true,
+    "stableStorageIdentitiesAvailable": false,
+    "deliveryRecoveryCompleted": true,
+    "repairRecoveryCompleted": true,
+    "deliveryReady": false,
+    "repairReady": false,
+    "operatorWarningCount": 1,
+    "players": 0,
+    "enrolledProperties": 0,
+    "all89CountsAndLogicalRowsUnchanged": true
+  },
+  "regressions": {
+    "focusedCases": 298,
+    "focusedSuites": 27,
+    "focusedFailuresErrorsSkips": 0,
+    "nativeNbtAndStorageCapabilityCasesRan": true,
+    "coreAndExamplePackagingGatesPassed": true,
+    "exampleJarGateWasCached": true,
+    "scope": "Focused tests, separate unfiltered storage-readiness build and native read-only control; final release acceptance remains incomplete.",
+    "fullBuild": {
+      "cases": 4652,
+      "passed": 4632,
+      "skipped": 20,
+      "failures": 0,
+      "errors": 0,
+      "suites": 328,
+      "coreAndExamplePackagingGatesPassed": true,
+      "apiTests": "NO-SOURCE",
+      "exampleTests": "UP-TO-DATE; cached17cases/15inapplicable skips",
+      "scope": "Unfiltered default build of the storage-readiness patch, before the later formula-test-only addition."
+    }
+  },
+  "cleanup": {
+    "allOriginalControlledFileHashesMatch": 109,
+    "knownNewFilesArchivedAndRemoved": 4,
+    "claimCounterUnchanged": true,
+    "labServicesStoppedAndPortsClosed": true,
+    "retained": "Ordinary world writes; no bitwise world/database restoration claim."
+  },
+  "notVerified": [
+    "Successful material custody, native save and exact delivered returns on identity-capable storage",
+    "Actual owner-menu interaction or connected Java/Bedrock clients",
+    "Populated daily cycle or realistic player load",
+    "Public vendor pin/package acceptance and extended recovery/operator lifecycle"
+  ]
+}

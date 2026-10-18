@@ -1,0 +1,64 @@
+{
+  "vendor": "GriefPrevention",
+  "version": "16.18.7",
+  "coreSha256": "bbc12f563c2428f06c9fdc1069537f9dd9a61f4276ae2d4cb9b9782311bf2f7f",
+  "adapterSha256": "a96df3315cdfaeed755694c44c4894473c75096bf379abe2fd0a45ec493c24ff",
+  "recorderSha256": "54de60165482b0f233a93f3d275c5f1c56d2c204ad55f3f8180529f1140d6f41",
+  "scope": "Actual Bukkit adapter disable/enable twice, normal core binding/availability checks, and normal Paper restart with same local DB. No enrolled homes or provider money; service/handler counts do not prove live in-flight payment behavior.",
+  "states": {
+    "before": {
+      "available": true,
+      "ready": true,
+      "payouts": true,
+      "mode": "VETO_EVENTS",
+      "services": 1,
+      "transferHandlers": 2,
+      "guard": "guard veto-events installed; identity strong; payouts allowed"
+    },
+    "disabled1": {
+      "available": false,
+      "ready": false,
+      "payouts": false,
+      "mode": "UNAVAILABLE",
+      "services": 0,
+      "transferHandlers": 0,
+      "guard": "guard unavailable (the backend is unavailable; payments held)"
+    },
+    "enabled1": {
+      "available": false,
+      "ready": false,
+      "payouts": false,
+      "mode": "UNAVAILABLE",
+      "services": 1,
+      "transferHandlers": 0,
+      "guard": "guard unavailable (the backend is unavailable; payments held)"
+    },
+    "disabled2": {
+      "available": false,
+      "ready": false,
+      "payouts": false,
+      "mode": "UNAVAILABLE",
+      "services": 0,
+      "transferHandlers": 0,
+      "guard": "guard unavailable (the backend is unavailable; payments held)"
+    },
+    "enabled2": {
+      "available": false,
+      "ready": false,
+      "payouts": false,
+      "mode": "UNAVAILABLE",
+      "services": 1,
+      "transferHandlers": 0,
+      "guard": "guard unavailable (the backend is unavailable; payments held)"
+    }
+  },
+  "afterPaperRestart": {
+    "available": true,
+    "ready": true,
+    "payouts": true,
+    "mode": "VETO_EVENTS",
+    "services": 1,
+    "transferHandlers": 2,
+    "guard": "guard veto-events installed; identity strong; payouts allowed"
+  }
+}

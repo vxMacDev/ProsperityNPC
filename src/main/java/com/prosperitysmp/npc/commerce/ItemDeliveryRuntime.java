@@ -38,6 +38,7 @@ public final class ItemDeliveryRuntime {
     private final InventoryCustodyGate inventoryGate;
     private final ItemSaveProof saveProof;
     private final Path playerDataWorld;
+    private final boolean storageAvailable;
     private final UUID runId = UUID.randomUUID();
     private final Map<UUID, Pending> pending = new HashMap<>();
     /** Item repair returns only. Orders keep their own counts, so order refusals never clear these. */
@@ -72,6 +73,9 @@ public final class ItemDeliveryRuntime {
         this.inventoryGate = Objects.requireNonNull(inventoryGate);
         saveProof = new ItemSaveProof(plugin.getServer().getClass().getClassLoader());
         playerDataWorld = saveProof.mainWorldFolder(plugin.getServer()).orElse(null);
+        storageAvailable = saveProof.storageAvailable(playerDataWorld);
+        if (!storageAvailable)
+            plugin.getLogger().warning("Item delivery held: player-data storage cannot support saved-item proofs.");
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(16), r -> {
             Thread thread = new Thread(r, "npc-item-custody-sql");
             thread.setDaemon(true);
@@ -140,7 +144,7 @@ public final class ItemDeliveryRuntime {
 
     public boolean ready() {
         requireMain();
-        return ready && !closed && saveProof.available() && playerDataWorld != null;
+        return ready && !closed && storageAvailable;
     }
 
     private static java.util.function.Predicate<ItemCustody.Source> sameGate(BooleanSupplier gates) {

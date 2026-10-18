@@ -20,6 +20,11 @@ public final class PropertyFormulas {
         return Math.min(askingCents, Math.min(byTier, tenantCapCents));
     }
 
+    /** Maintenance: a flat $10.00. Cents. Pinned by SQL checks; also pinned as maintain-v1 in PinnedCharges. */
+    public static final long MAINTAIN_CENTS = 1_000L;
+    /** Ending a tenancy: a flat $10.00. Cents. Also pinned as eviction-v1 in PinnedCharges. */
+    public static final long EVICTION_CENTS = 1_000L;
+
     /** Daily utilities: $1.00 + $0.75/occupied tenant + $0.50/installed upgrade level. Cents. */
     public static long dailyUtilitiesCents(int occupiedTenants, int totalUpgradeLevels) {
         return 100L + 75L * Math.max(0, occupiedTenants) + 50L * Math.max(0, totalUpgradeLevels);

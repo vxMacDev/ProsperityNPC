@@ -13,7 +13,8 @@ import java.util.UUID;
 /** Server-created immutable quote. No player-supplied prices, command text or free-form effect. */
 public record PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int ownershipEpoch,
                               Kind kind, UpgradeType upgrade, Integer targetLevel, UUID tenantId,
-                              LocalDate day, RepairQuote repair, EvictionQuote eviction, InsuranceQuote insurance) {
+                              LocalDate day, RepairQuote repair, EvictionQuote eviction, InsuranceQuote insurance,
+                              Long configuredPriceCents) {
     public enum Kind { UPGRADE, MAINTAIN, EVICT, REPAIR, INSURANCE }
 
     public record InsuranceQuote(int capacity) {
@@ -21,6 +22,14 @@ public record PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int
             if (capacity < 1 || capacity > 4) throw new IllegalArgumentException("Invalid insurance capacity");
         }
         public long cents() { return PropertyFormulas.insurancePriceCents(capacity); }
+    }
+
+    /** Legacy quotes keep their original fingerprint and fixed price. */
+    public PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int ownershipEpoch,
+                           Kind kind, UpgradeType upgrade, Integer targetLevel, UUID tenantId,
+                           LocalDate day, RepairQuote repair, EvictionQuote eviction, InsuranceQuote insurance) {
+        this(requestId, propertyId, payerId, ownershipEpoch, kind, upgrade, targetLevel, tenantId,
+                day, repair, eviction, insurance, null);
     }
 
     /** Preserves every pre-insurance constructor and fingerprint. */
@@ -72,15 +81,42 @@ public record PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int
                     throw new IllegalArgumentException("Invalid incident repair quote");
             }
         }
+        if (kind == Kind.REPAIR) {
+            if (configuredPriceCents != null && configuredPriceCents != repair.cents())
+                throw new IllegalArgumentException("Repair price must match the incident");
+            configuredPriceCents = repair.configuredPriceCents();
+        } else if (configuredPriceCents != null) {
+            if ((kind != Kind.MAINTAIN && kind != Kind.UPGRADE && kind != Kind.EVICT && kind != Kind.INSURANCE) || configuredPriceCents <= 0
+                    || configuredPriceCents > PurchasePrices.MAX_CENTS)
+                throw new IllegalArgumentException("Invalid configured purchase price");
+            long legacy = switch (kind) {
+                case MAINTAIN -> PropertyFormulas.MAINTAIN_CENTS;
+                case EVICT -> PropertyFormulas.EVICTION_CENTS;
+                case INSURANCE -> insurance.cents();
+                case UPGRADE -> upgrade.costToLevelCents(targetLevel);
+                default -> throw new IllegalArgumentException("Invalid configured purchase kind");
+            };
+            if (configuredPriceCents == legacy) configuredPriceCents = null;
+            if (configuredPriceCents != null && kind == Kind.EVICT && eviction == null)
+                throw new IllegalArgumentException("Configured eviction requires a bound tenancy");
+        }
     }
 
     public long cents() {
+        if (configuredPriceCents != null) return configuredPriceCents;
         return switch (kind) {
             case UPGRADE -> upgrade.costToLevelCents(targetLevel);
             case REPAIR -> repair.cents();
             case INSURANCE -> insurance.cents();
-            case MAINTAIN, EVICT -> 1_000;
+            case MAINTAIN -> com.prosperitysmp.npc.formulas.PropertyFormulas.MAINTAIN_CENTS;
+            case EVICT -> com.prosperitysmp.npc.formulas.PropertyFormulas.EVICTION_CENTS;
         };
+    }
+
+    public PurchaseRequest withPriceCents(long cents) {
+        if (kind == Kind.REPAIR) throw new IllegalArgumentException("Repair price belongs to the incident");
+        return new PurchaseRequest(requestId, propertyId, payerId, ownershipEpoch, kind, upgrade, targetLevel, tenantId,
+                day, repair, eviction, insurance, cents);
     }
     public EventSource source() {
         return switch (kind) {
@@ -99,6 +135,7 @@ public record PurchaseRequest(UUID requestId, UUID propertyId, UUID payerId, int
                 + "|" + repair.snapshotSha256();
         if (eviction != null) payload += "|evict-v1|" + eviction.tenancyRevision() + "|" + eviction.slot();
         if (insurance != null) payload += "|insurance-v1|" + insurance.capacity();
+        if (configuredPriceCents != null) payload += "|price-v1|" + configuredPriceCents;
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(payload.getBytes(StandardCharsets.US_ASCII));
             return "purchase|" + requestId + "|" + HexFormat.of().formatHex(hash);

@@ -5,10 +5,14 @@ import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.Uuids;
 import com.prosperitysmp.npc.economy.EventSource;
 import com.prosperitysmp.npc.economy.PurchaseRequest;
+import com.prosperitysmp.npc.economy.PurchaseRepository;
+import com.prosperitysmp.npc.economy.PurchasePrices;
 import com.prosperitysmp.npc.economy.RepairQuote;
+import com.prosperitysmp.npc.economy.ItemRepairRecipes;
 import com.prosperitysmp.npc.economy.TransferJournal;
 import com.prosperitysmp.npc.economy.TransferProof;
 import com.prosperitysmp.npc.economy.UtilityBill;
+import com.prosperitysmp.npc.economy.UtilityRepository;
 import com.prosperitysmp.npc.formulas.IncidentType;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -49,23 +53,39 @@ public final class AutoCareRepository {
     }
     public record Claim(UUID claimId, UUID propertyId, UUID ownerUuid, int ownershipEpoch,
                         long consentRevision, LocalDate day, Action action, Long incidentId,
-                        long quotedCents, State state, Long eventId, Instant createdAt, String outcome) { }
+                        long quotedCents, State state, Long eventId, Instant createdAt, String outcome,
+                        Long configuredPriceCents) {
+        public Claim(UUID claimId, UUID propertyId, UUID ownerUuid, int ownershipEpoch,
+                     long consentRevision, LocalDate day, Action action, Long incidentId,
+                     long quotedCents, State state, Long eventId, Instant createdAt, String outcome) {
+            this(claimId, propertyId, ownerUuid, ownershipEpoch, consentRevision, day, action, incidentId,
+                    quotedCents, state, eventId, createdAt, outcome, null);
+        }
+    }
     public record Reservation(ReserveStatus status, Claim claim) {
         public boolean newlyReserved() { return status == ReserveStatus.RESERVED; }
     }
     public record Binding(boolean newlyBound, Claim claim) { }
     private record Mirror(UUID owner, int epoch, boolean enabled, int condition) { }
+    private record Target(boolean available, Long configuredPriceCents) { }
     private record Payment(String domainState, String ledgerState, Long paidCents, String key, EventSource source) { }
     private enum Proof { PENDING, PAID, DECLINED, UNCERTAIN }
     private static final int MAX_FEED = 100;
     private final Database database;
     private final UUID reserve;
     private final EconomyClock days;
+    private final PurchasePrices prices;
 
     public AutoCareRepository(Database database, UUID reserve, Clock clock, ZoneId zone, int resetHour) {
+        this(database, reserve, clock, zone, resetHour, PurchasePrices.DEFAULT);
+    }
+
+    public AutoCareRepository(Database database, UUID reserve, Clock clock, ZoneId zone, int resetHour,
+                              PurchasePrices prices) {
         this.database = Objects.requireNonNull(database);
         this.reserve = Objects.requireNonNull(reserve);
         days = new EconomyClock(Objects.requireNonNull(clock), Objects.requireNonNull(zone), resetHour);
+        this.prices = Objects.requireNonNull(prices);
     }
 
     /** Explicit replacement consent. Equal settings are idempotent; old epochs remain inert history. */
@@ -106,7 +126,12 @@ public final class AutoCareRepository {
                                Action action, Long incidentId, long quotedCents) throws SQLException {
         scope(property, owner, epoch);
         day(day);
-        quote(action, incidentId, quotedCents);
+        Objects.requireNonNull(action);
+        if (action == Action.MAINTAIN || action == Action.UTILITY) {
+            if (incidentId != null || quotedCents <= 0 || quotedCents > PurchasePrices.MAX_CENTS)
+                throw new IllegalArgumentException("Invalid auto-care quote");
+        } else if (incidentId == null || incidentId <= 0 || quotedCents <= 0 || quotedCents > ItemRepairRecipes.MAX_CASH_CENTS)
+            throw new IllegalArgumentException("Invalid auto-care repair quote");
         return transaction(c -> {
             Mirror p = mirror(c, property);
             if (!matches(p, owner, epoch, true)) return refused(ReserveStatus.TARGET_UNAVAILABLE);
@@ -117,20 +142,30 @@ public final class AutoCareRepository {
                         "Auto-care semantic slot payload differs");
                 return new Reservation(ReserveStatus.REPLAY, old);
             }
+            if (action == Action.MAINTAIN && quotedCents != prices.maintenanceCents())
+                throw new IllegalArgumentException("Auto-care maintenance price changed");
             if (!day.equals(days.today())) return refused(ReserveStatus.TARGET_UNAVAILABLE);
             Consent consent = consent(c, property, epoch);
             if (consent == null || !consent.enabled()) return refused(ReserveStatus.DISABLED);
             require(consent.ownerUuid().equals(owner), "Auto-care consent owner differs");
             if (!consent.actions().contains(action)) return refused(ReserveStatus.NOT_ALLOWED);
-            if (!target(c, p, property, action, incidentId, quotedCents)) return refused(ReserveStatus.TARGET_UNAVAILABLE);
+            Target target = target(c, p, property, action, incidentId, quotedCents);
+            if (!target.available()) return refused(ReserveStatus.TARGET_UNAVAILABLE);
             long retained = retained(c, property, epoch, day);
             if (quotedCents > consent.dailyCeilingCents() || retained > consent.dailyCeilingCents() - quotedCents)
                 return refused(ReserveStatus.LIMIT);
-            UUID id = claimId(property, owner, epoch, day, action, incidentId);
+            Long configured = target.configuredPriceCents();
+            UUID id = pricedClaimId(property, owner, epoch, day, action, incidentId, configured);
+            String priceColumn = configured == null ? "" : ",configured_price_cents";
+            String priceValue = configured == null ? "" : ",?";
             try (var ps = prepare(c, """
                     INSERT INTO npc_auto_care_claims(claim_id,property_id,owner_uuid,ownership_epoch,consent_revision,
-                      economy_day,action,incident_id,quoted_cents) VALUES(?,?,?,?,?,?,?,?,?)
-                    """, id, property, owner, epoch, consent.revision(), day, action.name(), incidentId, quotedCents)) { one(c, ps); }
+                      economy_day,action,incident_id,quoted_cents
+                    """ + priceColumn + ") VALUES(?,?,?,?,?,?,?,?,?" + priceValue + ")",
+                    id, property, owner, epoch, consent.revision(), day, action.name(), incidentId, quotedCents)) {
+                if (configured != null) ps.setLong(10, configured);
+                one(c, ps);
+            }
             require(day.equals(days.today()), "Auto-care reservation crossed economy reset");
             return new Reservation(ReserveStatus.RESERVED, required(c, id));
         });
@@ -272,21 +307,26 @@ public final class AutoCareRepository {
         return total;
     }
 
-    private static boolean target(Connection c, Mirror property, UUID propertyId, Action action, Long incidentId, long cents)
+    private static Target target(Connection c, Mirror property, UUID propertyId, Action action, Long incidentId, long cents)
             throws SQLException {
-        if (action == Action.MAINTAIN) return property.condition() < 100;
-        if (action == Action.UTILITY) return true; // Exact frozen bill is verified at binding, before any money intent.
+        if (action == Action.MAINTAIN) return new Target(property.condition() < 100,
+                cents == com.prosperitysmp.npc.formulas.PropertyFormulas.MAINTAIN_CENTS ? null : cents);
+        // Exact frozen bill is verified at binding, before any money intent.
+        if (action == Action.UTILITY) return new Target(true, legacyUtilityPrice(cents) ? null : cents);
         try (var ps = prepare(c, "SELECT * FROM npc_incidents WHERE property_id=? AND incident_id=? FOR UPDATE", propertyId, incidentId);
              var rs = ps.executeQuery()) {
-            if (!next(c, ps, rs)) return false;
+            if (!next(c, ps, rs)) return new Target(false, null);
             IncidentType type = value(IncidentType.class, rs.getString("incident_type"));
-            require(number(rs, "cash_repair_cents", 1, Long.MAX_VALUE) == type.cashRepairCents()
-                    && rs.getInt("condition_damage") == type.conditionDamage()
+            Long price = configuredPrice(rs, "configured_repair_cents");
+            long accepted;
+            try { accepted = RepairQuote.storedCents(type, number(rs, "cash_repair_cents", 1, Long.MAX_VALUE), price); }
+            catch (IllegalArgumentException invalid) { throw new SQLException("Auto-care incident terms differ", invalid); }
+            require(rs.getInt("condition_damage") == type.conditionDamage()
                     && type.itemRepairSpec().equals(rs.getString("item_repair_spec")), "Auto-care incident terms differ");
             boolean available = rs.getObject("resolved_at") == null && number(rs, "prevented", 0, 1) == 0
-                    && cents == type.cashRepairCents();
+                    && cents == accepted;
             require(!next(c, ps, rs), "Duplicate auto-care incident");
-            return available;
+            return new Target(available, price);
         }
     }
 
@@ -315,16 +355,10 @@ public final class AutoCareRepository {
                     WHERE p.event_id=? FOR UPDATE
                     """, eventId); var rs = ps.executeQuery()) {
                 require(next(c, ps, rs), "Auto-care utility receipt missing");
-                UtilityBill bill = new UtilityBill(uuid(rs, "property_id"), uuid(rs, "owner_uuid"), rs.getInt("ownership_epoch"),
-                        rs.getLong("property_revision"), LocalDate.parse(rs.getString("economy_day")), rs.getInt("capacity"),
-                        rs.getInt("occupied_tenants"), rs.getInt("installed_upgrade_levels"), instant(rs, "issued_at"),
-                        rs.getString("clock_zone"), rs.getInt("reset_hour"));
+                UtilityBill bill = UtilityRepository.readBill(rs);
                 require(claim.claimId().equals(uuid(rs, "request_id")) && claim.propertyId().equals(bill.propertyId())
                         && claim.ownerUuid().equals(bill.ownerId()) && claim.ownershipEpoch() == bill.ownershipEpoch()
                         && claim.day().equals(bill.day()) && claim.quotedCents() == bill.cents()
-                        && bill.cents() == number(rs, "amount_cents", 1, Long.MAX_VALUE)
-                        && bill.fingerprint().equals(rs.getString("payload_sha256"))
-                        && bill.periodStart().equals(instant(rs, "period_start")) && bill.dueAt().equals(instant(rs, "due_at"))
                         && ("utility|" + claim.claimId()).equals(key), "Auto-care utility payload differs");
                 domain = rs.getString("state");
                 require(!next(c, ps, rs), "Duplicate auto-care utility receipt");
@@ -336,20 +370,16 @@ public final class AutoCareRepository {
                 require(rs.getObject("upgrade_type") == null && rs.getObject("target_level") == null && rs.getBytes("tenant_id") == null
                         && rs.getObject("evict_tenancy_revision") == null && rs.getObject("evict_slot") == null,
                         "Auto-care purchase action differs");
-                RepairQuote repair = claim.action() == Action.CASH_REPAIR
-                        ? new RepairQuote(number(rs, "repair_incident_id", 1, Long.MAX_VALUE),
-                        value(IncidentType.class, rs.getString("repair_type")), rs.getString("repair_snapshot_sha256")) : null;
-                if (repair == null) require(rs.getObject("repair_incident_id") == null && rs.getString("repair_type") == null
-                        && rs.getString("repair_snapshot_sha256") == null, "Auto-care maintenance target differs");
-                PurchaseRequest q = new PurchaseRequest(uuid(rs, "request_id"), uuid(rs, "property_id"), uuid(rs, "payer_uuid"),
-                        rs.getInt("ownership_epoch"), value(PurchaseRequest.Kind.class, rs.getString("kind")), null, null, null,
-                        LocalDate.parse(rs.getString("economy_day")), repair);
+                PurchaseRequest q = PurchaseRepository.readReceipt(rs).request();
+                RepairQuote repair = q.repair();
                 require(q.kind() == (claim.action() == Action.CASH_REPAIR ? PurchaseRequest.Kind.REPAIR : PurchaseRequest.Kind.MAINTAIN)
                         && claim.claimId().equals(q.requestId()) && claim.propertyId().equals(q.propertyId())
                         && claim.ownerUuid().equals(q.payerId()) && claim.ownershipEpoch() == q.ownershipEpoch()
                         && claim.day().equals(q.day())
                         && (repair == null || Objects.equals(claim.incidentId(), repair.incidentId()))
-                        && claim.quotedCents() == q.cents() && q.cents() == number(rs, "quoted_amount_cents", 1, Long.MAX_VALUE)
+                        && claim.quotedCents() == q.cents()
+                        && Objects.equals(claim.configuredPriceCents(), q.configuredPriceCents())
+                        && q.cents() == number(rs, "quoted_amount_cents", 1, Long.MAX_VALUE)
                         && q.eventKey().equals(key) && q.actionKey().equals(rs.getString("action_key")),
                         "Auto-care purchase payload differs");
                 domain = rs.getString("state");
@@ -481,10 +511,23 @@ public final class AutoCareRepository {
                 (int) number(rs, "ownership_epoch", 0, Integer.MAX_VALUE), number(rs, "consent_revision", 0, Long.MAX_VALUE),
                 rs.getObject("economy_day", LocalDate.class), value(Action.class, rs.getString("action")), nullableLong(rs, "incident_id"),
                 number(rs, "quoted_cents", 1, Long.MAX_VALUE), value(State.class, rs.getString("state")), nullableLong(rs, "event_id"),
-                instant(rs, "created_at"), rs.getString("outcome_code"));
-        quote(claim.action(), claim.incidentId(), claim.quotedCents());
-        require(claim.claimId().equals(claimId(claim.propertyId(), claim.ownerUuid(), claim.ownershipEpoch(), claim.day(),
-                claim.action(), claim.incidentId()))
+                instant(rs, "created_at"), rs.getString("outcome_code"), configuredPrice(rs));
+        if (claim.configuredPriceCents() == null) {
+            try { quote(claim.action(), claim.incidentId(), claim.quotedCents()); }
+            catch (IllegalArgumentException invalid) { throw new SQLException("Invalid auto-care action/quote", invalid); }
+        } else {
+            boolean shape = switch (claim.action()) {
+                case CASH_REPAIR -> claim.incidentId() != null && claim.incidentId() > 0
+                        && claim.quotedCents() <= ItemRepairRecipes.MAX_CASH_CENTS;
+                case MAINTAIN -> claim.incidentId() == null
+                        && claim.quotedCents() != com.prosperitysmp.npc.formulas.PropertyFormulas.MAINTAIN_CENTS;
+                case UTILITY -> claim.incidentId() == null && !legacyUtilityPrice(claim.quotedCents());
+            };
+            require(shape && claim.configuredPriceCents() == claim.quotedCents()
+                    && claim.quotedCents() <= PurchasePrices.MAX_CENTS, "Invalid configured auto-care price");
+        }
+        require(claim.claimId().equals(pricedClaimId(claim.propertyId(), claim.ownerUuid(), claim.ownershipEpoch(), claim.day(),
+                claim.action(), claim.incidentId(), claim.configuredPriceCents()))
                 && (claim.eventId() == null || claim.eventId() > 0)
                 && (claim.state() != State.RESERVED || (claim.eventId() == null && claim.outcome() == null))
                 && (claim.state() != State.BOUND || (claim.eventId() != null && claim.outcome() == null))
@@ -492,6 +535,23 @@ public final class AutoCareRepository {
                 && (claim.state() != State.DECLINED || (claim.eventId() != null && "NO_MOVEMENT_CONFIRMED".equals(claim.outcome())))
                 && (claim.state() != State.HELD || claim.outcome() != null), "Invalid auto-care claim binding/state");
         return claim;
+    }
+
+    private static Long configuredPrice(ResultSet rs) throws SQLException {
+        return configuredPrice(rs, "configured_price_cents");
+    }
+    private static Long configuredPrice(ResultSet rs, String column) throws SQLException {
+        var columns = rs.getMetaData();
+        for (int i = 1; i <= columns.getColumnCount(); i++)
+            if (column.equals(columns.getColumnLabel(i))) return nullableLong(rs, column);
+        return null;
+    }
+
+    private static UUID pricedClaimId(UUID property, UUID owner, int epoch, LocalDate day, Action action,
+                                      Long incident, Long price) {
+        UUID legacy = claimId(property, owner, epoch, day, action, incident);
+        return price == null ? legacy : UUID.nameUUIDFromBytes(("auto-care-price-v1|" + legacy + "|" + price)
+                .getBytes(StandardCharsets.US_ASCII));
     }
     private static Consent consent(Connection c, UUID property, int epoch) throws SQLException {
         try (var ps = prepare(c, "SELECT * FROM npc_auto_care_consents WHERE property_id=? AND ownership_epoch=? "
@@ -552,12 +612,13 @@ public final class AutoCareRepository {
     private static void quote(Action action, Long incident, long cents) {
         Objects.requireNonNull(action);
         boolean valid = switch (action) {
-            case UTILITY -> incident == null && cents >= 100 && cents <= 700;
-            case MAINTAIN -> incident == null && cents == 1000;
+            case UTILITY -> incident == null && legacyUtilityPrice(cents);
+            case MAINTAIN -> incident == null && cents == com.prosperitysmp.npc.formulas.PropertyFormulas.MAINTAIN_CENTS;
             case CASH_REPAIR -> incident != null && incident > 0 && (cents == 2000 || cents == 3500 || cents == 5000);
         };
         if (!valid) throw new IllegalArgumentException("Invalid auto-care action/quote");
     }
+    private static boolean legacyUtilityPrice(long cents) { return cents >= 100 && cents <= 700; }
     private static void scope(UUID property, UUID owner, int epoch) {
         Objects.requireNonNull(property);
         Objects.requireNonNull(owner);

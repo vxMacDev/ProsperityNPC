@@ -90,10 +90,12 @@ class TransferJournalIT {
         database = new Database();
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), schemaName, "root", "", 6, 10_000L));
         applyResource("/db/migration/V1__initial_schema.sql");
+        applyResource("/db/migration/V45__property_backend.sql");
         applyResource("/db/migration/V2__resident_identity.sql");
         applyResource("/db/migration/V3__purchase_receipts.sql");
         applyResource(V4);
         applyResource("/db/migration/V17__transfer_resolutions.sql");
+        applyResource("/db/migration/V41__charge_catalogue.sql");
         try (Connection c = database.getConnection()) { assertTrue(com.prosperitysmp.npc.db.V40Fixture.apply(c) >= 5); }
     }
 
@@ -1194,12 +1196,14 @@ class TransferJournalIT {
     }
 
     private void assertFunding(EventSource source, int payments) throws SQLException {
-        long sinks = source.isPayout() ? 0 : CENTS * payments;
+        long sinks = source.fundsRent() ? CENTS * payments : 0;
         long payouts = source.isPayout() ? CENTS * payments : 0;
         assertArrayEquals(new long[]{SEED, sinks, payouts}, properties.fundingOf(property));
         assertEquals(Long.toString(SEED), scalar("SELECT one_time_seed_cents FROM npc_property_funding WHERE property_id=?", property));
         assertEquals(Long.toString(sinks), scalar("SELECT successful_cash_sinks_cents FROM npc_property_funding WHERE property_id=?", property));
         assertEquals(Long.toString(payouts), scalar("SELECT successful_cash_payouts_cents FROM npc_property_funding WHERE property_id=?", property));
+        long unfunded = source == EventSource.BILLS ? CENTS * payments : 0;
+        assertEquals(Long.toString(unfunded), scalar("SELECT successful_cash_unfunded_cents FROM npc_property_funding WHERE property_id=?", property));
     }
 
     private boolean startOrIdentityConflict(Handle handle) throws SQLException {

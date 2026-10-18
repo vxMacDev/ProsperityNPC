@@ -1,6 +1,16 @@
 package com.prosperitysmp.npc.arm;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
+import com.prosperitysmp.npc.api.Capabilities;
+import com.prosperitysmp.npc.api.GuardMode;
+import com.prosperitysmp.npc.api.GuardResult;
+import com.prosperitysmp.npc.api.OwnershipHooks;
+import com.prosperitysmp.npc.api.OwnershipToken;
+import com.prosperitysmp.npc.api.Presence;
+import com.prosperitysmp.npc.api.PropertyBackend;
+import com.prosperitysmp.npc.api.ProsperityNpcApi;
+import com.prosperitysmp.npc.api.RegionRef;
+import com.prosperitysmp.npc.api.RegionView;
 import net.alex9849.arm.AdvancedRegionMarket;
 import net.alex9849.arm.adapters.WGRegion;
 import net.alex9849.arm.adapters.WorldGuardInterface;
@@ -10,12 +20,14 @@ import net.alex9849.arm.regions.SellType;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.plugin.Plugin;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -24,8 +36,23 @@ import java.util.function.Function;
  * members, or region access.
  *
  * <p>All ARM/Bukkit reads here MUST run on the server (main) thread.
+ *
+ * <p>This is the built-in property backend, id {@code arm}.
  */
-public final class ArmAdapter {
+public final class ArmAdapter implements PropertyBackend {
+    public static final String ID = "arm";
+
+    private static final Capabilities CAPABILITIES = Capabilities.builder()
+            .value("guard", "write-hook")
+            .value("owner-model", "one UUID owner, no members")
+            .flag("location-lookup", true)
+            .flag("region-by-id", true)
+            .flag("distinguishes-missing", false)
+            .value("token-identity", "object")
+            .flag("needs-worldguard", true)
+            .value("region-id-max-length", "128")
+            .flag("main-thread-only", true)
+            .build();
 
     private final ProsperityNpcPlugin plugin;
 
@@ -33,11 +60,20 @@ public final class ArmAdapter {
         this.plugin = plugin;
     }
 
+    @Override public String id() { return ID; }
+    @Override public int apiMajor() { return ProsperityNpcApi.MAJOR; }
+    @Override public int apiMinor() { return ProsperityNpcApi.MINOR; }
+    @Override public Capabilities capabilities() { return CAPABILITIES; }
+    @Override public String displayName() { return "ARM"; }
+
     /** Opaque live references: retain on main thread only, never pass to SQL workers. */
     public record OwnerRead(UUID worldId, String regionId, UUID ownerId, Object provider,
-                            Object manager, Object region, Object rawRegion, Object wgManager, World world) {
-        public boolean sameIncarnation(OwnerRead other) {
-            return other != null && worldId.equals(other.worldId) && regionId.equals(other.regionId)
+                            Object manager, Object region, Object rawRegion, Object wgManager, World world)
+            implements OwnershipToken {
+        @Override
+        public boolean sameIncarnation(OwnershipToken token) {
+            // Only another ARM read can be the same incarnation; a token from any other backend never is.
+            return token instanceof OwnerRead other && worldId.equals(other.worldId) && regionId.equals(other.regionId)
                     && ownerId.equals(other.ownerId) && OwnershipReadGuard.sameAuthority(
                     new Object[]{provider, manager, region, rawRegion, wgManager, world},
                     new Object[]{other.provider, other.manager, other.region, other.rawRegion, other.wgManager, other.world});
@@ -47,7 +83,8 @@ public final class ArmAdapter {
     private long nextOwnerWarning;
 
     /** Current private-read eligibility only; this is NOT an asynchronous financial fence. */
-    public Optional<OwnerRead> ownerReadAt(Location location, UUID owner) {
+    @Override
+    public Optional<OwnershipToken> ownerReadAt(Location location, UUID owner) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("ARM owner reads require the main thread");
         if (!plugin.isEnabled() || location == null || owner == null || location.getWorld() == null
                 || !Bukkit.getPluginManager().isPluginEnabled("WorldGuard") || !isAvailable()) return Optional.empty();
@@ -61,7 +98,8 @@ public final class ArmAdapter {
     }
 
     /** Strict metadata read by exact world/region identity; never loads terrain. */
-    public Optional<OwnerRead> ownerReadRegion(UUID worldId, String regionId, UUID owner) {
+    @Override
+    public Optional<OwnershipToken> ownerReadRegion(UUID worldId, String regionId, UUID owner) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("ARM owner reads require the main thread");
         if (worldId == null || regionId == null || owner == null) return Optional.empty();
         World world = Bukkit.getWorld(worldId);
@@ -79,7 +117,7 @@ public final class ArmAdapter {
         });
     }
 
-    private Optional<OwnerRead> strictOwnerRead(World world, UUID owner,
+    private Optional<OwnershipToken> strictOwnerRead(World world, UUID owner,
             Function<RegionManager, Region> select) {
         if (!plugin.isEnabled() || !isAvailable() || Bukkit.getWorld(world.getUID()) != world
                 || !Bukkit.getPluginManager().isPluginEnabled("WorldGuard")) return Optional.empty();
@@ -132,9 +170,10 @@ public final class ArmAdapter {
     }
 
     /** World and WorldGuard region id only, for the one top-level ARM region containing the location. No owner data. */
-    public record RegionAt(UUID worldId, String regionId) { }
+    public record RegionAt(UUID worldId, String regionId) implements RegionRef { }
 
-    public Optional<RegionAt> regionAt(Location location) {
+    @Override
+    public Optional<RegionRef> regionAt(Location location) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("ARM region reads require the main thread");
         if (location == null || location.getWorld() == null || !isAvailable()) return Optional.empty();
         try {
@@ -148,6 +187,11 @@ public final class ArmAdapter {
         } catch (RuntimeException | LinkageError failure) {
             return Optional.empty();
         }
+    }
+
+    @Override
+    public boolean available() {
+        return isAvailable();
     }
 
     /** True when ARM is installed, enabled, and its singleton is reachable. */
@@ -168,7 +212,8 @@ public final class ArmAdapter {
      * Returns empty if ARM is unavailable, the region does not exist, or the
      * read fails. Never throws.
      */
-    public Optional<ArmRegionView> findRegion(String worldName, String regionId) {
+    @Override
+    public Optional<RegionView> findRegion(String worldName, String regionId) {
         if (!isAvailable()) {
             return Optional.empty();
         }
@@ -194,6 +239,57 @@ public final class ArmAdapter {
             plugin.getLogger().warning("ARM read failed for " + worldName + "/" + regionId + ": " + t);
             return Optional.empty();
         }
+    }
+
+    /**
+     * PRESENT when ARM lists the region in that world, MISSING otherwise. ARM cannot tell an absent region from a
+     * failed read, so both are MISSING, and the capability distinguishes-missing says so. UNREADABLE only when the
+     * world or ARM itself is not there. Never throws.
+     */
+    @Override
+    public Presence observe(UUID worldId, String regionId) {
+        try {
+            World world = worldId == null ? null : Bukkit.getWorld(worldId);
+            if (world == null || regionId == null || !isAvailable()) return Presence.UNREADABLE;
+            return findRegion(world.getName(), regionId)
+                    .filter(v -> ArmRegionView.sameRegion(v, worldId, regionId))
+                    .map(v -> Presence.PRESENT).orElse(Presence.MISSING);
+        } catch (RuntimeException | LinkageError failure) {
+            return Presence.UNREADABLE;
+        }
+    }
+
+    /**
+     * Installs the cooperative ARM ownership hook: the patched ARM calls {@code hooks.beginWrite} before any owner
+     * change and fails it while ProsperityNPC holds the region. Throws when the patched ARM is missing or speaks
+     * another protocol; the caller reports that. A reflective failure is carried out unchanged inside
+     * {@link GuardInstallFailure}.
+     */
+    @Override
+    public GuardResult installGuard(OwnershipHooks hooks) {
+        try {
+            Plugin arm = Bukkit.getServer().getPluginManager().getPlugin("AdvancedRegionMarket");
+            if (arm == null || !arm.isEnabled()) throw new IllegalStateException("ARM unavailable");
+            Class<?> hook = Class.forName("net.alex9849.arm.NpcTransactionGuard", true, arm.getClass().getClassLoader());
+            if (hook.getField("PROTOCOL").getInt(null) != 1) throw new IllegalStateException("Unsupported ownership hook");
+            BiFunction<UUID, String, Runnable> writer = hooks::beginWrite;
+            hook.getMethod("install", BiFunction.class).invoke(null, writer);
+            return GuardResult.installed(GuardMode.WRITE_HOOK);
+        } catch (ReflectiveOperationException reflective) {
+            throw new GuardInstallFailure(reflective);
+        }
+    }
+
+    /** A reflective failure from {@link #installGuard}; {@link #reflective()} is the original exception. */
+    public static final class GuardInstallFailure extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        GuardInstallFailure(ReflectiveOperationException cause) { super(cause); }
+        public ReflectiveOperationException reflective() { return (ReflectiveOperationException) getCause(); }
+    }
+
+    @Override
+    public List<String> describe() {
+        return List.of("ARM " + (isAvailable() ? "available" : "UNAVAILABLE"), debugDump());
     }
 
     /** Debug: summarize what ARM reports per selltype (counts + a few id@world samples). */

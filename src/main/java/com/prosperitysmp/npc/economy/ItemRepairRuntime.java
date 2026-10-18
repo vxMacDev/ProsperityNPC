@@ -2,7 +2,7 @@ package com.prosperitysmp.npc.economy;
 
 import com.prosperitysmp.npc.ProsperityNpcPlugin;
 import com.prosperitysmp.npc.alert.StaffAlerts;
-import com.prosperitysmp.npc.arm.ArmAdapter;
+import com.prosperitysmp.npc.api.OwnershipToken;
 import com.prosperitysmp.npc.arm.OwnershipFence;
 import com.prosperitysmp.npc.clock.EconomyClock;
 import com.prosperitysmp.npc.commerce.CustodyBytes;
@@ -107,6 +107,7 @@ public final class ItemRepairRuntime {
     private final ItemRepairRepository repository;
     private final ItemSaveProof saveProof;
     private final Path playerDataWorld;
+    private final boolean storageAvailable;
     private final InventoryCustodyGate gate;
     private final Supplier<ItemDeliveryRuntime> delivery;
     private final EconomyClock days;
@@ -131,6 +132,7 @@ public final class ItemRepairRuntime {
         this.delivery = Objects.requireNonNull(delivery);
         saveProof = new ItemSaveProof(plugin.getServer().getClass().getClassLoader());
         playerDataWorld = saveProof.mainWorldFolder(plugin.getServer()).orElse(null);
+        storageAvailable = saveProof.storageAvailable(playerDataWorld);
         days = new EconomyClock(Clock.systemUTC(), ZoneId.of(plugin.getConfig().getString("clock.timezone", "America/Chicago")),
                 plugin.getConfig().getInt("clock.daily-reset-hour", 4));
         // Test hook: delays settlement so a test can stop the server mid hand-in. Absent means no delay.
@@ -171,10 +173,10 @@ public final class ItemRepairRuntime {
         }
     }
 
-    /** Recovery drained, the save proof available, a player-data folder found and the delivery runtime present. */
+    /** Recovery drained, storage can support the save proof and the delivery runtime is present. */
     public boolean ready() {
         requireMain();
-        return ready && !closed && saveProof.available() && playerDataWorld != null && delivery.get() != null;
+        return ready && !closed && storageAvailable && delivery.get() != null;
     }
 
     /** Main only: true while this player has items to collect (shown on the desk). */
@@ -194,8 +196,8 @@ public final class ItemRepairRuntime {
         }
         var settings = plugin.itemRepairSettings();
         String version = plugin.commercePrices().version();
-        if (!settings.active() || cashCents != type.cashRepairCents())
-            return new Preview(incidentId, type, type.cashRepairCents(), List.of(), version, ItemRepairRecipes.Unavailable.NO_RECIPE);
+        if (!settings.active() || cashCents <= 0 || cashCents > ItemRepairRecipes.MAX_CASH_CENTS)
+            return new Preview(incidentId, type, cashCents, List.of(), version, ItemRepairRecipes.Unavailable.NO_RECIPE);
         var recipe = settings.recipe(type);
         if (recipe.isEmpty())
             return new Preview(incidentId, type, cashCents, List.of(), version, ItemRepairRecipes.Unavailable.NO_RECIPE);
@@ -235,7 +237,8 @@ public final class ItemRepairRuntime {
         Objects.requireNonNull(reply);
         var settings = plugin.itemRepairSettings();
         String closedReason = admissionRefusal(settings, plugin.killSwitches().isSystemEnabled(), plugin.killSwitches().isEconomyEnabled(),
-                ready() && plugin.armAdapter() != null && plugin.propertyService() != null && plugin.ownershipFence() != null);
+                ready() && plugin.propertyBackend() != null && plugin.propertyService() != null && plugin.ownershipFence() != null
+                        && plugin.propertyGuard().ready());
         if (closedReason != null) {
             reply.accept(closedReason);
             return false;
@@ -260,7 +263,7 @@ public final class ItemRepairRuntime {
             reply.accept(ItemRepairCopy.UNAVAILABLE);
             return false;
         }
-        var owner = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
+        var owner = plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
         Property property = owner == null ? null
                 : plugin.propertyService().findByWorldRegion(owner.worldId(), owner.regionId()).orElse(null);
         if (property == null || !property.enabled() || !player.getUniqueId().equals(property.ownerUuid())) {
@@ -322,7 +325,7 @@ public final class ItemRepairRuntime {
         }
         final OwnershipFence.Lease lease;
         try {
-            var fresh = plugin.armAdapter().ownerReadRegion(property.worldUuid(), property.regionId(), player.getUniqueId()).orElseThrow();
+            var fresh = plugin.propertyBackend().ownerReadRegion(property.worldUuid(), property.regionId(), player.getUniqueId()).orElseThrow();
             lease = plugin.ownershipFence().acquire(fresh);
         } catch (RuntimeException busy) {
             reply.accept(ItemRepairCopy.HOME_BUSY);
@@ -360,11 +363,11 @@ public final class ItemRepairRuntime {
             reply.accept(ItemRepairCopy.OFF);
             return;
         }
-        if (!ready() || plugin.armAdapter() == null || plugin.propertyService() == null) {
+        if (!ready() || plugin.propertyBackend() == null || plugin.propertyService() == null) {
             reply.accept(ItemRepairCopy.UNAVAILABLE);
             return;
         }
-        var owner = plugin.armAdapter().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
+        var owner = plugin.propertyBackend().ownerReadAt(player.getLocation(), player.getUniqueId()).orElse(null);
         Property property = owner == null ? null
                 : plugin.propertyService().findByWorldRegion(owner.worldId(), owner.regionId()).orElse(null);
         if (property == null || !property.enabled() || !player.getUniqueId().equals(property.ownerUuid())) {
@@ -373,14 +376,14 @@ public final class ItemRepairRuntime {
         }
         UUID propertyId = property.propertyId();
         submit(() -> {
-            var type = repository.openIncidentType(propertyId, incidentId);
+            var incident = repository.openIncident(propertyId, incidentId);
             post(() -> {
                 if (!present(player)) return;
-                if (type.isEmpty()) {
+                if (incident.isEmpty()) {
                     reply.accept(ItemRepairCopy.NO_SUCH_PROBLEM);
                     return;
                 }
-                Preview shown = preview(incidentId, type.get().name(), type.get().cashRepairCents());
+                Preview shown = preview(incidentId, incident.get().type().name(), incident.get().cashCents());
                 request(player, incidentId, shown, authorized, reply);
             });
         }, () -> {
@@ -399,8 +402,12 @@ public final class ItemRepairRuntime {
         Instant at = Instant.now();
         var repair = repository.currentRepair(f.property.propertyId(), f.player.getUniqueId(), f.property.ownershipEpoch(),
                 f.shown.incidentId(), at, days.dayAt(at), f.quoteDay);
-        if (repair.isEmpty() || repair.get().type() != f.shown.type()) {
+        if (repair.isEmpty()) {
             post(() -> abandonBeforeTake(f, ItemRepairCopy.NO_SUCH_PROBLEM));
+            return;
+        }
+        if (!matchesPreview(repair.get(), f.shown)) {
+            post(() -> abandonBeforeTake(f, ItemRepairCopy.PRICES_CHANGED));
             return;
         }
         var settings = plugin.itemRepairSettings();
@@ -442,6 +449,11 @@ public final class ItemRepairRuntime {
             f.baseline = baseline.get();
             take(f);
         });
+    }
+
+    static boolean matchesPreview(RepairQuote repair, Preview shown) {
+        return repair != null && shown != null && repair.incidentId() == shown.incidentId()
+                && repair.type() == shown.type() && repair.cents() == shown.cashCents();
     }
 
     /** Main, one tick: every check again, then the take and the save. Any failed check cancels with nothing taken. */
@@ -705,7 +717,7 @@ public final class ItemRepairRuntime {
             var current = plugin.propertyService().findByWorldRegion(f.property.worldUuid(), f.property.regionId()).orElse(null);
             if (current == null || !current.equals(f.property) || !current.enabled()
                     || !f.player.getUniqueId().equals(current.ownerUuid())) return false;
-            ArmAdapter.OwnerRead fresh = plugin.armAdapter().ownerReadRegion(f.property.worldUuid(), f.property.regionId(),
+            OwnershipToken fresh = plugin.propertyBackend().ownerReadRegion(f.property.worldUuid(), f.property.regionId(),
                     f.player.getUniqueId()).orElseThrow();
             f.lease.validate(fresh);
             return true;

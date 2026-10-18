@@ -1,5 +1,8 @@
 package com.prosperitysmp.npc.interaction;
 
+import com.prosperitysmp.npc.economy.UtilityBill;
+import com.prosperitysmp.npc.economy.UtilityPrices;
+
 import com.prosperitysmp.npc.formulas.PropertyFormulas;
 import com.prosperitysmp.npc.market.HousingDecisionPlan.HomeRank;
 import com.prosperitysmp.npc.market.HousingDecisionPlan.RankStatus;
@@ -25,6 +28,36 @@ import static org.junit.jupiter.api.Assertions.*;
 class OwnerDeskMenuTest {
     private static final UUID OWNER = new UUID(0, 302), WORLD = new UUID(0, 304);
     private static final LocalDate END = LocalDate.of(2026, 9, 7);
+
+    @Test void configuredPricesAppearInBothOwnerMenusWithoutChangingDefaultLabels() {
+        var view = data(OWNER, WORLD, "fixture", true, 1, List.of());
+        var prices = com.prosperitysmp.npc.economy.PurchasePrices.load(java.util.Map.of(
+                "maintenance-cents", "1750", "upgrades", java.util.Map.of(
+                        "advertising", List.of("13700", "27000", "52000"),
+                        "facilities", List.of("18500", "37000", "72000"))));
+        assertEquals("Maintain condition for $10.00", OwnerDeskMenu.purchaseLabel(view, 28));
+        var buttons = BedrockNpcUi.ownerButtons(view, false, false, prices);
+        for (int slot : List.of(24, 26, 28)) {
+            String label = OwnerDeskMenu.purchaseLabel(view, slot, prices);
+            assertEquals(label, buttons.labels().get(buttons.slots().indexOf(slot)));
+        }
+        assertEquals("Maintain condition for $17.50", OwnerDeskMenu.purchaseLabel(view, 28, prices));
+        assertTrue(OwnerDeskMenu.purchaseLabel(view, 24, prices).endsWith("$185.00"));
+        assertTrue(OwnerDeskMenu.purchaseLabel(view, 26, prices).endsWith("$137.00"));
+        assertEquals(BedrockNpcUi.ownerButtons(view), BedrockNpcUi.ownerButtons(view, false, false,
+                com.prosperitysmp.npc.economy.PurchasePrices.DEFAULT));
+    }
+
+    @Test void evictionConfirmationAndSuggestedCommandUseTheSameConfiguredAmount() {
+        var resident = resident(0);
+        var prices = com.prosperitysmp.npc.economy.PurchasePrices.load(java.util.Map.of("eviction-cents", "2375"));
+        assertEquals("End tenancy: " + resident.name() + " | $23.75", OwnerDeskMenu.evictionLabel(resident, prices));
+        String command = OwnerDeskMenu.evictionCommand(resident, prices);
+        assertEquals("/tenants evict " + resident.id() + " 23.75", command);
+        assertEquals(prices.evictionCents(), com.prosperitysmp.npc.util.Money.parseDollarsToCents(command.substring(command.lastIndexOf(' ') + 1)));
+        assertTrue(BedrockNpcUi.evictionBody(resident, prices).contains("for $23.75?"));
+        assertEquals("End tenancy: " + resident.name() + " | $10.00", OwnerDeskMenu.evictionLabel(resident));
+    }
 
     @Test void zeroBasedDatabaseSlotsDisplayRoomsOneThroughFourWithoutLosingEdges() {
         var first = resident(0);
@@ -61,6 +94,20 @@ class OwnerDeskMenuTest {
         assertEquals(List.of("2026-09-01 to 2026-09-07 | Economy days", "Income received: $3.21",
                 "Expenses paid: $4.00", "Net settled: -$0.79", "Pending: 2 | Needs review: 1",
                 "Your current ownership only."), lines);
+    }
+
+    @Test void configuredBillsAppendOneLineWithoutChangingTheSettledStatement() {
+        var base = data(OWNER, WORLD, "fixture", true, 1, List.of());
+        assertEquals(OwnerDeskMenu.statementLines(base), OwnerDeskMenu.statementAndLinkLines(base));
+        var bills = new OwnerDeskData(base.property(), base.revision(), base.capturedAt(), base.residents(),
+                base.issues(), base.upgrades(), base.statement(), base.insurance(), base.housing(), base.pendingRent(),
+                base.linked(), base.partner(), Optional.of(new OwnerDeskData.Bills(2, 3, 1)));
+        var lines = OwnerDeskMenu.statementAndLinkLines(bills);
+        assertEquals(7, lines.size());
+        assertEquals(OwnerDeskMenu.statementLines(base), lines.subList(0, 6));
+        assertEquals("Bills: 2 paid | 3 unpaid | 1 expired", lines.getLast());
+        assertTrue(BedrockNpcUi.ownerBody(bills).contains(lines.getLast()));
+        assertFalse(BedrockNpcUi.ownerBody(base).contains("Bills:"));
     }
 
     @Test void missingServiceRecordDoesNotInventAnUnratedOrZeroScore() {
@@ -122,6 +169,18 @@ class OwnerDeskMenuTest {
         assertNull(OwnerDeskMenu.evictionTarget(base,30));
     }
 
+    @Test void configuredInsurancePremiumReachesBothMenusFromTheSameDeskSnapshot() {
+        var base = data(OWNER, WORLD, "fixture", true, 2, List.of());
+        var priced = new OwnerDeskData(base.property(), base.revision(), base.capturedAt(), base.residents(), base.issues(),
+                base.upgrades(), base.statement(), new OwnerDeskData.Insurance(1777, null, null, false, true));
+        String label = "Buy seven-day insurance for $17.77";
+        assertEquals(label, OwnerDeskMenu.insuranceLabel(priced));
+        var buttons = BedrockNpcUi.ownerButtons(priced);
+        assertEquals(label, buttons.labels().get(buttons.slots().indexOf(30)));
+        assertTrue(BedrockNpcUi.ownerBody(priced).contains(label));
+        assertTrue(OwnerDeskMenu.insuranceLines(priced).contains("Seven economy days; one new incident prevented."));
+    }
+
     @Test void insuranceRenewalIsVisibleOnLastCoveredDayButNotWhenNextTermIsQueued() {
         var base=data(OWNER,WORLD,"fixture",true,2,List.of());
         var lastDay=new OwnerDeskData(base.property(),base.revision(),base.capturedAt(),base.residents(),base.issues(),
@@ -161,6 +220,43 @@ class OwnerDeskMenuTest {
         assertFalse(OwnerDeskController.matches(ticket, data(OWNER, UUID.randomUUID(), "fixture", true, 1, List.of())));
         assertFalse(OwnerDeskController.matches(ticket, data(OWNER, WORLD, "Fixture", true, 1, List.of())));
         assertFalse(OwnerDeskController.matches(ticket, data(OWNER, WORLD, "fixture", false, 1, List.of())));
+    }
+
+    @Test void currentUtilityRatesSupplyANewBillMaximumForBothMenus() {
+        var view = data(OWNER, WORLD, "fixture", true, 4, List.of(resident(0), resident(1)));
+        var rates = new UtilityPrices(200, 125, 100);
+        assertEquals(450, OwnerDeskMenu.utilityLimit(view, rates));
+        assertEquals("Pay utility up to $4.50", OwnerDeskMenu.utilityLabel(view, rates));
+        var buttons = BedrockNpcUi.ownerButtons(view, false, false,
+                com.prosperitysmp.npc.economy.PurchasePrices.DEFAULT, rates);
+        assertEquals(OwnerDeskMenu.utilityLabel(view, rates), buttons.labels().get(buttons.slots().indexOf(42)));
+    }
+
+    @Test void savedUtilityBillKeepsItsMaximumAfterPricesAndInstalledLevelsChange() {
+        var base = data(OWNER, WORLD, "fixture", true, 4, List.of(resident(0), resident(1)));
+        var view = withUtility(base, OWNER);
+        var changed = new UtilityPrices(5000, 100, 100);
+        assertEquals(750, OwnerDeskMenu.utilityLimit(view, changed));
+        assertEquals("Pay utility up to $7.50", OwnerDeskMenu.utilityLabel(view, changed));
+        var buttons = BedrockNpcUi.ownerButtons(view, false, false,
+                com.prosperitysmp.npc.economy.PurchasePrices.DEFAULT, changed);
+        assertEquals("Pay utility up to $7.50", buttons.labels().get(buttons.slots().indexOf(42)));
+    }
+
+    @Test void billFromEarlierOwnershipIsShownForReview() {
+        var view = withUtility(data(OWNER, WORLD, "fixture", true, 4, List.of()), new UUID(0, 999));
+        assertFalse(view.canPayUtility());
+        assertEquals("Utilities require ownership review", OwnerDeskMenu.utilityLabel(view, UtilityPrices.DEFAULT));
+        var buttons = BedrockNpcUi.ownerButtons(view);
+        assertEquals("Utilities require ownership review", buttons.labels().get(buttons.slots().indexOf(42)));
+    }
+
+    private static OwnerDeskData withUtility(OwnerDeskData base, UUID billOwner) {
+        var bill = new UtilityBill(base.property().propertyId(), billOwner, 3, 2, END, 4, 2, 3,
+                base.capturedAt(), "UTC", 4, new UtilityPrices(200, 125, 100));
+        return new OwnerDeskData(base.property(), base.revision(), base.capturedAt(), base.residents(), base.issues(),
+                base.upgrades(), base.statement(), base.insurance(), base.housing(), base.pendingRent(), base.linked(),
+                base.partner(), base.bills(), java.util.Optional.of(bill));
     }
 
     private static OwnerDeskData.Resident resident(int slot) {

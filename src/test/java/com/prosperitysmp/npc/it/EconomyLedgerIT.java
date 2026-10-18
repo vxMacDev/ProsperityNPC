@@ -73,12 +73,14 @@ class EconomyLedgerIT {
         database.connect(new DatabaseSettings("localhost", cfg.getPort(), "prosperity_npc_ledger",
                 "root", "", 6, 10_000L));
 
-        try (InputStream in = EconomyLedgerIT.class.getResourceAsStream("/db/migration/V1__initial_schema.sql")) {
-            assertNotNull(in, "V1 schema resource");
-            String schema = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            try (Connection c = database.getConnection(); Statement st = c.createStatement()) {
-                for (String sql : MigrationRunner.splitStatements(schema)) {
-                    st.execute(sql);
+        for (String resource : List.of("V1__initial_schema.sql", "V41__charge_catalogue.sql", "V45__property_backend.sql")) {
+            try (InputStream in = EconomyLedgerIT.class.getResourceAsStream("/db/migration/" + resource)) {
+                assertNotNull(in, resource);
+                String schema = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                try (Connection c = database.getConnection(); Statement st = c.createStatement()) {
+                    for (String sql : MigrationRunner.splitStatements(schema)) {
+                        st.execute(sql);
+                    }
                 }
             }
         }
@@ -135,8 +137,13 @@ class EconomyLedgerIT {
         events.finalizePaid(id, 500);
         events.finalizeFailed(id);
         assertEquals(paid, snapshot(id), "terminal acknowledgement must not rewrite the event");
-        assertArrayEquals(new long[]{SEED, source.isPayout() ? 0 : 500, source.isPayout() ? 500 : 0},
+        assertArrayEquals(new long[]{SEED, source.fundsRent() ? 500 : 0, source.isPayout() ? 500 : 0},
                 properties.fundingOf(property));
+        try (Connection c = database.getConnection(); Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT successful_cash_unfunded_cents FROM npc_property_funding")) {
+            assertTrue(rs.next());
+            assertEquals(source == EventSource.BILLS ? 500 : 0, rs.getLong(1));
+        }
         assertEquals(source.isPayout() ? 500 : 0, events.sumPaidToPublicForDay(DAY));
         assertEquals(source.isPayout() ? 500 : 0, events.sumPaidToPublicForProperty(DAY, property));
         assertEquals(source.isPayout() ? 500 : 0, events.sumPaidToPublicForBenefitUnit(DAY, owner));

@@ -1,0 +1,126 @@
+{
+  "vendor": "GriefPrevention",
+  "version": "16.18.7",
+  "vendorSha256": "45e9907c61222e559ed2e099ffee0ede706a21243a31d7db549baf678708fdf0",
+  "coreSha256": "bbc12f563c2428f06c9fdc1069537f9dd9a61f4276ae2d4cb9b9782311bf2f7f",
+  "adapterSha256": "a96df3315cdfaeed755694c44c4894473c75096bf379abe2fd0a45ec493c24ff",
+  "recorderSha256": "eaccdc1b3f964807c89e246be0b77c0cd2a5ac22c0cf4fdff9b31cc2c35a4ffb",
+  "scope": "Actual vendor cancellation, checked staff resize, depth extension and later HIGHEST override through normal core bindings. Resize used the package-private checked method with a real synthetic CraftPlayer, in-memory no-op transport and a private adminclaims permission attachment. No manually constructed vendor events, NPC enrollment, provider money, real client or performance proof. IDs/coordinates normalized.",
+  "transfer": {
+    "laterHighestOverrideBeforeMonitor": true,
+    "cancelledElsewhereLeavesOwnerAndLeaseUnchanged": true
+  },
+  "geometry": {
+    "resizeEvent": "ClaimModifiedEvent",
+    "resizeMaxX": 35,
+    "depthBefore": 70,
+    "depthAfter": 65,
+    "parentEventInvalidatesSubdivisionLease": true
+  },
+  "passed": [
+    "cancelled elsewhere: owner and held lease unchanged",
+    "actual held resize applies and invalidates subdivision lease",
+    "actual held depth extension applies and invalidates subdivision lease",
+    "later HIGHEST overrides veto; actual applied transfer invalidates subdivision lease"
+  ],
+  "events": [
+    {
+      "stage": "cancelled-elsewhere",
+      "priority": "LOWEST",
+      "type": "ClaimTransferEvent",
+      "main": true,
+      "id": 10,
+      "owner": "00000000-0000-0000-0000-0000000105ba",
+      "cancelled": true,
+      "minY": 70,
+      "maxX": 30,
+      "children": [
+        11
+      ]
+    },
+    {
+      "stage": "cancelled-elsewhere",
+      "priority": "MONITOR",
+      "type": "ClaimTransferEvent",
+      "main": true,
+      "id": 10,
+      "owner": "00000000-0000-0000-0000-0000000105ba",
+      "cancelled": true,
+      "minY": 70,
+      "maxX": 30,
+      "children": [
+        11
+      ]
+    },
+    {
+      "stage": "resize-held",
+      "priority": "MONITOR",
+      "type": "ClaimModifiedEvent",
+      "main": true,
+      "id": 10,
+      "owner": "00000000-0000-0000-0000-0000000105ba",
+      "cancelled": false,
+      "minY": 70,
+      "maxX": 30,
+      "children": [
+        11
+      ]
+    },
+    {
+      "stage": "extend-held",
+      "priority": "MONITOR",
+      "type": "ClaimExtendEvent",
+      "main": true,
+      "id": 10,
+      "owner": "00000000-0000-0000-0000-0000000105ba",
+      "cancelled": false,
+      "minY": 70,
+      "maxX": 35,
+      "children": [
+        11
+      ]
+    },
+    {
+      "stage": "highest-override",
+      "priority": "LOWEST",
+      "type": "ClaimTransferEvent",
+      "main": true,
+      "id": 10,
+      "owner": "00000000-0000-0000-0000-0000000105ba",
+      "cancelled": false,
+      "minY": 65,
+      "maxX": 35,
+      "children": [
+        11
+      ]
+    },
+    {
+      "stage": "highest-override",
+      "priority": "LATER_HIGHEST",
+      "type": "ClaimTransferEvent",
+      "main": true,
+      "id": 10,
+      "owner": "00000000-0000-0000-0000-0000000105ba",
+      "cancelled": true,
+      "minY": 65,
+      "maxX": 35,
+      "children": [
+        11
+      ]
+    },
+    {
+      "stage": "highest-override",
+      "priority": "MONITOR",
+      "type": "ClaimTransferEvent",
+      "main": true,
+      "id": 10,
+      "owner": "00000000-0000-0000-0000-0000000105ba",
+      "cancelled": false,
+      "minY": 65,
+      "maxX": 35,
+      "children": [
+        11
+      ]
+    }
+  ]
+}

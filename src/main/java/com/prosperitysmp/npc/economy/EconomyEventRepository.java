@@ -171,8 +171,7 @@ public final class EconomyEventRepository {
                     }
                 }
                 if (propertyBytes != null) {
-                    String col = source.isPayout()
-                            ? "successful_cash_payouts_cents" : "successful_cash_sinks_cents";
+                    String col = FundingColumns.fundingColumn(source);
                     try (PreparedStatement ps = c.prepareStatement(
                             "UPDATE npc_property_funding SET " + col + " = " + col + " + ?, "
                                     + "updated_at=CURRENT_TIMESTAMP(3) WHERE property_id=?")) {

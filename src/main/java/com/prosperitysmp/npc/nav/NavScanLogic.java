@@ -261,7 +261,7 @@ public final class NavScanLogic {
                 stats.plainRays++;
             }
             // Only stepping onto a plain crossing costs extra; walking over it and leaving it do not.
-            int entry = CARDINAL_COST + (crosswalk ? 0 : rules.entryPenalty());
+            int entry = StreetCosts.entry(rules, surfaces);
             long[] ids = new long[ray.cells().size()];
             for (int i = 0; i < ids.length; i++) {
                 int[] cell = ray.cells().get(i);

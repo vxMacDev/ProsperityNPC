@@ -68,7 +68,7 @@ class TenantContinuityIT {
             mariaDb.createDB(schemaName);
             database = new Database();
             database.connect(new DatabaseSettings("localhost", cfg.getPort(), schemaName, "root", "", 6, 10_000L));
-            for (String path : List.of("/db/migration/V1__initial_schema.sql", "/db/migration/V15__tenancy_departures.sql")) {
+            for (String path : List.of("/db/migration/V1__initial_schema.sql", "/db/migration/V15__tenancy_departures.sql", "/db/migration/V45__property_backend.sql")) {
                 try (InputStream in = TenantContinuityIT.class.getResourceAsStream(path)) {
                     assertNotNull(in, path);
                     for (String sql : MigrationRunner.splitStatements(new String(in.readAllBytes(), StandardCharsets.UTF_8))) {

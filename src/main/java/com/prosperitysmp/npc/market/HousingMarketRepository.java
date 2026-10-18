@@ -32,7 +32,7 @@ import java.util.UUID;
 public final class HousingMarketRepository {
     private record PropertyRow(UUID id, UUID owner, UUID world, String region, String market, String kind,
                                int epoch, long revision, int capacity, long reference, long asking,
-                               int condition, boolean enabled) { }
+                               int condition, boolean enabled, String backend) { }
     private record Tenancy(UUID resident, UUID property, Integer slot, long revision,
                            HousingPolicy.Tier tier, LocalDate cooldown) { }
     private record Facilities(UUID property, int installed, int effective) { }
@@ -42,6 +42,8 @@ public final class HousingMarketRepository {
     private final HousingMoveRepository receipts;
 
     private final int evictedSlotLockDays;
+    // The configured property backend (V45). Null: every enabled home can be matched (callers without a backend).
+    private final String backendId;
 
     public HousingMarketRepository(Database database, Clock clock, ZoneId zone, int resetHour) {
         this(database, clock, zone, resetHour, 0);
@@ -49,8 +51,18 @@ public final class HousingMarketRepository {
 
     /** evictedSlotLockDays 0 = off; N hides a paid-eviction slot from matching for N economy days. */
     public HousingMarketRepository(Database database, Clock clock, ZoneId zone, int resetHour, int evictedSlotLockDays) {
+        this(database, clock, zone, resetHour, evictedSlotLockDays, null);
+    }
+
+    /**
+     * As above. With {@code backendId} set, only homes enrolled under that property backend can be matched or be a
+     * premium move's origin; homes enrolled under another backend stay out of every move.
+     */
+    public HousingMarketRepository(Database database, Clock clock, ZoneId zone, int resetHour, int evictedSlotLockDays,
+                                   String backendId) {
         if (evictedSlotLockDays < 0 || evictedSlotLockDays > 30) throw new IllegalArgumentException("Invalid evicted slot lock days");
         this.evictedSlotLockDays = evictedSlotLockDays;
+        this.backendId = backendId;
         this.database = Objects.requireNonNull(database);
         this.clock = Objects.requireNonNull(clock);
         days = new EconomyClock(clock, zone, resetHour);
@@ -105,7 +117,7 @@ public final class HousingMarketRepository {
         Map<UUID, HousingRegistry.Member> memberMap = new HashMap<>();
         for (var m : members) require(memberMap.put(m.residentId(), m) == null, "Duplicate housing member");
         List<PropertyRow> properties = query(c, "SELECT * FROM npc_properties ORDER BY property_id", 512,
-                HousingMarketRepository::property);
+                rs -> property(rs, backendId != null));
         Map<UUID, PropertyRow> propertyMap = new HashMap<>();
         for (var p : properties) require(propertyMap.put(p.id(), p) == null, "Duplicate housing property");
         List<Tenancy> tenancies = query(c, """
@@ -184,7 +196,7 @@ public final class HousingMarketRepository {
         Map<UUID, Integer> partnerPoints = partnerRankCaps.isEmpty() ? Map.of()
                 : PartnershipRepository.rankBonusByOwner(c, day, partnerRankCaps);
         List<Home> homes = new ArrayList<>();
-        for (PropertyRow p : properties) if (p.enabled() && p.owner() != null) {
+        for (PropertyRow p : properties) if (p.enabled() && p.owner() != null && matchable(p)) {
             List<Integer> free = new ArrayList<>();
             var evicted = HousingMoveRepository.evictedSlots(c, days, p.id(), day, evictedSlotLockDays);
             for (int slot = 0; slot < p.capacity(); slot++)
@@ -218,7 +230,7 @@ public final class HousingMarketRepository {
             if (status == Status.OCCUPIED && m.policy().tier() == HousingPolicy.Tier.PREMIUM && prior != null
                     && t.revision() == prior.tenancyRevisionAfter()) {
                 PropertyRow source = propertyMap.get(t.property());
-                if (source.enabled() && source.owner() != null && source.world().equals(m.policy().worldId())
+                if (source.enabled() && source.owner() != null && matchable(source) && source.world().equals(m.policy().worldId())
                         && source.market().equals(m.policy().marketId()) && source.kind().equals(m.policy().classKey()))
                     origin = new HousingMoveRequest.Origin(source.id(), source.owner(), source.epoch(), source.revision(),
                             t.slot(), prior.request().requestId());
@@ -228,7 +240,12 @@ public final class HousingMarketRepository {
         return new HousingMarketSnapshot(day, at, policy, homes, participants, admissions);
     }
 
-    private static PropertyRow property(ResultSet rs) throws SQLException {
+    /** Whether this home was enrolled under the configured backend (always true with no backend set). */
+    private boolean matchable(PropertyRow p) {
+        return backendId == null || backendId.equals(p.backend());
+    }
+
+    private static PropertyRow property(ResultSet rs, boolean withBackend) throws SQLException {
         UUID id = uuid(rs, "property_id"), world = uuid(rs, "world_uuid");
         byte[] ownerBytes = rs.getBytes("owner_uuid");
         UUID owner = ownerBytes == null ? null : Uuids.fromBytes(ownerBytes);
@@ -243,7 +260,7 @@ public final class HousingMarketRepository {
                 && reference > 0 && reference <= Integer.MAX_VALUE && asking > 0 && asking <= Integer.MAX_VALUE
                 && enabled >= 0 && enabled <= 1, "Invalid housing snapshot property");
         return new PropertyRow(id, owner, world, region, market, kind, epoch, revision, capacity, reference, asking, condition,
-                enabled == 1);
+                enabled == 1, withBackend ? rs.getString("backend_id") : null);
     }
     private static Tenancy tenancy(ResultSet rs) throws SQLException {
         UUID id = uuid(rs, "tenant_id");

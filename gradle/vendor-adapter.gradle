@@ -1,0 +1,79 @@
+// Shared build for vendor adapters (in this tree, only GriefPrevention). Built only with -Padapters
+// (settings.gradle). Apply after setting, in the adapter's build.gradle:
+//   ext.vendorApis = [...]        compileOnly coordinates, each non-transitive
+//   ext.vendorRepository = {...}  adds the vendor repository, wrapped in exclusiveContent for its group
+//   ext.pinnedVendorApis = [...]  file name -> sha256, recorded from two independent downloads
+//   ext.sourceOnly = true         never package a jar (closed-source vendor API or unofficial repository)
+//
+// Source layout: src/main holds the adapter logic and the thin view interface, with no vendor classes, so its
+// contract tests run with no vendor jar at all. src/vendor holds the Real*View and the plugin class, the only code
+// that touches vendor classes. The jar carries both.
+
+apply from: rootProject.file('gradle/adapter.gradle')
+
+def sourceOnly = project.findProperty('sourceOnly') == true || (project.ext.has('sourceOnly') && project.ext.sourceOnly)
+// A source-only adapter's vendor code is compiled only on request, never for a release.
+def compileVendor = !sourceOnly || rootProject.hasProperty('compileSourceOnly')
+
+configurations {
+    vendorApi
+}
+
+sourceSets {
+    vendor {
+        java.srcDir 'src/vendor/java'
+        compileClasspath += sourceSets.main.output + configurations.compileClasspath + configurations.vendorApi
+    }
+}
+
+if (compileVendor) {
+    vendorRepository()
+    dependencies {
+        vendorApis.each { coordinate -> vendorApi(coordinate) { transitive = false } }
+    }
+}
+
+dependencies {
+    testImplementation project(':api')
+    testImplementation testFixtures(project(':api'))
+    testImplementation 'io.papermc.paper:paper-api:26.1.2.build.74-stable'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+// Every resolved vendor API jar must match its pinned sha256; an unpinned one fails the build.
+// -PprintVendorPins prints each jar's sha256 and then fails, so it can never stand in for the check: nothing is
+// compiled or packaged on that run.
+tasks.register('verifyPinnedVendorApis') {
+    onlyIf { compileVendor }
+    doLast {
+        def pins = project.ext.has('pinnedVendorApis') ? pinnedVendorApis : [:]
+        def printOnly = project.hasProperty('printVendorPins')
+        def printed = 0
+        configurations.vendorApi.resolvedConfiguration.resolvedArtifacts.each { artifact ->
+            def name = artifact.file.name
+            def actual = java.security.MessageDigest.getInstance('SHA-256').digest(artifact.file.bytes).encodeHex().toString()
+            if (printOnly) { logger.lifecycle("pin ${name} ${actual}"); printed++ }
+            else if (!pins.containsKey(name)) throw new GradleException("Vendor API ${name} is not pinned (sha256 ${actual})")
+            else if (pins[name] != actual) throw new GradleException("Pinned vendor API checksum mismatch: ${name}")
+        }
+        if (printOnly) throw new GradleException("Printed ${printed} vendor API pin(s) and stopped. Record each pin from "
+                + "two independent downloads, then build without -PprintVendorPins.")
+    }
+}
+
+tasks.named('compileVendorJava') {
+    onlyIf { compileVendor }
+    dependsOn tasks.named('verifyPinnedVendorApis')
+}
+
+tasks.named('jar') {
+    from sourceSets.vendor.output
+    if (sourceOnly) enabled = false
+}
+tasks.named('verifyAdapterJar') {
+    if (sourceOnly) enabled = false
+}

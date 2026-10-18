@@ -40,7 +40,8 @@ final class IncidentRepair {
     private record Property(int capacity, int condition, long revision) { }
     private record Incident(long id, UUID property, IncidentType type, long cents, String items,
                             int damage, UpgradeType affected, LocalDate day, LocalDateTime created,
-                            LocalDateTime due, LocalDateTime resolved, UUID resolver, boolean prevented) { }
+                            LocalDateTime due, LocalDateTime resolved, UUID resolver, boolean prevented,
+                            Long configuredPriceCents) { }
     private record Resident(UUID id, int slot, long revision) { }
     // V1 upgrades have no revision column; bind every stored identity/term instead.
     private record Upgrade(long id, UpgradeType type, int level, long cost,
@@ -115,7 +116,7 @@ final class IncidentRepair {
                 && receipt.state() == PurchaseRepository.State.WAITING, "REPAIR_RECEIPT_INVALID");
         PurchaseRequest q = receipt.request();
         requireRequest(q);
-        require(receipt.quotedCents() == q.repair().type().cashRepairCents(), "QUOTE_PRICE_MISMATCH");
+        require(receipt.quotedCents() == q.repair().cents(), "QUOTE_PRICE_MISMATCH");
         Snapshot current = snapshot(c, q.propertyId(), q.repair().incidentId());
         require(q.repair().equals(current.quote()), "REPAIR_TARGET_CHANGED");
         Incident incident = current.incident();
@@ -144,7 +145,7 @@ final class IncidentRepair {
      */
     static void applyItems(Connection c, ItemRepairQuote q, Instant at, LocalDate completionDay) throws SQLException {
         requireTransaction(c);
-        require(q != null && q.cashCents() == q.repair().type().cashRepairCents(), "REPAIR_QUOTE_INVALID");
+        require(q != null && q.cashCents() == q.repair().cents(), "REPAIR_QUOTE_INVALID");
         Snapshot current = snapshot(c, q.propertyId(), q.repair().incidentId());
         require(q.repair().equals(current.quote()), "REPAIR_TARGET_CHANGED");
         Incident incident = current.incident();
@@ -206,7 +207,8 @@ final class IncidentRepair {
         // Do not inner-join away tenants whose persistent identity is missing. Lock each
         // existing profile separately in Java UUID order before any memory can be appended.
         for (Resident resident : residents) lockProfile(c, resident.id());
-        RepairQuote quote = new RepairQuote(incidentId, incident.type(), hash(property, incident, residents, upgrades));
+        RepairQuote quote = new RepairQuote(incidentId, incident.type(), hash(property, incident, residents, upgrades),
+                incident.configuredPriceCents());
         return new Snapshot(property, incident, residents, upgrades, quote);
     }
 
@@ -228,9 +230,7 @@ final class IncidentRepair {
 
     private static Incident incident(Connection c, UUID propertyId, long incidentId) throws SQLException {
         try (PreparedStatement ps = prepare(c, """
-                SELECT incident_id,property_id,incident_type,cash_repair_cents,item_repair_spec,
-                       condition_damage,affected_upgrade_type,economy_day,created_at,due_at,
-                       resolved_at,resolver_uuid,prevented,
+                SELECT *,
                        CAST(created_at AS CHAR) AS created_at_text,
                        CAST(due_at AS CHAR) AS due_at_text,
                        CAST(resolved_at AS CHAR) AS resolved_at_text FROM npc_incidents
@@ -246,10 +246,14 @@ final class IncidentRepair {
                     enumeration(rs.getString("affected_upgrade_type"), UpgradeType.class, true, problem),
                     day(rs.getString("economy_day"), problem), timestamp(rs, "created_at", false, problem),
                     timestamp(rs, "due_at", false, problem), timestamp(rs, "resolved_at", true, problem),
-                    uuid(rs, "resolver_uuid", true, problem), number(rs, "prevented", 0, 1, problem) == 1);
+                    uuid(rs, "resolver_uuid", true, problem), number(rs, "prevented", 0, 1, problem) == 1,
+                    configuredPrice(rs));
             require(!next(c, ps, rs), problem);
+            Long price = value.configuredPriceCents();
+            require(price == null ? value.cents() == value.type().cashRepairCents()
+                    : price > 0 && price <= ItemRepairRecipes.MAX_CASH_CENTS
+                        && price != value.type().cashRepairCents() && value.cents() == price, problem);
             require(value.id() == incidentId && propertyId.equals(value.property())
-                    && value.cents() == value.type().cashRepairCents()
                     && value.type().itemRepairSpec().equals(value.items())
                     && value.damage() == (value.prevented() ? 0 : value.type().conditionDamage())
                     && !value.due().isBefore(value.created())
@@ -306,7 +310,7 @@ final class IncidentRepair {
                 Upgrade value = new Upgrade(number(rs, "id", 1, Long.MAX_VALUE, problem),
                         enumeration(rs.getString("upgrade_type"), UpgradeType.class, false, problem),
                         (int) number(rs, "level", 0, UpgradeType.MAX_LEVEL, problem),
-                        number(rs, "purchase_cost_cents", 0, Integer.MAX_VALUE, problem),
+                        number(rs, "purchase_cost_cents", 0, Long.MAX_VALUE, problem),
                         timestamp(rs, "installed_at", true, problem),
                         number(rs, "disabled_incident_id", 1, Long.MAX_VALUE, problem));
                 require(propertyId.equals(uuid(rs, "property_id", false, problem))
@@ -386,7 +390,18 @@ final class IncidentRepair {
         day(q.day().toString(), "REPAIR_QUOTE_INVALID");
         require(q.repair().incidentId() > 0 && q.repair().type() != null
                 && q.repair().snapshotSha256() != null && q.repair().snapshotSha256().matches("[a-f0-9]{64}")
-                && q.cents() == q.repair().type().cashRepairCents(), "REPAIR_QUOTE_INVALID");
+                && q.cents() == q.repair().cents(), "REPAIR_QUOTE_INVALID");
+    }
+
+    private static Long configuredPrice(ResultSet rs) throws SQLException {
+        var columns = rs.getMetaData();
+        for (int i = 1; i <= columns.getColumnCount(); i++) {
+            if (!"configured_repair_cents".equals(columns.getColumnLabel(i))) continue;
+            BigDecimal raw = rs.getBigDecimal(i);
+            try { return raw == null ? null : raw.longValueExact(); }
+            catch (ArithmeticException invalid) { throw new TargetFailure("INCIDENT_INVALID", invalid); }
+        }
+        return null;
     }
 
     private static long number(ResultSet rs, String column, long minimum, long maximum, String problem)

@@ -2,6 +2,7 @@ package com.prosperitysmp.npc.economy;
 
 import com.prosperitysmp.npc.db.Database;
 import com.prosperitysmp.npc.db.DatabaseSettings;
+import com.prosperitysmp.npc.db.Uuids;
 import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -9,6 +10,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.ZoneId;
 import java.util.EnumMap;
@@ -29,7 +31,7 @@ import java.util.logging.Logger;
  * resolution_id, operator.
  * --record-completed-refund also needs refund_completed=true, refund_before_bits, refund_after_bits, reserve_before,
  * reserve_after, intent_sha256 and observation_sha256; the last two hash the adjacent root-owned refund-intent.json
- * and refund-observed.json. When a player paid (purchases, utility) the reserve was never credited, so reserve_before
+ * and refund-observed.json. When a player paid (purchases or bills) the reserve was never credited, so reserve_before
  * and reserve_after must be equal. When the reserve paid (rent, appreciation) the refund restores the reserve, so
  * reserve_before and reserve_after are the refund's own before and after balances, and owner_before and owner_after
  * (equal) show the owner was never credited. {@link RefundEvidence} also checks refund-observed.json and the payer's
@@ -136,6 +138,7 @@ public final class RefundRecoveryTool {
                 System.out.println("Provenance: row written by reviewed build " + build + ".");
             }
             String completedOutcome = refund && domain.equals("purchase") ? "PAYMENT_COMPENSATED" : "PAYMENT_DECLINED";
+            if (domain.equals("bill")) checkBillReceipt(db, reserve, handle.eventId(), attempt.payer());
             if (domain.equals("purchase") || domain.equals("utility")) {
                 String receiptTable = domain.equals("purchase") ? "npc_purchase_intents" : "npc_utility_payments";
                 try (var c = db.getConnection(); var query = c.prepareStatement(
@@ -179,6 +182,7 @@ public final class RefundRecoveryTool {
                         throw new IllegalStateException("Utility completion not verified; resolution retained");
                     outcome = receipt.outcome();
                 }
+                case "bill" -> outcome = completeBillReceipt(db, reserve, handle.eventId());
                 default -> {
                     // Rent and appreciation have no domain receipt: the declined proof itself releases the reservation.
                     if (!declinedProved(db, journal, handle.eventId()))
@@ -224,22 +228,68 @@ public final class RefundRecoveryTool {
         }
     }
 
-    /** Exactly one domain owns the event: a purchase, a utility bill, a rent payout or an appreciation payout. */
-    private static String domain(Database db, long eventId) throws Exception {
-        try (var c = db.getConnection(); var query = c.prepareStatement("""
+    /** Exactly one domain owns the event. Older schemas have no configured bills table. */
+    static String domain(Database db, long eventId) throws Exception {
+        try (var c = db.getConnection()) {
+            boolean bills = billReceiptsPresent(c);
+            try (var query = c.prepareStatement("""
                 SELECT (SELECT COUNT(*) FROM npc_purchase_intents WHERE event_id=?),
                        (SELECT COUNT(*) FROM npc_utility_payments WHERE event_id=?),
                        (SELECT COUNT(*) FROM npc_rent_reservations WHERE event_id=?),
-                       (SELECT COUNT(*) FROM npc_appreciation_reservations WHERE event_id=?)
-                """)) {
-            query.setQueryTimeout(5);
-            for (int i = 1; i <= 4; i++) query.setLong(i, eventId);
-            try (var row = query.executeQuery()) {
-                if (!row.next() || row.getInt(1) + row.getInt(2) + row.getInt(3) + row.getInt(4) != 1)
-                    throw new IllegalStateException("Requires exactly one purchase, utility, rent or appreciation receipt");
-                return row.getInt(1) == 1 ? "purchase" : row.getInt(2) == 1 ? "utility" : row.getInt(3) == 1 ? "rent" : "appreciation";
+                       (SELECT COUNT(*) FROM npc_appreciation_reservations WHERE event_id=?),
+                """ + (bills ? "(SELECT COUNT(*) FROM npc_charge_payments WHERE event_id=?)" : "0"))) {
+                query.setQueryTimeout(5);
+                for (int i = 1; i <= (bills ? 5 : 4); i++) query.setLong(i, eventId);
+                try (var row = query.executeQuery()) {
+                    if (!row.next() || row.getInt(1) + row.getInt(2) + row.getInt(3) + row.getInt(4) + row.getInt(5) != 1)
+                        throw new IllegalStateException("Requires exactly one purchase, utility, bill, rent or appreciation receipt");
+                    if (row.getInt(1) == 1) return "purchase";
+                    if (row.getInt(2) == 1) return "utility";
+                    if (row.getInt(3) == 1) return "rent";
+                    return row.getInt(4) == 1 ? "appreciation" : "bill";
+                }
             }
         }
+    }
+
+    private static boolean billReceiptsPresent(Connection c) throws SQLException {
+        try (var query = c.prepareStatement("""
+                SELECT 1 FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='npc_charge_payments'
+                """)) {
+            query.setQueryTimeout(5);
+            try (var row = query.executeQuery()) { return row.next(); }
+        }
+    }
+
+    static void checkBillReceipt(Database db, UUID reserve, long eventId, UUID payer) throws SQLException {
+        UUID request;
+        try (var c = db.getConnection(); var query = c.prepareStatement(
+                "SELECT request_id FROM npc_charge_payments WHERE event_id=?")) {
+            query.setQueryTimeout(5);
+            query.setLong(1, eventId);
+            try (var row = query.executeQuery()) {
+                if (!row.next()) throw new IllegalStateException("Bill receipt missing; nothing recorded");
+                request = Uuids.fromBytes(row.getBytes(1));
+            }
+        }
+        var receipt = BillPayments.findByRequest(db, request, payer)
+                .orElseThrow(() -> new IllegalStateException("Bill receipt does not match the payer; nothing recorded"));
+        boolean reviewed = receipt.state() == BillPayments.State.REVIEW_REQUIRED
+                && "TRANSFER_UNCERTAIN".equals(receipt.outcome());
+        if (receipt.eventId() != eventId || (receipt.state() != BillPayments.State.WAITING
+                && receipt.state() != BillPayments.State.DECLINED && !reviewed))
+            throw new IllegalStateException("Bill receipt requires manual review; nothing recorded");
+        if (!new BillPayments(db, reserve, Clock.systemUTC()).history(receipt.invoiceId()).contains(receipt))
+            throw new IllegalStateException("Bill receipt history changed; nothing recorded");
+    }
+
+    static String completeBillReceipt(Database db, UUID reserve, long eventId) throws SQLException {
+        var receipt = new BillPayments(db, reserve, Clock.systemUTC()).reconcile(eventId)
+                .orElseThrow(() -> new IllegalStateException("Bill receipt missing; resolution retained"));
+        if (receipt.state() != BillPayments.State.DECLINED)
+            throw new IllegalStateException("Bill completion not verified; resolution retained");
+        return receipt.outcome();
     }
 
     /** A fresh transaction proves the event declined or refunded, which is what releases a payout reservation. */

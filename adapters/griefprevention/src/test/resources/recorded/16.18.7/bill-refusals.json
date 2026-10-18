@@ -1,0 +1,106 @@
+{
+  "vendor": "GriefPrevention",
+  "version": "16.18.7",
+  "vendorSha256": "45e9907c61222e559ed2e099ffee0ede706a21243a31d7db549baf678708fdf0",
+  "paper": "26.1.2 build74",
+  "coreSha256": "bbc12f563c2428f06c9fdc1069537f9dd9a61f4276ae2d4cb9b9782311bf2f7f",
+  "adapterSha256": "a96df3315cdfaeed755694c44c4894473c75096bf379abe2fd0a45ec493c24ff",
+  "recorderSha256": "ac0058b948fcb85b1c3194391732671c94590b14ce4714b3502f56f8d57a70a9",
+  "moneyProvider": "Essentials 2.22.0 through Vault",
+  "moneyProviderSha256": "bda4685105977fca2e209820a9f0ad24275bd103390a03236f38e59bfdac58e6",
+  "scope": "Actual public CLI maximum/funds refusal and normal UI permission loss/retry with real GP, Vault/Essentials and internal accounting. Synthetic CraftPlayer/no-op transport/manual inventory events, dated policy-history fixture and normal internal owner-away stage (local vacation-days0). Initial CLI cooldown mistake preserved; resume retained the same unpaid fixture and respected cooldowns. Owner balance was explicitly emptied/refilled through the provider as fixture setup, not NPC movement. No provider replacement/runtime/cache/guard/readiness/clock override; not real clients, provider implementation failure, restart/shutdown, scheduled populated cycle, vendor package or performance acceptance.",
+  "maximumRefusal": {
+    "command": "property bills pay <bill> 0.99",
+    "invoiceCents": 100,
+    "maximumCents": 99,
+    "balancesBeforeAndAfterCents": {
+      "payer": 1000,
+      "reserve": 1000
+    },
+    "paymentRows": 0,
+    "eventRows": 0,
+    "invoiceState": "ISSUED"
+  },
+  "insufficientFunds": {
+    "command": "property bills pay <bill> 1.00",
+    "invoiceCents": 100,
+    "balancesBeforeAndAfterCents": {
+      "payer": 0,
+      "reserve": 1000
+    },
+    "paymentRows": 0,
+    "eventRows": 0,
+    "invoiceState": "ISSUED"
+  },
+  "permissionLoss": {
+    "observedInvoiceQueryWaiting": true,
+    "leaseHeld": true,
+    "usePermissionAfterChange": false,
+    "balancesBeforeAndAfterCents": {
+      "payer": 1000,
+      "reserve": 1000
+    },
+    "paymentState": "DECLINED",
+    "eventState": "FAILED",
+    "paidCents": 0,
+    "invoiceState": "ISSUED",
+    "receiptValidated": true,
+    "attemptOutcome": "DEBIT_REFUSED_BEFORE_CALL",
+    "creditIntentRecorded": false,
+    "debitObservation": {
+      "responsePresent": false,
+      "beforeBalanceObserved": false,
+      "afterBalanceObserved": false,
+      "threwBeforeCall": true
+    }
+  },
+  "freshConfirmation": {
+    "label": "Pay bill up to $1.00",
+    "permissionRestored": true,
+    "priorReceiptStates": [
+      "DECLINED"
+    ],
+    "invoiceCents": 100
+  },
+  "paidRetry": {
+    "orderedReceiptStates": [
+      "DECLINED",
+      "PAID"
+    ],
+    "allReceiptsValidated": true,
+    "balancesAfterCents": {
+      "payer": 900,
+      "reserve": 1100
+    },
+    "invoiceState": "PAID",
+    "paymentState": "PAID",
+    "eventRows": 2,
+    "attemptRows": 2,
+    "observationRows": 3,
+    "staleConfirmationCountsUnchanged": true
+  },
+  "fundingAfterDecline": {
+    "payouts": 0,
+    "unfunded": 0,
+    "sinks": 0,
+    "seed": 5000
+  },
+  "fundingAfterPayment": {
+    "payouts": 0,
+    "unfunded": 100,
+    "sinks": 0,
+    "seed": 5000
+  },
+  "accounting": {
+    "source": "npc-property-bills",
+    "xfer-from-public": 100,
+    "xfer-to-public": 0
+  },
+  "fixtureFunds": "Two new accounts seeded1000c each; owner1000c withdrawn/refilled to test insufficient funds; final900c/1100c drained after proof.",
+  "limitations": [
+    "No real client or native Bedrock form",
+    "No provider implementation failure or provider/server restart/shutdown",
+    "No complete scheduled populated daily-cycle or real next-day policy activation",
+    "No real RealEstate add-on, vendor pin/package or performance acceptance"
+  ]
+}

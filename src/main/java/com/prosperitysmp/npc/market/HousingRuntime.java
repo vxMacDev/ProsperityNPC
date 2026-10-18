@@ -48,7 +48,10 @@ public final class HousingRuntime implements AutoCloseable {
         int reset = plugin.getConfig().getInt("clock.daily-reset-hour", 4);
         days = new EconomyClock(clock, zone, reset);
         int lockDays = Math.max(0, Math.min(30, plugin.getConfig().getInt("housing.evicted-slot-lock-days", 0)));
-        decisions = new HousingDecisionRepository(plugin.database(), clock, zone, reset, lockDays);
+        // Homes enrolled under another property backend are never matched (V45).
+        String backend = plugin.propertyRepository() == null ? com.prosperitysmp.npc.arm.ArmAdapter.ID
+                : plugin.propertyRepository().backendId();
+        decisions = new HousingDecisionRepository(plugin.database(), clock, zone, reset, lockDays, backend);
         premiumEnabled = Boolean.TRUE.equals(plugin.getConfig().get("housing.premium-enabled"));
         coordinator = new HousingCoordinator(new HousingMoveRepository(plugin.database(), clock, zone, reset, premiumEnabled, lockDays));
         worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1), r -> {
@@ -64,7 +67,7 @@ public final class HousingRuntime implements AutoCloseable {
     }
 
     private boolean ready(BooleanSupplier authorized) {
-        return !closed && plugin.isEnabled() && plugin.ownershipFence() != null
+        return !closed && plugin.isEnabled() && plugin.ownershipFence() != null && plugin.propertyGuard().ready()
                 && plugin.killSwitches().isSystemEnabled() && plugin.killSwitches().isMovesEnabled()
                 && authorized.getAsBoolean();
     }
@@ -238,7 +241,7 @@ public final class HousingRuntime implements AutoCloseable {
     /** Each incident decision commits once per property/day under the captured ownership lease. */
     public boolean requestIncidents(BooleanSupplier authorized, Consumer<String> reply) {
         if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Main thread required");
-        if (closed || busy || !plugin.isEnabled() || plugin.ownershipFence() == null
+        if (closed || busy || !plugin.isEnabled() || plugin.ownershipFence() == null || !plugin.propertyGuard().ready()
                 || !plugin.killSwitches().isSystemEnabled() || !plugin.killSwitches().isIncidentsEnabled()
                 || !authorized.getAsBoolean()) return false;
         long seed = plugin.getConfig().getLong("state.sim-seed", 0);
@@ -252,13 +255,13 @@ public final class HousingRuntime implements AutoCloseable {
         var rolls = new IncidentRollRepository(database,
                 new SimulationLogic(new DailyRoll(seed)), Clock.systemUTC(),
                 ZoneId.of(plugin.getConfig().getString("clock.timezone", "America/Chicago")),
-                plugin.getConfig().getInt("clock.daily-reset-hour", 4));
+                plugin.getConfig().getInt("clock.daily-reset-hour", 4), plugin.repairPrices());
         var leases = new ArrayList<OwnershipFence.Lease>();
         LocalDate day = days.today();
         var service = plugin.propertyService();
         try {
             for (var p : properties) {
-                var owner = plugin.armAdapter().ownerReadRegion(p.worldUuid(), p.regionId(), p.ownerUuid()).orElseThrow();
+                var owner = plugin.propertyBackend().ownerReadRegion(p.worldUuid(), p.regionId(), p.ownerUuid()).orElseThrow();
                 var lease = plugin.ownershipFence().acquire(owner);
                 leases.add(lease);
                 lease.validate(owner);
@@ -385,7 +388,7 @@ public final class HousingRuntime implements AutoCloseable {
         for (var p : properties) {
             OwnershipFence.Lease lease = null;
             try {
-                var owner = plugin.armAdapter().ownerReadRegion(p.worldUuid(), p.regionId(), p.ownerUuid()).orElse(null);
+                var owner = plugin.propertyBackend().ownerReadRegion(p.worldUuid(), p.regionId(), p.ownerUuid()).orElse(null);
                 if (owner == null) continue;
                 lease = plugin.ownershipFence().acquire(owner);
                 lease.validate(owner);
@@ -498,7 +501,7 @@ public final class HousingRuntime implements AutoCloseable {
             }
             for (var home : plan.snapshot().homes()) {
                 if (!targets.remove(home.propertyId())) continue;
-                var owner = plugin.armAdapter().ownerReadRegion(home.worldId(), home.regionId(), home.ownerId())
+                var owner = plugin.propertyBackend().ownerReadRegion(home.worldId(), home.regionId(), home.ownerId())
                         .orElseThrow(() -> new IllegalStateException("Owner unavailable"));
                 var lease = plugin.ownershipFence().acquire(owner);
                 leases.add(lease);

@@ -85,20 +85,25 @@ public final class IncidentServiceRepository {
         int epoch = (int) number(rs, "roll_epoch", 0, Integer.MAX_VALUE);
         require(owner.equals(uuid(rs, "roll_owner", false)), "Service origin owner mismatch");
         IncidentType type = IncidentType.valueOf(rs.getString("roll_type"));
+        Long price = configuredPrice(rs, "configured_repair_cents");
+        long accepted;
+        try { accepted = RepairQuote.storedCents(type, number(rs, "cash_repair_cents", 1, Long.MAX_VALUE), price); }
+        catch (IllegalArgumentException invalid) {
+            throw new SQLException("Incident disagrees with recorded service obligation", invalid);
+        }
         int before = (int) number(rs, "condition_before", 0, 100);
         int after = (int) number(rs, "condition_after", 0, 100);
         require(after == Math.max(0, before - type.conditionDamage()), "Service origin damage mismatch");
         Instant created = time(rs, "roll_at", false), due = created.plus(Duration.ofDays(1));
         LocalDate rollDay = day(rs.getString("roll_day"));
-        require(incident == number(rs, "incident_id", 1, Long.MAX_VALUE)
+        require(incident == number(rs, "stored_incident_id", 1, Long.MAX_VALUE)
                 && property.equals(uuid(rs, "incident_property", false))
                 && property.equals(uuid(rs, "current_property", false))
-                && type.name().equals(rs.getString("incident_type"))
-                && type.cashRepairCents() == number(rs, "cash_repair_cents", 1, Long.MAX_VALUE)
+                && type.name().equals(rs.getString("stored_incident_type"))
                 && type.conditionDamage() == number(rs, "condition_damage", 0, 100)
                 && type.itemRepairSpec().equals(rs.getString("item_repair_spec"))
                 && rollDay.equals(day(rs.getString("incident_day")))
-                && created.equals(time(rs, "created_at", false))
+                && created.equals(time(rs, "incident_created", false))
                 && due.equals(time(rs, "due_at", false))
                 && number(rs, "prevented", 0, 1) == 0,
                 "Incident disagrees with recorded service obligation");
@@ -112,7 +117,8 @@ public final class IncidentServiceRepository {
 
         boolean cash = rs.getObject("service_event") != null, items = rs.getBytes("item_collection") != null;
         require(!(cash && items), "Both cash and item service facts for one incident");
-        if (items) return itemCase(rs, owner, property, incident, epoch, currentEpoch, type, created, due, resolved, resolver);
+        if (items) return itemCase(rs, owner, property, incident, epoch, currentEpoch, type, accepted, price,
+                created, due, resolved, resolver);
         if (!cash) {
             Outcome outcome = resolved != null ? Outcome.UNVERIFIED_RESOLUTION
                     : owner.equals(currentOwner) && epoch == currentEpoch ? Outcome.OVERDUE : Outcome.HANDOVER_REVIEW;
@@ -125,7 +131,7 @@ public final class IncidentServiceRepository {
         require(resolved != null && payer.equals(resolver)
                 && property.equals(uuid(rs, "service_property", false))
                 && type.name().equals(rs.getString("service_type"))
-                && type.cashRepairCents() == number(rs, "service_cash", 1, Long.MAX_VALUE)
+                && accepted == number(rs, "service_cash", 1, Long.MAX_VALUE)
                 && created.equals(time(rs, "service_created", false))
                 && due.equals(time(rs, "service_due", false))
                 && resolved.equals(time(rs, "service_repaired", false)), "Service completion fact mismatch");
@@ -133,7 +139,8 @@ public final class IncidentServiceRepository {
         // This fact is written only inside the proof-checked benefit transaction.
         // Still bind its purchase and ledger identities; PAID/resolved labels alone
         // never create a service fact or backfill historical successful repairs.
-        RepairQuote repair = new RepairQuote(incident, type, rs.getString("service_hash"));
+        require(Objects.equals(price, configuredPrice(rs, "configured_price_cents")), "Service purchase price marker mismatch");
+        RepairQuote repair = new RepairQuote(incident, type, rs.getString("service_hash"), price);
         var q = new PurchaseRequest(uuid(rs, "purchase_request", false), property, payer, repairEpoch,
                 PurchaseRequest.Kind.REPAIR, null, null, null, day(rs.getString("purchase_day")), repair);
         require(event == number(rs, "purchase_event", 1, Long.MAX_VALUE)
@@ -173,7 +180,8 @@ public final class IncidentServiceRepository {
      * receipt can never raise a rating. Item repairs add no rent funding; this is service history only.
      */
     private static Case itemCase(ResultSet rs, UUID owner, UUID property, long incident, int epoch, int currentEpoch,
-                                 IncidentType type, Instant created, Instant due, Instant resolved, UUID resolver)
+                                 IncidentType type, long accepted, Long price,
+                                 Instant created, Instant due, Instant resolved, UUID resolver)
             throws SQLException {
         UUID collection = uuid(rs, "item_collection", false);
         UUID payer = uuid(rs, "item_payer", false);
@@ -184,7 +192,7 @@ public final class IncidentServiceRepository {
         require(resolved != null && payer.equals(resolver)
                 && property.equals(uuid(rs, "item_property", false))
                 && type.name().equals(rs.getString("item_type"))
-                && type.cashRepairCents() == cash && value >= cash
+                && accepted == cash && value >= cash
                 && created.equals(time(rs, "item_created", false))
                 && due.equals(time(rs, "item_due", false))
                 && resolved.equals(time(rs, "item_repaired", false)), "Item repair completion fact mismatch");
@@ -197,6 +205,7 @@ public final class IncidentServiceRepository {
                 && repairEpoch == number(rs, "col_epoch", 0, Integer.MAX_VALUE)
                 && type.name().equals(rs.getString("col_type"))
                 && cash == number(rs, "col_cash", 1, Long.MAX_VALUE)
+                && Objects.equals(price, configuredPrice(rs, "configured_item_repair_cents"))
                 && value == number(rs, "col_value", 1, Long.MAX_VALUE)
                 && hash != null && hash.matches("[a-f0-9]{64}") && hash.equals(rs.getString("col_hash")),
                 "Item repair hand-in binding mismatch");
@@ -205,13 +214,13 @@ public final class IncidentServiceRepository {
         return new Case(incident, property, epoch, created, due, resolved, null, collection, outcome);
     }
 
+    // Older schemas may not have the price columns.
     private static final String QUERY = """
-            SELECT r.property_id AS roll_property,r.owner_uuid AS roll_owner,r.ownership_epoch AS roll_epoch,
+            SELECT i.*,q.*,k.*,r.property_id AS roll_property,r.owner_uuid AS roll_owner,r.ownership_epoch AS roll_epoch,
               r.incident_id AS roll_incident,r.incident_type AS roll_type,r.economy_day AS roll_day,
               r.recorded_at AS roll_at,r.condition_before,r.condition_after,
-              i.incident_id,i.property_id AS incident_property,i.incident_type,i.cash_repair_cents,
-              i.condition_damage,i.item_repair_spec,i.economy_day AS incident_day,i.created_at,i.due_at,
-              i.resolved_at,i.resolver_uuid,i.prevented,
+              i.property_id AS incident_property,i.economy_day AS incident_day,
+              i.incident_id AS stored_incident_id,i.incident_type AS stored_incident_type,i.created_at AS incident_created,
               p.property_id AS current_property,p.owner_uuid AS current_owner,p.ownership_epoch AS current_epoch,
               s.event_id AS service_event,s.property_id AS service_property,s.payer_uuid AS service_payer,
               s.ownership_epoch AS service_epoch,s.incident_type AS service_type,s.cash_cents AS service_cash,
@@ -279,6 +288,16 @@ public final class IncidentServiceRepository {
         long value = rs.getLong(column);
         require(!rs.wasNull() && value >= min && value <= max, "Invalid service number: " + column);
         return value;
+    }
+    private static Long configuredPrice(ResultSet rs, String column) throws SQLException {
+        var columns = rs.getMetaData();
+        for (int i = 1; i <= columns.getColumnCount(); i++) {
+            if (!column.equals(columns.getColumnLabel(i))) continue;
+            var price = rs.getBigDecimal(i);
+            try { return price == null ? null : price.longValueExact(); }
+            catch (ArithmeticException invalid) { throw new SQLException("Invalid service repair price", invalid); }
+        }
+        return null;
     }
     private static boolean next(Connection c, PreparedStatement ps, ResultSet rs) throws SQLException {
         warnings(c, ps, rs);
