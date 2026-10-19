@@ -10,7 +10,7 @@ learn from it.
 
 ## Status
 
-This is a beta: 0.2.0-dev.67.
+This is a beta: 0.2.0-dev.68.
 
 - It passed the full set of automated tests.
 - This exact jar was also started from the console on a local Paper 26.1.2 test server with MariaDB
@@ -238,6 +238,7 @@ property:
 | AdvancedRegionMarket 3.5.5, patched | `arm` | Built in, the default | Paid |
 | WorldGuard regions | `worldguard-listed` | Built in. Reads region owners only. Not yet checked against a real WorldGuard server. | Held |
 | GriefPrevention 16.18.7 | `griefprevention` | Code and tests only. Not checked on a real server. No jar. | |
+| Realty 2.0.0 | `realty` | Adapter jar attached to the pre-release. Booted once on a local test server. No real players. Unverified. | Held |
 | Residence, Lands, PlotSquared | | Not included yet | |
 
 - **ARM.** Needs the patched build from [arm-compat/](arm-compat/README.md) and
@@ -245,6 +246,12 @@ property:
   The patch is only needed with `property.backend: arm`.
 - **WorldGuard.** Each home region needs exactly one owner, as a player UUID. If WorldGuard cannot be
   read, nothing is paid.
+- **Realty.** The adapter pays the title holder of a plot, or the tenant of a rented unit. Rented subregions
+  are supported. A vacant unit has no payer. Realty has no guard that can stop an owner change,
+  so rent is held by default. It needs Realty 2.0.x, WorldGuard, an economy and Realty's own MySQL or
+  MariaDB database. Put the adapter jar from the pre-release in `plugins/` and set
+  `property.backend: realty`. It is compiled against the Realty 2.0.0 API jars and was booted once on a
+  local test server. Enrolling a home, real players, real payouts and load were not checked.
 - Each home remembers which home plugin enrolled it. If you change `property.backend`, homes enrolled
   under the old one stay out of payments and moves until you set it back. The owner desk only shows
   homes enrolled under the home plugin you have set.
@@ -519,8 +526,8 @@ The jar is written to `build/libs/`. `./gradlew test` runs the unit and integrat
 integration tests start their own MariaDB, so you don't need one installed. The Citizens test is skipped
 when Citizens' library jars are not in `libs/`.
 
-- The GriefPrevention adapter's tests run with `-Padapters`. It cannot be built into a jar from this
-  tree yet. See [docs/ADAPTERS.md](docs/ADAPTERS.md) before you build an adapter.
+- The GriefPrevention adapter's tests run with `-Padapters`. The Realty adapter's tests run with `-Padapters`
+  too. Neither can be built into a jar from this tree yet. See [docs/ADAPTERS.md](docs/ADAPTERS.md) before you build an adapter.
 - `./gradlew seamFaultChecks` breaks the swappable parts on purpose in 10 places and checks the tests
   catch each one. `./gradlew billFaultChecks` does the same for billing in 24 places.
   [tools/faults/README.md](tools/faults/README.md) explains both.

@@ -11,6 +11,7 @@ import com.prosperitysmp.npc.economy.ReserveAccount;
 import com.prosperitysmp.npc.pieces.PieceSelector;
 import com.prosperitysmp.npc.pieces.Pieces;
 import com.prosperitysmp.npc.property.Property;
+import com.prosperitysmp.npc.util.Money;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.scheduler.BukkitTask;
@@ -600,7 +601,7 @@ public final class BillingRuntime implements AutoCloseable {
     public List<ChargeCatalogue.Policy> inForceToday() { return inForce(periods, days.today()); }
 
     public static String dollars(long cents) {
-        return "$" + (cents / 100) + "." + String.format(Locale.ROOT, "%02d", cents % 100);
+        return Money.format(cents);
     }
 
     @Override public void close() {

@@ -1,4 +1,4 @@
-// Shared build for vendor adapters (in this tree, only GriefPrevention). Built only with -Padapters
+// Shared build for vendor adapters (in this tree, GriefPrevention and Realty). Built only with -Padapters
 // (settings.gradle). Apply after setting, in the adapter's build.gradle:
 //   ext.vendorApis = [...]        compileOnly coordinates, each non-transitive
 //   ext.vendorRepository = {...}  adds the vendor repository, wrapped in exclusiveContent for its group

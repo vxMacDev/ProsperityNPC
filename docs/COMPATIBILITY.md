@@ -10,6 +10,7 @@ This page lists the plugins ProsperityNPC works with, and how well each one is t
 | Built in | Part of the ProsperityNPC jar. |
 | Built in, untested | Part of the jar, but not tested against a real copy of that plugin. |
 | Source and model tests only | Adapter source is in this repository, with tests against a model of the plugin. No jar ships. |
+| Adapter jar, unverified | A separate adapter jar is attached to the pre-release. It was booted once on a local test server with no real players. |
 | Not included | Nothing ships for this plugin. A developer can write a piece with the [developer API](PLUG-IN-POINTS.md#developer-api). |
 
 `/npcadmin diagnose` shows each piece's id, the plugin that registered it, its API version and its
@@ -66,7 +67,7 @@ find it, fund it another way, for example with a plugin or script that sets the 
 | AdvancedRegionMarket, patched | 3.5.5 with the hook from `arm-compat/` | Built in, default | `arm` | Write hook | Paid |
 | WorldGuard | | Built in, unverified against real WorldGuard | `worldguard-listed` | None | Held |
 | GriefPrevention | 16.18.7 | Source plus model tests, limited lab recordings on 16.18.7, no jar | `griefprevention` | Veto, or none with RealEstate | Paid after the startup check. Held with RealEstate. |
-| Realty | | Built in, untested, top-level regions only | `worldguard-listed` | None | Held |
+| Realty | 2.0.0 | Adapter jar, unverified. Compiled against Realty 2.0.0 and booted once on a local test server, no real players | `realty` | None | Held |
 | Residence | | Not included | | | |
 | Lands | | Not included | | | |
 | PlotSquared | | Not included | | | |
@@ -76,7 +77,7 @@ find it, fund it another way, for example with a plugin or script that sets the 
 default. Owners can still pay their bills and buy upgrades. The
 [home backend section](PLUG-IN-POINTS.md#home-backend) explains each guard.
 
-No vendor adapter jar ships in this beta. The adapter API is described in [ADAPTERS.md](ADAPTERS.md).
+The Realty adapter jar is attached to the pre-release. No other vendor adapter jar ships. The adapter API is described in [ADAPTERS.md](ADAPTERS.md).
 
 ### Notes per plugin
 
@@ -100,11 +101,77 @@ No vendor adapter jar ships in this beta. The adapter API is described in [ADAPT
     the `reread-before-payout` setting.
   - When the adapter does cancel a transfer, GriefPrevention still tells the person who ran it that it
     worked. The server log says the transfer was held because an ownership operation was in progress.
+- **Realty.** The adapter in `adapters/realty/` targets Realty 2.0.x. It compiles against the Realty 2.0.0
+  API jars, and its vendor pin is recorded from two independent downloads and the publisher's checksum.
+  On 2026-10-18 it was booted on a local Paper 26.1.2 test server with WorldGuard 7.0.18, FastAsyncWorldEdit
+  2.16.1, EssentialsX through Vault and a Realty 2.0.0 plugin built from the 2.0.0 source tag. No real player
+  joined and nothing ran under load. The checks are listed after the behaviour below. It is still labelled
+  `unverified`. The id is `realty`. What it does:
+  - The home is a WorldGuard region that Realty manages. The payer is the title holder of a freehold or
+    the tenant of a rented lease, including rented subregions. A vacant unit and an unsold plot have no
+    owner.
+  - The plot's WorldGuard owner list must hold that one player and nobody else. Fix stale owner lists
+    before you enrol a plot.
+  - A plot, freehold or leasehold, is not paid while a registered subregion inside it is rented or sold.
+    The tenant of the unit is paid instead. The unit has to be a WorldGuard child of the freehold. A region made with the subregion
+    dialog is one. If staff register a unit by hand, they must also set its parent with `/rg setparent`.
+    A unit counts as rented while it has a tenant, even with no end date, and for a short margin after the
+    end date.
+  - The guard is none. Realty can change a holder with no event, or with an event that cannot be
+    cancelled. Payouts are held by default.
+  - Realty keeps its data in a database, so the adapter reads a snapshot that a reader thread fills.
+    With `reread-before-payout`, a change made only in Realty's database can pay the old owner for up to
+    5 minutes plus the time one read takes. Usually it is about a minute, because plots in use refresh
+    every minute. A plot nobody reads is not paid. These numbers are still guesses, because the lab run
+    had three plots. A unit that was made and rented with no Realty event at all, such as by a direct
+    database write, is not seen by the plot around it until the next good full load. That is about 10
+    minutes, or longer while loads fail. In the lab, a plot registered from the console was not seen until
+    the next full load. A plot deleted from the console still read as owned until then. A unit whose region id is longer than 128 characters
+    cannot be read, so the freehold around it is not paid.
+  - Realty lets a WorldGuard owner move a title with no payment. Keep `realty.command.transfer` and
+    `realty.command.transfer.others` for staff. If a title moves to a player who was on a stale owner
+    list, and the adapter read the plot while the list was stale, it holds the plot. That includes an
+    unsold freehold, as long as the adapter read it. A plot nobody read is not held, so fix stale owner
+    lists before you enrol.
+  - Keep the database host and the server on the same time source. Leave `connectionTimeZone` out of
+    Realty's database URL.
+  - `/npcrealty held` lists held plots and `/npcrealty clear <world> <region>` releases one. Both need
+    `prosperitynpc.admin`.
+  - No Realty code is shipped with the adapter.
+  - To install it, put ProsperityNPC-Realty-0.1.0+api1.jar (78 KB) from the pre-release in `plugins/` next to
+    ProsperityNPC and Realty 2.0.0, and set `property.backend: realty`. Realty needs WorldGuard, an
+    economy, and its own MySQL or MariaDB database.
+  - What the lab run checked:
+    - The adapter loads after Realty and registers. ProsperityNPC binds it at startup, and
+      `/npcadmin diagnose` shows `guard none installed; identity strong; payouts held`.
+    - The first full load finished during startup, before the server finished starting.
+    - All 14 event bindings register on Realty's event classes.
+    - A sold freehold reads its title holder. An unsold freehold and a vacant unit read nobody. A rented
+      lease reads its tenant. A freehold with a rented unit reads nobody, and reads its holder again when
+      the unit is given up.
+    - A title holder or tenant set by Realty's own commands is read at once. The old owner no longer
+      reads as the owner.
+    - A title moved by `transfer` to a player who was on a stale owner list puts the plot on the held
+      list. `/npcrealty clear` released it.
+    - The database clock and the server clock agreed (skew bound 0 s) with the lab URL setting described below, and lease dates read back in the
+      server's zone.
+  - What the lab run did not check: enrolling a home (`/npcproperty enroll` needs a player standing in the
+    plot), real players, a real payout, load, plot counts above three, lease expiry and termination,
+    auctions, offers, `buy`, Treasury accounts as landlords, and several servers on one database. The rent
+    and unrent events in the lab came from a test plugin that repeated what Realty's rent command does,
+    because rent needs a player.
+  - Two lab differences. The lab database has no time zone tables, so Realty could not connect with its
+    default settings. The lab used `connectionTimeZone=SERVER` in Realty's database URL. Your server
+    should still leave `connectionTimeZone` out, as above. Realty 2.0.0 also failed to enable with only
+    Vault and no Treasury, with a missing Treasury class. The lab added an empty stand-in for that one
+    class. This comes from the Realty build and not from the adapter. Servers that run Hibernia Treasury
+    are unaffected.
 - **Residence, Lands, PlotSquared.** No adapter source exists for these in this beta.
 
 ### Hibernia Treasury and Realty
 
-Neither has been tested with ProsperityNPC. This is what reading their code says.
+Hibernia Treasury has not been tested with ProsperityNPC. This is what reading its code says. Realty is
+covered in its own entry on this page, because it ran once in the lab.
 
 - **Hibernia Treasury.** Treasury makes itself the Vault economy, so `money.source: vault` reaches it.
   - Create the reserve account in Treasury before you turn payments on. A payment to an account Treasury
@@ -113,10 +180,10 @@ Neither has been tested with ProsperityNPC. This is what reading their code says
     payout is held for staff.
   - Another plugin changing the same balance during a payment also holds that payment for staff.
 - **Realty.** Realty writes the owner into the WorldGuard region on every sale and rental. So
-  `property.backend: worldguard-listed` can see top-level Realty homes.
-  - Subregions do not work.
+  `property.backend: worldguard-listed` still sees top-level Realty homes. The `realty` adapter covers
+  subregions and rented plots. Its jar is attached to the pre-release.
+  - With `worldguard-listed`, subregions do not work.
   - Payouts are held by default, because a Realty sale does not wait for a payment to finish.
-  - A Realty adapter is planned.
 - **AreaShop.** No adapter ships. A developer can write one with the API.
 
 ## Residents and players

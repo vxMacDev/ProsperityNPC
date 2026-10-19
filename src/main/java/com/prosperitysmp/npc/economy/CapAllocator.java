@@ -1,5 +1,6 @@
 package com.prosperitysmp.npc.economy;
 
+import java.math.BigInteger;
 import java.util.Arrays;
 
 /**
@@ -19,20 +20,23 @@ public final class CapAllocator {
         if (n == 0) {
             return out;
         }
-        long total = 0;
+        BigInteger bigTotal = BigInteger.ZERO;
         for (long r : requested) {
-            total += Math.max(0L, r);
+            bigTotal = bigTotal.add(BigInteger.valueOf(Math.max(0L, r)));
         }
+        // A total past Long.MAX_VALUE is shared with BigInteger so it can never wrap.
+        boolean wide = bigTotal.bitLength() > 63;
+        long total = wide ? 0 : bigTotal.longValueExact();
         if (cap < 0) {
             cap = 0;
         }
-        if (total <= cap) {
+        if (!wide && total <= cap) {
             for (int i = 0; i < n; i++) {
                 out[i] = Math.max(0L, requested[i]);
             }
             return out;
         }
-        if (total == 0) {
+        if (!wide && total == 0) {
             return out;
         }
 
@@ -40,6 +44,13 @@ public final class CapAllocator {
         double[] remainderFrac = new double[n];
         for (int i = 0; i < n; i++) {
             long req = Math.max(0L, requested[i]);
+            if (wide) {
+                BigInteger[] share = BigInteger.valueOf(req).multiply(BigInteger.valueOf(cap)).divideAndRemainder(bigTotal);
+                out[i] = share[0].longValueExact();
+                allocated += out[i];
+                remainderFrac[i] = share[1].doubleValue() / bigTotal.doubleValue();
+                continue;
+            }
             // req * cap fits in long for realistic caps; guard against overflow anyway.
             long product = Math.multiplyExact(req, cap);
             long base = product / total;

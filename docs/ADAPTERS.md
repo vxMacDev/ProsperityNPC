@@ -115,10 +115,10 @@ record that behavior against the exact vendor jar separately.
 
 The contract fixtures live in this source tree only, under `api/src/testFixtures`. Nothing is
 published to Maven, so build and test an adapter inside a copy of this tree, as
-`adapters/example` and `adapters/griefprevention` do.
+`adapters/example`, `adapters/griefprevention` and `adapters/realty` do.
 
 The default `build` checks the core and example jar. Vendor modules are included with `-Padapters`.
-For example, `:adapter-griefprevention:test -Padapters` runs the vendor-free model suite.
+For example, `:adapter-griefprevention:test :adapter-realty:test -Padapters` runs the vendor-free model suites.
 A vendor package also needs its vendor sources compiled, `verifyPinnedVendorApis` and
 `verifyAdapterJar`. Its API jar must match a filename/SHA-256 pin recorded from two independent
 downloads; an unpinned or mismatched jar fails the build. `-PprintVendorPins` prints the SHA-256
@@ -127,13 +127,17 @@ The package must contain neither ProsperityNPC API classes nor vendor/library cl
 by the server, and it carries the license text as `META-INF/LICENSE`. `jar` alone does not run
 the packaging verifier; use `build` or the explicit gate.
 
+An adapter may keep a snapshot of a database-backed plugin, as the Realty adapter does, because reads run on
+the main thread and must not wait on a database.
+
 ## What this beta includes
 
-No vendor adapter jar ships in this beta.
+One vendor adapter jar is attached to the pre-release: Realty. GriefPrevention has no jar.
 
 | Adapter | Status in this beta |
 | --- | --- |
 | GriefPrevention | Source plus model tests in `adapters/griefprevention`, with limited lab recordings on GriefPrevention 16.18.7. Labelled `unverified`. Its vendor pin is empty, so packaging stops at the pin check. |
+| Realty | Source plus model tests in `adapters/realty`, compiled against the Realty 2.0.0 API jars with the vendor pin recorded. The package builds and passes `verifyPinnedVendorApis` and `verifyAdapterJar`, and the jar (ProsperityNPC-Realty-0.1.0+api1.jar) is attached to the pre-release. It contains no Realty code. It was booted once on a local Paper 26.1.2 test server with WorldGuard, FastAsyncWorldEdit, Vault and a Realty 2.0.0 plugin built from source. Owner reads, event bindings and the held list were checked there. Enrolling a home, real players and load were not. Labelled `unverified`. |
 | Residence, Lands, PlotSquared | Not included. This tree has no adapter for them. |
 
 No vendor adapter should be presented as verified support on the strength of its label or model

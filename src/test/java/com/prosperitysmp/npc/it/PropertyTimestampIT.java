@@ -64,7 +64,6 @@ class PropertyTimestampIT {
     static void bootDatabase() throws Exception {
         DBConfigurationBuilder cfg = DBConfigurationBuilder.newBuilder();
         cfg.setPort(0);
-        cfg.setSecurityDisabled(false);
         cfg.addArg("--bind-address=127.0.0.1");
         cfg.addArg("--default-time-zone=+09:00");
         mariaDb = DB.newEmbeddedDB(cfg.build());

@@ -27,6 +27,14 @@ public record DatabaseSettings(
         return password != null && !password.isBlank();
     }
 
+    /** Keeps the password out of logs and error messages. */
+    @Override
+    public String toString() {
+        return "DatabaseSettings[host=" + host + ", port=" + port + ", database=" + database
+                + ", user=" + user + ", password=<redacted>, poolSize=" + poolSize
+                + ", connectionTimeoutMs=" + connectionTimeoutMs + "]";
+    }
+
     public String jdbcUrl() {
         return "jdbc:mariadb://" + host + ":" + port + "/" + database;
     }

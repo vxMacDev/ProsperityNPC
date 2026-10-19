@@ -4,9 +4,9 @@ include 'api'
 include 'adapter-example'
 project(':adapter-example').projectDir = file('adapters/example')
 
-// Vendor adapters build only with -Padapters. Only GriefPrevention is in this tree; no vendor jar is released.
+// Vendor adapters build only with -Padapters. GriefPrevention and Realty are in this tree; no vendor jar is released.
 if (providers.gradleProperty('adapters').isPresent()) {
-    ['griefprevention'].each { name ->
+    ['griefprevention', 'realty'].each { name ->
         include "adapter-${name}"
         project(":adapter-${name}").projectDir = file("adapters/${name}")
     }

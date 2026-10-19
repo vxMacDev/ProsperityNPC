@@ -710,9 +710,7 @@ public final class NpcAdminCommand implements TabExecutor {
     }
 
     private static String dollars(long cents) {
-        long abs = Math.abs(cents);
-        String s = String.format(Locale.ROOT, "$%d.%02d", abs / 100, abs % 100);
-        return cents < 0 ? "-" + s : s;
+        return Money.format(cents);
     }
 
     private static Boolean parseOnOff(String s) {

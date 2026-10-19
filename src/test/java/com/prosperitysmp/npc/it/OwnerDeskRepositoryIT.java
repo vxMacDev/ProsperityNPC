@@ -55,6 +55,7 @@ class OwnerDeskRepositoryIT {
     private static final UUID WORLD = new UUID(0, 302);
     private static final String REGION = "Desk-Fixture";
     private static final String AT = "2026-09-01 12:00:00.123";
+    private static final List<String> LOOPBACK_HOSTS = List.of("localhost", "127.0.0.1", "::1");
     private static final List<String> READ_TABLES = List.of("npc_properties", "npc_tenants", "npc_incidents",
             "npc_upgrades", "npc_economy_events", "npc_property_insurance", "npc_insurance_preventions");
     private static DB mariaDb;
@@ -69,13 +70,19 @@ class OwnerDeskRepositoryIT {
     static void bootDatabase() throws Exception {
         DBConfigurationBuilder cfg = DBConfigurationBuilder.newBuilder();
         cfg.setPort(0);
-        cfg.setSecurityDisabled(false);
         cfg.addArg("--bind-address=127.0.0.1");
         mariaDb = DB.newEmbeddedDB(cfg.build());
         mariaDb.start();
         schema = "npc_owner_desk_" + UUID.randomUUID().toString().replace("-", "");
         try (Connection bootstrap = java.sql.DriverManager.getConnection(
                 "jdbc:mariadb://127.0.0.1:" + cfg.getPort() + "/", "root", "")) {
+            // Boot without grant checks so root can sign in on any OS (Linux installs give root socket-only
+            // sign-in), then turn the checks on for new connections. The read-only test needs real grants.
+            execute(bootstrap, "FLUSH PRIVILEGES");
+            for (String host : LOOPBACK_HOSTS) {
+                execute(bootstrap, "CREATE OR REPLACE USER 'root'@'" + host + "' IDENTIFIED BY ''");
+                execute(bootstrap, "GRANT ALL PRIVILEGES ON *.* TO 'root'@'" + host + "' WITH GRANT OPTION");
+            }
             execute(bootstrap, "CREATE DATABASE " + schema);
         }
         database = new Database();
@@ -90,8 +97,11 @@ class OwnerDeskRepositoryIT {
                     execute(sql);
             }
         }
-        execute("CREATE USER 'desk_reader'@'localhost' IDENTIFIED BY ''");
-        for (String table : READ_TABLES) execute("GRANT SELECT ON " + schema + "." + table + " TO 'desk_reader'@'localhost'");
+        for (String host : LOOPBACK_HOSTS) {
+            execute("CREATE USER 'desk_reader'@'" + host + "' IDENTIFIED BY ''");
+            for (String table : READ_TABLES)
+                execute("GRANT SELECT ON " + schema + "." + table + " TO 'desk_reader'@'" + host + "'");
+        }
         readOnlyDatabase = new Database();
         readOnlyDatabase.connect(new DatabaseSettings("localhost", cfg.getPort(), schema,
                 "desk_reader", "", 2, 10_000L));

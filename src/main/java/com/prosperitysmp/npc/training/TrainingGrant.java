@@ -44,6 +44,10 @@ public record TrainingGrant(UUID grantId, UUID playerId, UUID trainerId, String 
     }
 
     static Instant normalize(Instant at) {
-        return Instant.ofEpochMilli(Objects.requireNonNull(at).toEpochMilli());
+        try {
+            return Instant.ofEpochMilli(Objects.requireNonNull(at).toEpochMilli());
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Training time is outside epoch-millisecond range", e);
+        }
     }
 }

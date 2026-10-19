@@ -35,7 +35,7 @@ final class ChargePolicyCodec {
         policy.vars().forEach((name, value) -> constants.put(name, new BigDecimal(value.numerator())
                 .divide(new BigDecimal(value.denominator())).stripTrailingZeros().toPlainString()));
         terms.put("vars", constants);
-        terms.put("rounding", policy.rounding().name().toLowerCase(Locale.ROOT));
+        terms.put("rounding", policy.rounding().name().toLowerCase(Locale.ROOT).replace('_', '-'));
         terms.put("min-cents", Long.toString(policy.minCents()));
         terms.put("max-cents", Long.toString(policy.maxCents()));
         String json = JSON.toJson(terms);

@@ -44,7 +44,8 @@ public interface PropertyBackend extends Piece {
 
     /**
      * The Bukkit event handlers of this backend's guard, read once right after {@link #installGuard} succeeds.
-     * ProsperityNPC registers them through its error wrapper. Empty for a write hook or a guard of none. API 1.2.
+     * ProsperityNPC registers them through its error wrapper. Empty for a write hook. A guard of none may still
+     * return handlers that report owner changes it cannot stop, so the fence moves on. API 1.2.
      */
     default List<GuardBinding> guardBindings() { return List.of(); }
 }
